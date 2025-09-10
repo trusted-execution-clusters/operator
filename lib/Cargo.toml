@@ -10,6 +10,9 @@ description = "Definitions shared across operator, compute-pcrs and register-ser
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+openshift = []
+
 [dependencies]
 anyhow.workspace = true
 compute-pcrs-lib.workspace = true

@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: CC0-1.0
 
-.PHONY: all build build-tools crds-rs generate manifests cluster-up cluster-down \
+.PHONY: all build build-tools crds-rs crds-rs-all-features generate manifests cluster-up cluster-down \
 	install-trustee install clean fmt-check clippy lint test test-release release-tarball prepare-release \
 	operator-image compute-pcrs-image reg-server-image attestation-key-register-image image \
 	push-operator push-compute-pcrs push-reg-server push-attestation-key-register push \
@@ -85,9 +85,14 @@ CRD_YAML_PATH = config/crd
 CRD_WORK_PATH = config/crd/tmp
 RBAC_YAML_PATH = config/rbac
 API_PATH = api/v1alpha1
+# for use in shell expansion inside $(call ...)
+COMMA = ,
 generate: $(CONTROLLER_GEN)
 	$(call controller-gen,./api/...,*)
 	$(call controller-gen,github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1,*)
+
+generate-openshift: $(CONTROLLER_GEN)
+	$(call controller-gen,github.com/openshift/api/machineconfiguration/v1,machineconfiguration.openshift.io_machineconfig{s$(COMMA)pools}.yaml)
 
 RS_LIB_PATH = lib/src
 CRD_RS_PATH = $(RS_LIB_PATH)/kopium
@@ -101,6 +106,9 @@ $(CRD_RS_PATH)/%.rs: $(CRD_YAML_PATH)/*_%.yaml $(KOPIUM) $(CRD_RS_PATH)
 crds-rs: generate $(KOPIUM) $(CRD_RS_PATH)
 	$(MAKE) $(shell find $(CRD_YAML_PATH) -type f \
 		| sed -E 's|$(CRD_YAML_PATH)/.*_(.*)\.yaml|$(CRD_RS_PATH)/\1.rs|')
+
+crds-rs-all-features: generate-openshift
+	$(MAKE) crds-rs
 
 trusted-cluster-gen: api/trusted-cluster-gen.go
 	go build -o $@ $<
@@ -238,7 +246,7 @@ fmt-check:
 	cargo fmt -- --check
 	if [ "$$(gofmt -l .)" ]; then exit 1; fi
 
-clippy: crds-rs
+clippy: crds-rs-all-features
 	cargo clippy --all-targets --all-features -- -D warnings
 
 vet:

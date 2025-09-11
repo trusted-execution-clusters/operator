@@ -28,6 +28,10 @@ use tokio::time::timeout;
 use kube::api::{Patch, PatchParams};
 use trusted_cluster_operator_lib::Conditions;
 pub use trusted_cluster_operator_lib::generate_owner_reference;
+#[cfg(feature = "openshift")]
+use trusted_cluster_operator_lib::machineconfigpools::MachineConfigPool;
+#[cfg(feature = "openshift")]
+use trusted_cluster_operator_lib::machineconfigs::MachineConfig;
 use trusted_cluster_operator_lib::{
     ApprovedImage, AttestationKey, Machine, TrustedExecutionCluster,
 };
@@ -44,6 +48,10 @@ pub struct OperatorContext {
     pub secret_store: Store<Secret>,
     pub image_store: Store<ApprovedImage>,
     pub deployment_store: Store<Deployment>,
+    #[cfg(feature = "openshift")]
+    pub mc_store: Store<MachineConfig>,
+    #[cfg(feature = "openshift")]
+    pub mcp_store: Store<MachineConfigPool>,
 }
 
 impl OperatorContext {
@@ -59,6 +67,10 @@ impl OperatorContext {
             secret_store: reflector::store().0,
             image_store: reflector::store().0,
             deployment_store: reflector::store().0,
+            #[cfg(feature = "openshift")]
+            mc_store: reflector::store().0,
+            #[cfg(feature = "openshift")]
+            mcp_store: reflector::store().0,
         }
     }
 
@@ -172,6 +184,24 @@ where
     K::DynamicType: Default + Eq + std::hash::Hash + Clone,
 {
     let watcher = watcher(Api::<K>::default_namespaced(client), Default::default());
+    let reflector = reflector::reflector(writer, watcher).for_each(move |res| async move {
+        if let Err(e) = res {
+            warn!("{name} reflector error: {e}");
+        }
+    });
+    tokio::spawn(reflector);
+}
+
+pub fn spawn_cluster_reflector<K>(
+    writer: reflector::store::Writer<K>,
+    client: Client,
+    name: &'static str,
+) where
+    K: Resource<Scope = k8s_openapi::ClusterResourceScope>,
+    K: Clone + serde::de::DeserializeOwned + std::fmt::Debug + Send + Sync + 'static,
+    K::DynamicType: Default + Eq + std::hash::Hash + Clone,
+{
+    let watcher = watcher(Api::<K>::all(client), Default::default());
     let reflector = reflector::reflector(writer, watcher).for_each(move |res| async move {
         if let Err(e) = res {
             warn!("{name} reflector error: {e}");

@@ -35,6 +35,9 @@ kbs-client = {git = "https://github.com/confidential-containers/trustee.git", re
 jsonwebtoken = { version = "11.0.0", default-features = false, features = ["use_pem"] }
 jsonwebtoken-openssl = "2.0.0"
 
+[features]
+openshift = ["trusted-cluster-operator-lib/openshift"]
+
 [dev-dependencies]
 http.workspace = true
 trusted-cluster-operator-test-utils = { path = "../test_utils" }

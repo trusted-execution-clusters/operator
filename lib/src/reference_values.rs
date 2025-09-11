@@ -8,6 +8,12 @@ use compute_pcrs_lib::Pcr;
 use compute_pcrs_lib::tpmevents::TPMEvent;
 use openssl::hash::{MessageDigest, hash};
 
+#[cfg(feature = "openshift")]
+pub const OSIMAGE_RESOURCE_PREFIX: &str = "osimage";
+#[cfg(feature = "openshift")]
+pub const MCP_APPROVED_IMAGE_LABEL: &str =
+    "trusted-execution-clusters.io/autocreate-approved-images";
+
 /// Name resource by uniquified RFC1035 name with a prefix
 pub fn rfc1035(name: &str, prefix: &str) -> anyhow::Result<String> {
     if prefix.len() > 52 {

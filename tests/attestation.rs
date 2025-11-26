@@ -10,12 +10,11 @@ use trusted_cluster_operator_test_utils::virt;
 #[cfg(feature = "virtualization")]
 struct SingleAttestationContext {
     key_path: std::path::PathBuf,
-    vm_name: String,
 }
 
 #[cfg(feature = "virtualization")]
 impl SingleAttestationContext {
-    async fn new(test_ctx: &TestContext) -> anyhow::Result<Self> {
+    async fn new(vm_name: &str, test_ctx: &TestContext) -> anyhow::Result<Self> {
         let client = test_ctx.client();
         let namespace = test_ctx.namespace();
 
@@ -25,7 +24,6 @@ impl SingleAttestationContext {
             key_path
         ));
 
-        let vm_name = "test-coreos-vm";
         let register_server_url = format!(
             "http://register-server.{}.svc.cluster.local:8000/ignition-clevis-pin-trustee",
             namespace
@@ -51,10 +49,7 @@ impl SingleAttestationContext {
         virt::wait_for_vm_ssh_ready(namespace, vm_name, &key_path, 300).await?;
         test_ctx.info("SSH access is ready");
 
-        Ok(Self {
-            key_path,
-            vm_name: vm_name.to_string(),
-        })
+        Ok(Self { key_path })
     }
 }
 
@@ -68,12 +63,13 @@ impl Drop for SingleAttestationContext {
 virt_test! {
 async fn test_attestation() -> anyhow::Result<()> {
     let test_ctx = setup!().await?;
-    let att_ctx = SingleAttestationContext::new(&test_ctx).await?;
+    let vm_name = "test-coreos-vm";
+    let att_ctx = SingleAttestationContext::new(vm_name, &test_ctx).await?;
 
     test_ctx.info("Verifying encrypted root device");
     let namespace = test_ctx.namespace();
     let has_encrypted_root =
-        virt::verify_encrypted_root(namespace, &att_ctx.vm_name, &att_ctx.key_path).await?;
+        virt::verify_encrypted_root(namespace, vm_name, &att_ctx.key_path).await?;
 
     assert!(
         has_encrypted_root,
@@ -191,12 +187,13 @@ virt_test! {
 async fn test_vm_reboot_attestation() -> anyhow::Result<()> {
     let test_ctx = setup!().await?;
     test_ctx.info("Testing VM reboot - VM should successfully boot after multiple reboots");
-    let att_ctx = SingleAttestationContext::new(&test_ctx).await?;
+    let vm_name = "test-coreos-reboot";
+    let att_ctx = SingleAttestationContext::new(vm_name, &test_ctx).await?;
     let namespace = test_ctx.namespace();
 
     test_ctx.info("Verifying initial encrypted root device");
     let has_encrypted_root =
-        virt::verify_encrypted_root(namespace, &att_ctx.vm_name, &att_ctx.key_path).await?;
+        virt::verify_encrypted_root(namespace, vm_name, &att_ctx.key_path).await?;
     assert!(
         has_encrypted_root,
         "VM should have encrypted root device on initial boot"
@@ -211,7 +208,7 @@ async fn test_vm_reboot_attestation() -> anyhow::Result<()> {
         // Reboot the VM via SSH
         let _reboot_result = virt::virtctl_ssh_exec(
             namespace,
-            &att_ctx.vm_name,
+            vm_name,
             &att_ctx.key_path,
             "sudo systemctl reboot",
         )
@@ -220,12 +217,12 @@ async fn test_vm_reboot_attestation() -> anyhow::Result<()> {
         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
 
         test_ctx.info(format!("Waiting for SSH access after reboot {}", i));
-        virt::wait_for_vm_ssh_ready(namespace, &att_ctx.vm_name, &att_ctx.key_path, 300).await?;
+        virt::wait_for_vm_ssh_ready(namespace, vm_name, &att_ctx.key_path, 300).await?;
 
         // Verify encrypted root is still present after reboot
         test_ctx.info(format!("Verifying encrypted root after reboot {}", i));
         let has_encrypted_root =
-            virt::verify_encrypted_root(namespace, &att_ctx.vm_name, &att_ctx.key_path).await?;
+            virt::verify_encrypted_root(namespace, vm_name, &att_ctx.key_path).await?;
         assert!(
             has_encrypted_root,
             "VM should have encrypted root device after reboot {}",
@@ -252,7 +249,8 @@ async fn test_vm_reboot_delete_machine() -> anyhow::Result<()> {
 
     let test_ctx = setup!().await?;
     test_ctx.info("Testing Machine deletion - VM should no longer boot successfully when its Machine CRD was removed");
-    let att_ctx = SingleAttestationContext::new(&test_ctx).await?;
+    let vm_name = "test-coreos-delete";
+    let att_ctx = SingleAttestationContext::new(vm_name, &test_ctx).await?;
 
     let machines: Api<Machine> = Api::namespaced(test_ctx.client().clone(), test_ctx.namespace());
     let list = machines.list(&Default::default()).await?;
@@ -262,7 +260,7 @@ async fn test_vm_reboot_delete_machine() -> anyhow::Result<()> {
     test_ctx.info("Performing reboot, expecting missing resource");
     let _reboot_result = virt::virtctl_ssh_exec(
         test_ctx.namespace(),
-        &att_ctx.vm_name,
+        vm_name,
         &att_ctx.key_path,
         "sudo systemctl reboot",
     )
@@ -273,7 +271,7 @@ async fn test_vm_reboot_delete_machine() -> anyhow::Result<()> {
     test_ctx.info("Waiting for SSH access after machine removal");
     let wait = virt::wait_for_vm_ssh_ready(
         test_ctx.namespace(),
-        &att_ctx.vm_name,
+        vm_name,
         &att_ctx.key_path,
         300,
     )

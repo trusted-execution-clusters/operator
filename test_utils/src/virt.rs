@@ -1,13 +1,15 @@
 // SPDX-FileCopyrightText: Alice Frosi <afrosi@redhat.com>
+// SPDX-FileCopyrightText: Jakob Naucke <jnaucke@redhat.com>
 //
 // SPDX-License-Identifier: MIT
 
+use clevis_pin_trustee_lib::Key as ClevisKey;
 use ignition_config::v3_5::{
     Config, Dropin, File, Ignition, IgnitionConfig, Passwd, Resource, Storage, Systemd, Unit, User,
 };
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
-use kube::Client;
 use kube::api::ObjectMeta;
+use kube::{Api, Client};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
@@ -143,8 +145,6 @@ pub async fn create_kubevirt_vm(
     register_server_url: &str,
     image: &str,
 ) -> anyhow::Result<()> {
-    use kube::Api;
-
     let ignition_config = generate_ignition_config(ssh_public_key, register_server_url);
     let ignition_json = serde_json::to_string(&ignition_config)?;
 
@@ -237,7 +237,6 @@ pub async fn wait_for_vm_running(
     vm_name: &str,
     timeout_secs: u64,
 ) -> anyhow::Result<()> {
-    use kube::api::Api;
     let api: Api<VirtualMachine> = Api::namespaced(client.clone(), namespace);
 
     let poller = Poller::new()
@@ -337,6 +336,7 @@ pub async fn verify_encrypted_root(
     namespace: &str,
     vm_name: &str,
     key_path: &Path,
+    encryption_key: &[u8],
 ) -> anyhow::Result<bool> {
     let output = virtctl_ssh_exec(namespace, vm_name, key_path, "lsblk -o NAME,TYPE -J").await?;
 
@@ -344,50 +344,30 @@ pub async fn verify_encrypted_root(
     let lsblk_output: serde_json::Value = serde_json::from_str(&output)?;
 
     // Look for a device with name "root" and type "crypt"
-    if let Some(blockdevices) = lsblk_output.get("blockdevices") {
-        if let Some(devices) = blockdevices.as_array() {
-            for device in devices {
-                // Check the device itself
-                if is_root_crypt_device(device) {
-                    return Ok(true);
-                }
-
-                // Check children devices recursively
-                if let Some(children) = device.get("children") {
-                    if let Some(children_arr) = children.as_array() {
-                        for child in children_arr {
-                            if is_root_crypt_device(child) {
-                                return Ok(true);
-                            }
-                            // Check nested children
-                            if let Some(nested_children) = child.get("children") {
-                                if let Some(nested_arr) = nested_children.as_array() {
-                                    for nested in nested_arr {
-                                        if is_root_crypt_device(nested) {
-                                            return Ok(true);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    let get_children = |val: &serde_json::Value| {
+        let children = val.get("children").and_then(|v| v.as_array());
+        children.map(|v| v.to_vec()).unwrap_or_default()
+    };
+    let devices = lsblk_output.get("blockdevices").and_then(|v| v.as_array());
+    for child in devices.into_iter().flatten().flat_map(get_children) {
+        if get_children(&child).iter().any(|nested| {
+            let name = nested.get("name").and_then(|n| n.as_str());
+            let dev_type = nested.get("type").and_then(|t| t.as_str());
+            name == Some("root") && dev_type == Some("crypt")
+        }) {
+            let jwk: ClevisKey = serde_json::from_slice(encryption_key)?;
+            let key = jwk.key;
+            let dev = child.get("name").and_then(|n| n.as_str()).unwrap();
+            let cmd = format!(
+                "jose jwe dec \
+                 -k <(jose fmt -j '{{}}' -q oct -s kty -Uq $(printf {key} | jose b64 enc -I-) -s k -Uo-) \
+                 -i <(sudo cryptsetup token export --token-id 0 /dev/{dev} | jose fmt -j- -Og jwe -o-) \
+                 | sudo cryptsetup luksOpen --test-passphrase --key-file=- /dev/{dev}",
+            );
+            let exec = virtctl_ssh_exec(namespace, vm_name, key_path, &cmd).await;
+            return exec.map(|_| true);
         }
     }
 
     Ok(false)
-}
-
-fn is_root_crypt_device(device: &serde_json::Value) -> bool {
-    let name = device.get("name").and_then(|n| n.as_str());
-    let dev_type = device.get("type").and_then(|t| t.as_str());
-
-    if let (Some(n), Some(t)) = (name, dev_type) {
-        if n == "root" && t == "crypt" {
-            return true;
-        }
-    }
-
-    false
 }

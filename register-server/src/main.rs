@@ -12,9 +12,9 @@ use ignition_config::v3_5::{
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::{Api, Client};
-use log::{error, info};
-use std::convert::Infallible;
+use log::{error, info, warn};
 use std::net::SocketAddr;
+use std::{convert::Infallible, time::Duration};
 use uuid::Uuid;
 use warp::{http::StatusCode, reply, Filter};
 
@@ -135,8 +135,21 @@ async fn register_handler(remote_addr: Option<SocketAddr>) -> Result<impl warp::
     ))
 }
 
-async fn create_machine(client: Client, uuid: &str, client_ip: &str) -> anyhow::Result<()> {
+async fn update_status(client: Client, name: &str, status: MachineStatus) -> anyhow::Result<()> {
     let machines: Api<Machine> = Api::default_namespaced(client);
+    let mut status_machine = machines.get_status(name).await?;
+    status_machine.status = Some(status);
+    let status_data = serde_json::to_vec(&status_machine)?;
+    let params = Default::default();
+    machines.replace_status(name, &params, status_data).await?;
+    Ok(())
+}
+
+async fn create_machine(client: Client, uuid: &str, client_ip: &str) -> anyhow::Result<()> {
+    const MAX_ATTEMPTS: u8 = 3;
+    const DELAY: Duration = Duration::from_secs(1);
+
+    let machines: Api<Machine> = Api::default_namespaced(client.clone());
 
     // Check for existing machines with the same IP
     let machine_list = machines.list(&Default::default()).await?;
@@ -161,21 +174,32 @@ async fn create_machine(client: Client, uuid: &str, client_ip: &str) -> anyhow::
         spec: MachineSpec {
             id: uuid.to_string(),
         },
-        status: Some(MachineStatus {
-            address: Some(client_ip.to_string()),
-            conditions: None,
-        }),
+        status: None,
     };
 
     machines.create(&Default::default(), &machine).await?;
-    // create does not set status
-    let mut status_machine = machines.get_status(&name).await?;
-    status_machine.status = machine.status;
-    let status_data = serde_json::to_vec(&status_machine)?;
-    let params = Default::default();
-    machines.replace_status(&name, &params, status_data).await?;
 
-    info!("Created Machine: {name} with IP: {client_ip}");
+    let status = MachineStatus {
+        address: Some(client_ip.to_string()),
+        conditions: None,
+    };
+    // create does not set status, and is sometimes not yet synchronized
+    for attempt in 1..=MAX_ATTEMPTS {
+        match update_status(client.clone(), &name, status.clone()).await {
+            Ok(_) => {
+                info!("Created machine {name} with IP: {client_ip}");
+                return Ok(());
+            }
+            Err(e) => {
+                warn!(
+                    "Attempt {attempt} / {MAX_ATTEMPTS} \
+                     at updating status of machine {name} failed: {e}"
+                );
+                std::thread::sleep(DELAY);
+            }
+        }
+    }
+    warn!("Setting status of new machine {name} failed, gracefully keeping machine");
     Ok(())
 }
 
@@ -199,8 +223,11 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http::{Method, Request};
     use kube::api::ObjectList;
     use trusted_cluster_operator_test_utils::mock_client::*;
+
+    const TEST_IP: &str = "12.34.56.78";
 
     fn dummy_clusters() -> ObjectList<TrustedExecutionCluster> {
         ObjectList {
@@ -249,5 +276,85 @@ mod tests {
     #[tokio::test]
     async fn test_get_public_trustee_error() {
         test_get_error(async |c| get_public_trustee_addr(c).await.map(|_| ())).await;
+    }
+
+    fn dummy_machine() -> Machine {
+        Machine {
+            metadata: ObjectMeta {
+                name: Some("test".to_string()),
+                ..Default::default()
+            },
+            spec: MachineSpec {
+                id: "test".to_string(),
+            },
+            status: None,
+        }
+    }
+
+    fn dummy_machine_status() -> MachineStatus {
+        MachineStatus {
+            address: Some(TEST_IP.to_string()),
+            conditions: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_update_status() {
+        let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
+            (0, &Method::GET) => Ok(serde_json::to_string(&dummy_machine()).unwrap()),
+            (1, &Method::PUT) => {
+                assert_body_contains(req, &dummy_machine_status().address.unwrap()).await;
+                Ok(serde_json::to_string(&dummy_machine()).unwrap())
+            }
+            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        };
+        count_check!(2, clos, |client| {
+            let result = update_status(client, "test", dummy_machine_status()).await;
+            assert!(result.is_ok());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_update_status_error() {
+        let clos = |client| update_status(client, "test", dummy_machine_status());
+        test_get_error(clos).await;
+    }
+
+    fn dummy_machines() -> ObjectList<Machine> {
+        let mut machine = dummy_machine();
+        machine.status = Some(dummy_machine_status());
+        ObjectList {
+            types: Default::default(),
+            metadata: Default::default(),
+            items: vec![machine],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_machine() {
+        let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
+            (0, &Method::GET) => Ok(serde_json::to_string(&dummy_machines()).unwrap()),
+            (1, &Method::POST) | (2, &Method::GET) | (3, &Method::PUT) => {
+                Ok(serde_json::to_string(&dummy_machine()).unwrap())
+            }
+            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        };
+        count_check!(4, clos, |client| {
+            assert!(create_machine(client, "test", "::").await.is_ok());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_create_machine_existing_ip() {
+        let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
+            (0, &Method::GET) => Ok(serde_json::to_string(&dummy_machines()).unwrap()),
+            (1, &Method::DELETE) | (2, &Method::POST) | (3, &Method::GET) | (4, &Method::PUT) => {
+                Ok(serde_json::to_string(&dummy_machine()).unwrap())
+            }
+            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        };
+        count_check!(5, clos, |client| {
+            assert!(create_machine(client, "test", TEST_IP).await.is_ok());
+        });
     }
 }

@@ -25,4 +25,5 @@ uuid.workspace = true
 warp = "0.3"
 
 [dev-dependencies]
+http.workspace = true
 trusted-cluster-operator-test-utils = { path = "../test_utils" }

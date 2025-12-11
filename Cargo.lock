@@ -2788,6 +2788,7 @@ dependencies = [
  "clap",
  "clevis-pin-trustee-lib",
  "env_logger",
+ "http 1.4.0",
  "ignition-config",
  "k8s-openapi",
  "kube",

@@ -2361,8 +2361,8 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.17",
  "tokio",
- "tower",
  "trusted-cluster-operator-lib",
+ "trusted-cluster-operator-test-utils",
 ]
 
 [[package]]
@@ -3779,15 +3779,18 @@ dependencies = [
  "anyhow",
  "compute-pcrs-lib",
  "env_logger",
+ "http 1.4.0",
  "ignition-config",
  "k8s-openapi",
  "kube",
  "log",
  "rand_core",
+ "serde",
  "serde_json",
  "serde_yaml",
  "ssh-key",
  "tokio",
+ "tower",
  "trusted-cluster-operator-lib",
  "uuid",
  "which",

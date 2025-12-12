@@ -21,7 +21,7 @@ use trusted_cluster_operator_lib::{conditions::*, update_status};
 
 mod conditions;
 #[cfg(test)]
-mod mock_client;
+mod test_utils;
 mod reference_values;
 mod register_server;
 mod trustee;
@@ -185,36 +185,11 @@ async fn main() -> Result<()> {
 mod tests {
     use http::{Method, Request, StatusCode};
     use k8s_openapi::{apimachinery::pkg::apis::meta::v1::Time, chrono::Utc};
-    use kube::api::{ObjectList, ObjectMeta};
+    use kube::api::ObjectList;
     use kube::client::Body;
-    use trusted_cluster_operator_lib::TrustedExecutionClusterSpec;
 
     use super::*;
-    use crate::mock_client::*;
-
-    fn dummy_cluster() -> TrustedExecutionCluster {
-        TrustedExecutionCluster {
-            metadata: ObjectMeta {
-                name: Some("test".to_string()),
-                ..Default::default()
-            },
-            status: None,
-            spec: TrustedExecutionClusterSpec {
-                trustee_image: "".to_string(),
-                pcrs_compute_image: "".to_string(),
-                register_server_image: "".to_string(),
-                public_trustee_addr: None,
-                register_server_port: None,
-                trustee_kbs_port: None,
-            },
-        }
-    }
-
-    async fn assert_body_contains(req: Request<Body>, contains: &str) {
-        let bytes = req.into_body().collect_bytes().await.unwrap().to_vec();
-        let body = String::from_utf8_lossy(&bytes);
-        assert!(body.contains(contains));
-    }
+    use trusted_cluster_operator_test_utils::mock_client::*;
 
     #[tokio::test]
     async fn test_reconcile_uninstalling() {

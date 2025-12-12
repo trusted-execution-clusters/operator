@@ -14,6 +14,7 @@ use tokio::process::Command;
 
 pub mod timer;
 pub use timer::Poller;
+pub mod mock_client;
 
 #[cfg(feature = "virtualization")]
 pub mod virt;

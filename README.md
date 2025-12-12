@@ -26,6 +26,7 @@ within the cluster.
 -   `podman` or `docker` (set `CONTAINER_CLI` and `RUNTIME` environment variables accordingly)
 -   `kubectl`
 -   `kind`
+-   `operator-sdk` (refer to its official documentation for installation instructions)
 
 ### Quick Start
 
@@ -70,16 +71,104 @@ Run a VM as described in the
 [investigations](https://github.com/trusted-execution-clusters/investigations?tab=readme-ov-file#example-with-the-trusted-execution-clusters-operator-and-a-local-vm)
 repository.
 
-### Cleanup
+### OLM Bundle Workflow
 
-To clean up your environment after running tests, execute the following commands:
+This operator can be packaged and deployed as an OLM bundle. This workflow supports deploying to any Kubernetes cluster with access to a container registry.
+
+**1. Prerequisites**
+
+*   **Setup Cluster:** Ensure your `kubectl` context points to your target cluster. For local development, you can create a `kind` cluster by running:
+    ```bash
+    # Set RUNTIME=docker if using Docker instead of Podman.
+    make cluster-up
+    ```
+
+*   **Login to Registry:**
+    ```bash
+    # Login to your remote container registry (e.g., quay.io)
+    docker login quay.io
+    ```
+
+*   **Install OLM:**
+    ```bash
+    # Install OLM on your target cluster
+    (cd /tmp && operator-sdk olm install)
+    ```
+
+**2. Set Environment Variables**
+
+Define the container registry, image tag, and CLI.
+
+```bash
+export REGISTRY=quay.io/<your-username>
+export TAG=0.1.0
+export CONTAINER_CLI=docker # or podman
+```
+> **Note:** The `TAG` must be a valid semantic version (e.g., `0.1.0`). OLM does not support tags like `latest` for bundle versions.
+
+**3. Build, Validate, and Push**
+
+The `push-all` target builds all operator images, generates the bundle, builds the bundle image, and pushes everything to the specified `$REGISTRY`.
+
+```bash
+make push-all
+```
+
+You can optionally validate the generated bundle manifests at any time after the `bundle` has been generated:
+```bash
+(cd ./bundle && operator-sdk bundle validate .)
+```
+
+**4. Deploy the Bundle**
+
+Deploy the bundle to your cluster. We use `trusted-execution-clusters` as an example namespace.
+
+```bash
+kubectl create namespace trusted-execution-clusters || true
+(cd /tmp && operator-sdk run bundle ${REGISTRY}/trusted-cluster-operator-bundle:${TAG} --namespace trusted-execution-clusters)
+```
+
+**5. Create the Custom Resource**
+
+Once the operator is running, you need to create a `TrustedExecutionCluster` custom resource to make it functional.
+
+First, you must update the example CR with the correct public address for the Trustee service, which must be accessible from your worker nodes or VMs.
+
+```bash
+# Provide an address where your VMs can access the cluster.
+# When using a local kind cluster, this is often the kind bridge IP.
+$ ip route
+...
+192.168.122.0/24 dev virbr0 proto kernel scope link src 192.168.122.1
+...
+$ export TRUSTEE_ADDR=192.168.122.1
+
+# Use yq (or manually edit) to set the address in the CR.
+# Note: yq is installed via 'make build-tools'.
+$ yq -i '.spec.publicTrusteeAddr = "'$TRUSTEE_ADDR':8080"' config/deploy/trusted_execution_cluster_cr.yaml
+
+# Now, apply the configured CR
+$ kubectl apply -f config/deploy/trusted_execution_cluster_cr.yaml
+```
+
+#### **Cleaning Up the Bundle Deployment**
+
+To remove all resources deployed by the bundle, use the `cleanup` command with the operator's package name:
+
+```bash
+(cd /tmp && operator-sdk cleanup trusted-cluster-operator --namespace trusted-execution-clusters)
+```
+
+### Quick Start Cleanup
+
+To clean up your environment after running the non-OLM `Quick Start` method, execute the following commands:
 ```bash
 make cluster-cleanup
 # Note: You must use the same RUNTIME environment variable for `cluster-down`
 # that you used for `cluster-up`. For example:
 #
 # RUNTIME=docker make cluster-down
-RUNTIME=$RUNTIME make cluster-down
+make cluster-down
 make clean
 ```
 

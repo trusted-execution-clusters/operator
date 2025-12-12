@@ -44,7 +44,8 @@ CRD_YAML_PATH = config/crd
 API_PATH = api/v1alpha1
 generate: $(CONTROLLER_GEN)
 	$(CONTROLLER_GEN) rbac:roleName=trusted-cluster-operator-role crd webhook paths="./..." \
-		output:crd:artifacts:config=$(CRD_YAML_PATH)
+		output:crd:artifacts:config=$(CRD_YAML_PATH) \
+		output:rbac:artifacts:config=config/rbac
 
 RS_LIB_PATH = lib/src
 CRD_RS_PATH = $(RS_LIB_PATH)/kopium
@@ -88,7 +89,7 @@ cluster-down:
 CONTAINER_CLI ?= podman
 RUNTIME ?= podman
 
-image:
+image: build reg-server
 	$(CONTAINER_CLI) build --build-arg build_type=$(BUILD_TYPE) -t $(OPERATOR_IMAGE) -f Containerfile .
 	$(CONTAINER_CLI) build --build-arg build_type=$(BUILD_TYPE) -t $(COMPUTE_PCRS_IMAGE) -f compute-pcrs/Containerfile .
 	$(CONTAINER_CLI) build --build-arg build_type=$(BUILD_TYPE) -t $(REG_SERVER_IMAGE) -f register-server/Containerfile .
@@ -100,6 +101,28 @@ push: image
 
 release-tarball: manifests
 	tar -cf trusted-execution-operator-$(TAG).tar config
+
+# OLM Bundle related variables
+BUNDLE_DIR := bundle
+BUNDLE_IMAGE := $(REGISTRY)/trusted-cluster-operator-bundle:$(TAG)
+BUNDLE_PACKAGE ?= trusted-cluster-operator
+PREVIOUS_CSV ?= ""  # optional previous CSV for OLM upgrades
+
+.PHONY: bundle bundle-image push-bundle
+
+bundle: manifests
+	@echo "Generating OLM bundle..."
+	@scripts/generate-bundle-prod.sh $(TAG) $(PREVIOUS_CSV)
+
+bundle-image: bundle
+	@echo "Building OLM bundle image..."
+	$(CONTAINER_CLI) build -f $(BUNDLE_DIR)/Containerfile -t $(BUNDLE_IMAGE) $(BUNDLE_DIR)/
+
+push-bundle: bundle-image
+	@echo "Pushing OLM bundle image..."
+	$(CONTAINER_CLI) push $(BUNDLE_IMAGE) $(PUSH_FLAGS)
+
+push-all: push push-bundle ## Pushes all operator and bundle images
 
 install: $(YQ)
 ifndef TRUSTEE_ADDR

@@ -29,5 +29,6 @@ RUN cargo build -p register-server $(if [ "$build_type" = release ]; then echo -
 FROM quay.io/fedora/fedora:42
 ARG build_type
 COPY --from=builder "/build/target/$build_type/register-server" /usr/bin
+USER nobody
 EXPOSE 3030
 ENTRYPOINT ["/usr/bin/register-server"]

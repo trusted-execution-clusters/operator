@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: Yalan Zhang <yalzhang@redhat.com>
+#
+# SPDX-License-Identifier: CC0-1.0
+
+set -euo pipefail
+
+BUNDLE_VERSION=""
+PREVIOUS_CSV=""
+
+while getopts "v:p:" opt; do
+  case $opt in
+    v) BUNDLE_VERSION="$OPTARG" ;;
+    p) PREVIOUS_CSV="$OPTARG" ;;
+    *) echo "Usage: $0 -v <bundle-version> [-p <previous-csv>]"; exit 1 ;;
+  esac
+done
+
+[[ -z "$BUNDLE_VERSION" ]] && { echo "Error: bundle version cannot be empty"; exit 1; }
+
+# Required environment variables
+for var in OPERATOR_IMAGE COMPUTE_PCRS_IMAGE REGISTER_SERVER_IMAGE; do
+    : "${!var:?Please export $var}"
+done
+
+PROJECT_ROOT="$(pwd)"
+BUNDLE_DIR="${PROJECT_ROOT}/bundle"
+BUNDLE_MANIFESTS="${BUNDLE_DIR}/manifests"
+BUNDLE_METADATA="${BUNDLE_DIR}/metadata"
+CSV_TEMPLATE="${PROJECT_ROOT}/bundle/static/manifests/trusted-cluster-operator.clusterserviceversion.yaml"
+ANNOTATIONS_TEMPLATE="${PROJECT_ROOT}/bundle/static/metadata/annotations.yaml"
+RBAC_ROLE_FILE="${PROJECT_ROOT}/config/rbac/role.yaml"
+
+echo "=> Cleaning previous bundle..."
+rm -rf "${BUNDLE_MANIFESTS}" "${BUNDLE_METADATA}"
+mkdir -p "${BUNDLE_MANIFESTS}" "${BUNDLE_METADATA}"
+
+echo "=> Copying CRDs and static assets..."
+shopt -s nullglob
+cp "${PROJECT_ROOT}/config/crd"/*.yaml "${BUNDLE_MANIFESTS}/"
+cp "$CSV_TEMPLATE" "${BUNDLE_MANIFESTS}/"
+cp "$ANNOTATIONS_TEMPLATE" "${BUNDLE_METADATA}/"
+
+echo "=> Patching CSV with images, env vars, version, and RBAC rules..."
+CSV_FILE="${BUNDLE_MANIFESTS}/trusted-cluster-operator.clusterserviceversion.yaml"
+
+# Patch metadata and version
+yq -i ".metadata.name = \"trusted-cluster-operator.v${BUNDLE_VERSION}\"" "$CSV_FILE"
+yq -i ".spec.version = \"${BUNDLE_VERSION}\"" "$CSV_FILE"
+yq -i ".metadata.annotations.containerImage = \"${OPERATOR_IMAGE}\"" "$CSV_FILE"
+
+# Patch deployment container image
+yq -i ".spec.install.spec.deployments[0].spec.template.spec.containers[0].image = \"${OPERATOR_IMAGE}\"" "$CSV_FILE"
+
+# Patch environment variables
+for env_var in COMPUTE_PCRS_IMAGE REGISTER_SERVER_IMAGE; do
+  yq -i "(.spec.install.spec.deployments[0].spec.template.spec.containers[0].env[] | select(.name == \"$env_var\")).value = \"${!env_var}\"" "$CSV_FILE"
+done
+
+# Patch RBAC rules
+yq -i ".spec.install.spec.permissions[0].rules = load(\"${RBAC_ROLE_FILE}\").rules" "$CSV_FILE"
+
+# Set .spec.replaces for automatic upgrades if provided
+if [[ -n "$PREVIOUS_CSV" ]]; then
+  echo "=> Setting .spec.replaces to $PREVIOUS_CSV"
+  yq -i ".spec.replaces = \"$PREVIOUS_CSV\"" "$CSV_FILE"
+fi
+
+echo "=> Validating OLM bundle..."
+TMP_DIR=$(mktemp -d)
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+cp -r "${BUNDLE_MANIFESTS}" "$TMP_DIR/manifests"
+cp -r "${BUNDLE_METADATA}" "$TMP_DIR/metadata"
+
+(cd "$TMP_DIR" && operator-sdk bundle validate . --select-optional suite=operatorframework --verbose)
+
+echo "=> Bundle validated successfully!"
+echo "=> OLM bundle ready at ${BUNDLE_DIR}"

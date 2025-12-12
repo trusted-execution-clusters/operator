@@ -32,3 +32,4 @@ FROM quay.io/fedora/fedora:42
 ARG build_type
 COPY --from=builder "/build/target/$build_type/compute-pcrs" /usr/bin
 COPY --from=builder /build/reference-values /reference-values
+USER nobody

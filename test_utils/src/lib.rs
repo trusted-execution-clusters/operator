@@ -308,7 +308,7 @@ impl TestContext {
                 "-register-server-image",
                 "localhost:5000/trusted-execution-clusters/registration-server:latest",
                 "-approved-image",
-                "quay.io/trusted-execution-clusters/fedora-coreos@sha256:e71dad00aa0e3d70540e726a0c66407e3004d96e045ab6c253186e327a2419e5",
+                "quay.io/trusted-execution-clusters/fedora-coreos@sha256:6997f51fd27d1be1b5fc2e6cc3ebf16c17eb94d819b5d44ea8d6cf5f826ee773",
             ])
             .output()
             .await?;

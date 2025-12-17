@@ -281,22 +281,25 @@ pub async fn generate_kbs_service(
     Ok(())
 }
 
-fn generate_kbs_volume_templates() -> [(&'static str, &'static str, Volume); 3] {
+fn generate_kbs_static_volumes() -> [(Volume, VolumeMount); 3] {
+    let gen_mount = |name: &str, mount_path: &str| VolumeMount {
+        name: name.to_string(),
+        mount_path: mount_path.to_string(),
+        ..Default::default()
+    };
     [
         (
-            ATT_POLICY_MAP,
-            "/opt/trustee/policies/opa",
             Volume {
                 config_map: Some(ConfigMapVolumeSource {
                     name: ATT_POLICY_MAP.to_string(),
                     ..Default::default()
                 }),
+                name: ATT_POLICY_MAP.to_string(),
                 ..Default::default()
             },
+            gen_mount(ATT_POLICY_MAP, "/opt/trustee/policies/opa"),
         ),
         (
-            TRUSTEE_DATA_MAP,
-            TRUSTEE_DATA_DIR,
             Volume {
                 config_map: Some(ConfigMapVolumeSource {
                     name: TRUSTEE_DATA_MAP.to_string(),
@@ -304,10 +307,9 @@ fn generate_kbs_volume_templates() -> [(&'static str, &'static str, Volume); 3] 
                 }),
                 ..Default::default()
             },
+            gen_mount(TRUSTEE_DATA_MAP, TRUSTEE_DATA_DIR),
         ),
         (
-            "resource-dir",
-            TRUSTEE_SECRETS_PATH,
             Volume {
                 empty_dir: Some(EmptyDirVolumeSource {
                     medium: Some("Memory".to_string()),
@@ -315,12 +317,13 @@ fn generate_kbs_volume_templates() -> [(&'static str, &'static str, Volume); 3] 
                 }),
                 ..Default::default()
             },
+            gen_mount("resoure-dir", TRUSTEE_SECRETS_PATH),
         ),
     ]
 }
 
 fn generate_kbs_pod_spec(image: &str) -> PodSpec {
-    let volumes = generate_kbs_volume_templates();
+    let (volumes, volume_mounts) = generate_kbs_static_volumes().iter().cloned().unzip();
     PodSpec {
         containers: vec![Container {
             command: Some(vec![
@@ -334,28 +337,10 @@ fn generate_kbs_pod_spec(image: &str) -> PodSpec {
                 container_port: INTERNAL_KBS_PORT,
                 ..Default::default()
             }]),
-            volume_mounts: Some(
-                volumes
-                    .iter()
-                    .map(|(name, mount_path, _)| VolumeMount {
-                        name: name.to_string(),
-                        mount_path: mount_path.to_string(),
-                        ..Default::default()
-                    })
-                    .collect(),
-            ),
+            volume_mounts: Some(volume_mounts),
             ..Default::default()
         }],
-        volumes: Some(
-            volumes
-                .iter()
-                .map(|(name, _, volume)| {
-                    let mut volume = volume.clone();
-                    volume.name = name.to_string();
-                    volume.clone()
-                })
-                .collect(),
-        ),
+        volumes: Some(volumes),
         ..Default::default()
     }
 }

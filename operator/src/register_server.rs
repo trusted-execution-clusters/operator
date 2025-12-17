@@ -3,7 +3,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use futures_util::StreamExt;
 use k8s_openapi::{
     api::{
@@ -17,11 +17,7 @@ use k8s_openapi::{
         util::intstr::IntOrString,
     },
 };
-use kube::runtime::{
-    controller::{Action, Controller},
-    finalizer,
-    finalizer::Event,
-};
+use kube::runtime::controller::{Action, Controller};
 use kube::{Api, Client, Resource};
 use log::info;
 use std::{collections::BTreeMap, sync::Arc};
@@ -31,8 +27,6 @@ use operator::*;
 use trusted_cluster_operator_lib::Machine;
 
 const INTERNAL_REGISTER_SERVER_PORT: i32 = 8000;
-/// Finalizer name to discard decryption keys when a machine is deleted
-const MACHINE_FINALIZER: &str = "finalizer.machine.trusted-execution-clusters.io";
 
 pub async fn create_register_server_deployment(
     client: Client,
@@ -128,33 +122,11 @@ async fn keygen_reconcile(
     machine: Arc<Machine>,
     client: Arc<Client>,
 ) -> Result<Action, ControllerError> {
-    let machines: Api<Machine> = Api::default_namespaced(Arc::unwrap_or_clone(client.clone()));
-    finalizer(&machines, MACHINE_FINALIZER, machine, |ev| async move {
-        match ev {
-            Event::Apply(machine) => {
-                let kube_client = Arc::unwrap_or_clone(client);
-                let id = &machine.spec.id.clone();
-                async {
-                    let owner_reference = generate_owner_reference(&Arc::unwrap_or_clone(machine))?;
-                    trustee::generate_secret(kube_client.clone(), id, owner_reference).await?;
-                    trustee::mount_secret(kube_client, id).await
-                }
-                .await
-                .map(|_| Action::await_change())
-                .map_err(|e| finalizer::Error::<ControllerError>::ApplyFailed(e.into()))
-            }
-            Event::Cleanup(machine) => {
-                let kube_client = Arc::unwrap_or_clone(client);
-                let id = &machine.spec.id;
-                trustee::unmount_secret(kube_client, id)
-                    .await
-                    .map(|_| Action::await_change())
-                    .map_err(|e| finalizer::Error::<ControllerError>::CleanupFailed(e.into()))
-            }
-        }
-    })
-    .await
-    .map_err(|e| anyhow!("failed to reconcile on machine: {e}").into())
+    let kube_client = Arc::unwrap_or_clone(client);
+    let id = &machine.spec.id.clone();
+    trustee::generate_secret(kube_client.clone(), id).await?;
+    trustee::update_secrets(kube_client).await?;
+    Ok(Action::await_change())
 }
 
 pub async fn launch_keygen_controller(client: Client) {

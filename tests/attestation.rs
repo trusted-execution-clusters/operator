@@ -54,7 +54,6 @@ impl SingleAttestationContext {
             "http://register-server.{}.svc.cluster.local:8000/ignition-clevis-pin-trustee",
             namespace
         );
-        let image = "quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:latest";
 
         test_ctx.info(format!("Creating VM: {}", vm_name));
         virt::create_kubevirt_vm(
@@ -63,7 +62,7 @@ impl SingleAttestationContext {
             vm_name,
             &public_key,
             &register_server_url,
-            image,
+            KUBEVIRT_IMAGE,
         )
         .await?;
 
@@ -86,6 +85,9 @@ impl Drop for SingleAttestationContext {
         let _ = std::fs::remove_file(&self.key_path);
     }
 }
+
+#[cfg(feature = "virtualization")]
+const KUBEVIRT_IMAGE: &str = "quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:latest";
 
 virt_test! {
 async fn test_attestation() -> anyhow::Result<()> {
@@ -127,7 +129,6 @@ async fn test_parallel_vm_attestation() -> anyhow::Result<()> {
         "http://register-server.{}.svc.cluster.local:8000/ignition-clevis-pin-trustee",
         namespace
     );
-    let image = "quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:latest";
 
     // Launch both VMs in parallel
     let vm1_name = "test-coreos-vm1";
@@ -141,7 +142,7 @@ async fn test_parallel_vm_attestation() -> anyhow::Result<()> {
             vm1_name,
             &public_key1,
             &register_server_url,
-            image,
+            KUBEVIRT_IMAGE,
         ),
         virt::create_kubevirt_vm(
             client,
@@ -149,7 +150,7 @@ async fn test_parallel_vm_attestation() -> anyhow::Result<()> {
             vm2_name,
             &public_key2,
             &register_server_url,
-            image,
+            KUBEVIRT_IMAGE,
         )
     );
 
@@ -281,32 +282,51 @@ async fn test_vm_reboot_delete_machine() -> anyhow::Result<()> {
     test_ctx.info("Testing Machine deletion - VM should no longer boot successfully when its Machine CRD was removed");
     let vm_name = "test-coreos-delete";
     let att_ctx = SingleAttestationContext::new(vm_name, &test_ctx).await?;
+    let namespace = test_ctx.namespace();
 
-    let machines: Api<Machine> = Api::namespaced(test_ctx.client().clone(), test_ctx.namespace());
+    let machines: Api<Machine> = Api::namespaced(test_ctx.client().clone(), namespace);
     let list = machines.list(&Default::default()).await?;
     let name = list.items[0].metadata.name.as_ref().unwrap();
     machines.delete(name, &Default::default()).await?;
     wait_for_resource_deleted(&machines, name, 120, 5).await?;
 
-    test_ctx.info("Performing reboot, expecting missing resource");
-    let _reboot_result = virt::virtctl_ssh_exec(
-        test_ctx.namespace(),
-        vm_name,
-        &att_ctx.key_path,
-        "sudo systemctl reboot",
+    let persist_vm_name = "test-coreos-delete-persist";
+    let (_, persist_public_key, persist_key_path) = virt::generate_ssh_key_pair()?;
+    let register_server_url = format!(
+        "http://register-server.{}.svc.cluster.local:8000/ignition-clevis-pin-trustee",
+        namespace,
+    );
+    test_ctx.info("Creating second VM to persist secret removal in Trustee");
+    virt::create_kubevirt_vm(
+        test_ctx.client(),
+        namespace,
+        persist_vm_name,
+        &persist_public_key,
+        &register_server_url,
+        KUBEVIRT_IMAGE,
     )
-    .await;
+    .await?;
+    test_ctx.info(format!(
+        "Waiting for VM {} to reach Running state",
+        persist_vm_name
+    ));
+    virt::wait_for_vm_running(test_ctx.client(), namespace, persist_vm_name, 300).await?;
+    test_ctx.info(format!("VM {} is Running", persist_vm_name));
+
+    test_ctx.info(format!("Waiting for SSH access to VM {}", persist_vm_name));
+    virt::wait_for_vm_ssh_ready(namespace, persist_vm_name, &persist_key_path, 300).await?;
+    test_ctx.info("SSH access is ready");
+
+    test_ctx.info("Performing reboot, expecting missing resource");
+    let key_path = &att_ctx.key_path;
+    let _reboot_result =
+        virt::virtctl_ssh_exec(namespace, vm_name, key_path, "sudo systemctl reboot").await;
 
     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
 
     test_ctx.info("Waiting for SSH access after machine removal");
-    let wait = virt::wait_for_vm_ssh_ready(
-        test_ctx.namespace(),
-        vm_name,
-        &att_ctx.key_path,
-        300,
-    )
-    .await;
+    let wait =
+        virt::wait_for_vm_ssh_ready(test_ctx.namespace(), vm_name, key_path, 300).await;
     assert!(wait.is_err());
 
     test_ctx.cleanup().await?;

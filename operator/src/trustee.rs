@@ -23,8 +23,8 @@ use log::info;
 use operator::{RvContextData, create_or_info_if_exists};
 use serde::{Serialize, Serializer};
 use serde_json::Value::String as JsonString;
-use std::collections::BTreeMap;
-use trusted_cluster_operator_lib::reference_values::*;
+use std::collections::{BTreeMap, BTreeSet};
+use trusted_cluster_operator_lib::{Machine, reference_values::*};
 
 const TRUSTEE_DATA_DIR: &str = "/opt/trustee";
 const TRUSTEE_SECRETS_PATH: &str = "/opt/trustee/kbs-repository/default";
@@ -36,6 +36,7 @@ const ATT_POLICY_MAP: &str = "attestation-policy";
 const TRUSTEE_SECRETS_VOLUME: &str = "resource-dir";
 const DEPLOYMENT_NAME: &str = "trustee-deployment";
 const INTERNAL_KBS_PORT: i32 = 8080;
+const STATIC_VOLUME_COUNT: usize = 3;
 
 fn primitive_date_time_to_str<S>(d: &DateTime<Utc>, s: S) -> Result<S::Ok, S::Error>
 where
@@ -134,20 +135,21 @@ fn generate_secret_volume(id: &str) -> (Volume, VolumeMount) {
     )
 }
 
-pub async fn mount_secret(client: Client, id: &str) -> Result<()> {
-    let result = do_mount_secret(client, id, true).await;
-    info!("Mounted secret {id} to {DEPLOYMENT_NAME}");
-    result
+async fn secret_partition(client: Client) -> Result<(Vec<String>, Vec<String>)> {
+    let secrets: Api<Secret> = Api::default_namespaced(client.clone());
+    let secret_list = secrets.list(&Default::default()).await?;
+    let get_name = |s: &Secret| s.metadata.name.clone();
+    let secret_names = secret_list.iter().filter_map(get_name);
+
+    let machines: Api<Machine> = Api::default_namespaced(client.clone());
+    let machine_list = machines.list(&Default::default()).await?;
+    let machine_set: BTreeSet<_> = machine_list.iter().map(|m| m.spec.id.clone()).collect();
+
+    Ok(secret_names.partition(|n| machine_set.contains(n)))
 }
 
-pub async fn unmount_secret(client: Client, id: &str) -> Result<()> {
-    let result = do_mount_secret(client, id, false).await;
-    info!("Unmounted secret {id} from {DEPLOYMENT_NAME}");
-    result
-}
-
-pub async fn do_mount_secret(client: Client, id: &str, add: bool) -> Result<()> {
-    let deployments: Api<Deployment> = Api::default_namespaced(client);
+pub async fn update_secrets(client: Client) -> Result<()> {
+    let deployments: Api<Deployment> = Api::default_namespaced(client.clone());
     let mut deployment = deployments.get(DEPLOYMENT_NAME).await?;
     let err = format!("Deployment {DEPLOYMENT_NAME} existed, but had no spec");
     let depl_spec = deployment.spec.as_mut().context(err)?;
@@ -155,47 +157,38 @@ pub async fn do_mount_secret(client: Client, id: &str, add: bool) -> Result<()> 
     let pod_spec = depl_spec.template.spec.as_mut().context(err)?;
     let err = format!("Deployment {DEPLOYMENT_NAME} existed, but had no containers");
     let container = pod_spec.containers.get_mut(0).context(err)?;
-    let vol_mounts = container.volume_mounts.get_or_insert_default();
 
-    if add {
-        let (volume, volume_mount) = generate_secret_volume(id);
-        pod_spec.volumes.get_or_insert_default().push(volume);
-        vol_mounts.push(volume_mount);
-    } else {
-        let vol_result = pod_spec.volumes.as_mut().and_then(|vs| {
-            let pos = vs.iter().position(|v| v.name == id);
-            pos.map(|p| vs.swap_remove(p))
-        });
-        if vol_result.is_none() {
-            info!("Secret {id} was to be dropped, but volume had already been removed");
-        }
-        let vol_mount_result = container.volume_mounts.as_mut().and_then(|vms| {
-            let pos = vms.iter().position(|v| v.name == id);
-            pos.map(|p| vms.swap_remove(p))
-        });
-        if vol_mount_result.is_none() {
-            info!("Secret {id} was to be dropped, but volume mount had already been removed");
-        }
+    let (mount_secrets, delete_secrets) = secret_partition(client.clone()).await?;
+    let generate = |id: &String| generate_secret_volume(id);
+    let (mut secret_volumes, mut secret_volume_mounts): (Vec<_>, Vec<_>) =
+        mount_secrets.iter().map(generate).unzip();
+    if let Some(volumes) = pod_spec.volumes.as_mut() {
+        volumes.truncate(STATIC_VOLUME_COUNT);
+        volumes.append(&mut secret_volumes)
     }
-
+    if let Some(volume_mounts) = container.volume_mounts.as_mut() {
+        volume_mounts.truncate(STATIC_VOLUME_COUNT);
+        volume_mounts.append(&mut secret_volume_mounts)
+    }
     deployments
         .replace(DEPLOYMENT_NAME, &Default::default(), &deployment)
         .await?;
+
+    let secrets: Api<Secret> = Api::default_namespaced(client);
+    for secret in delete_secrets.iter() {
+        secrets.delete(secret, &Default::default()).await?;
+    }
+
     Ok(())
 }
 
-pub async fn generate_secret(
-    client: Client,
-    id: &str,
-    owner_reference: OwnerReference,
-) -> Result<()> {
+pub async fn generate_secret(client: Client, id: &str) -> Result<()> {
     let secret_data = k8s_openapi::ByteString(generate_luks_key()?);
     let data = BTreeMap::from([("root".to_string(), secret_data)]);
 
     let secret = Secret {
         metadata: ObjectMeta {
             name: Some(id.to_string()),
-            owner_references: Some(vec![owner_reference]),
             ..Default::default()
         },
         data: Some(data),
@@ -282,7 +275,7 @@ pub async fn generate_kbs_service(
     Ok(())
 }
 
-fn generate_kbs_static_volumes() -> [(Volume, VolumeMount); 3] {
+fn generate_kbs_static_volumes() -> [(Volume, VolumeMount); STATIC_VOLUME_COUNT] {
     let gen_mount = |name: &str, mount_path: &str| VolumeMount {
         name: name.to_string(),
         mount_path: mount_path.to_string(),
@@ -389,8 +382,12 @@ mod tests {
     use super::*;
     use crate::test_utils::*;
     use http::{Method, Request, StatusCode};
-    use kube::client::Body;
+    use kube::{api::ObjectList, client::Body};
+    use trusted_cluster_operator_lib::MachineSpec;
     use trusted_cluster_operator_test_utils::mock_client::*;
+
+    const MACHINE1: &str = "machine1";
+    const MACHINE2: &str = "machine2";
 
     #[test]
     fn test_get_image_pcrs_success() {
@@ -508,14 +505,20 @@ mod tests {
     }
 
     fn dummy_deployment() -> Deployment {
+        let (volumes, volume_mounts) = generate_kbs_static_volumes().iter().cloned().unzip();
+        let pod_spec = PodSpec {
+            containers: vec![Container {
+                volume_mounts: Some(volume_mounts),
+                ..Default::default()
+            }],
+            volumes: Some(volumes),
+            ..Default::default()
+        };
         Deployment {
             spec: Some(DeploymentSpec {
                 replicas: Some(1),
                 template: PodTemplateSpec {
-                    spec: Some(PodSpec {
-                        containers: vec![Container::default()],
-                        ..Default::default()
-                    }),
+                    spec: Some(pod_spec),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -524,42 +527,98 @@ mod tests {
         }
     }
 
+    fn dummy_secrets() -> ObjectList<Secret> {
+        let mut secret1 = Secret::default();
+        let mut secret2 = secret1.clone();
+        secret1.metadata.name = Some(MACHINE1.to_string());
+        secret2.metadata.name = Some(MACHINE2.to_string());
+        ObjectList {
+            types: Default::default(),
+            metadata: Default::default(),
+            items: vec![secret1, secret2],
+        }
+    }
+
+    fn dummy_machines() -> ObjectList<Machine> {
+        ObjectList {
+            types: Default::default(),
+            metadata: Default::default(),
+            items: vec![Machine {
+                metadata: Default::default(),
+                spec: MachineSpec {
+                    id: MACHINE1.to_string(),
+                    registration_address: "12.34.56.78".to_string(),
+                },
+                status: None,
+            }],
+        }
+    }
+
     #[tokio::test]
-    async fn test_mount_secret_success() {
-        let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
-            (0, &Method::GET) | (1, &Method::PUT) => {
-                Ok(serde_json::to_string(&dummy_deployment()).unwrap())
+    async fn test_secret_partition() {
+        let clos = async |req: Request<Body>, ctr| match (ctr, req.uri().path()) {
+            (0, p) if p.contains("secret") => Ok(serde_json::to_string(&dummy_secrets()).unwrap()),
+            (1, p) if p.contains("machine") => {
+                Ok(serde_json::to_string(&dummy_machines()).unwrap())
             }
             _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
         };
         count_check!(2, clos, |client| {
-            assert!(mount_secret(client, "id").await.is_ok());
+            let (keep, discard) = secret_partition(client).await.unwrap();
+            assert_eq!(keep, vec![MACHINE1.to_string()]);
+            assert_eq!(discard, vec![MACHINE2.to_string()]);
         });
     }
 
     #[tokio::test]
-    async fn test_mount_secret_no_depl() {
+    async fn test_update_secrets() {
+        let clos = async |req: Request<Body>, ctr| match (ctr, req.method(), req.uri().path()) {
+            (0, &Method::GET, p) if p.contains("deployment") => {
+                Ok(serde_json::to_string(&dummy_deployment()).unwrap())
+            }
+            (1, &Method::GET, p) if p.contains("secret") => {
+                Ok(serde_json::to_string(&dummy_secrets()).unwrap())
+            }
+            (2, &Method::GET, p) if p.contains("machine") => {
+                Ok(serde_json::to_string(&dummy_machines()).unwrap())
+            }
+            (3, &Method::PUT, p) if p.contains("deployment") => {
+                assert_body_contains(req, MACHINE1).await;
+                Ok(serde_json::to_string(&dummy_deployment()).unwrap())
+            }
+            (4, &Method::DELETE, p) if p.contains(MACHINE2) => {
+                Ok(serde_json::to_string(&Secret::default()).unwrap())
+            }
+            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        };
+        count_check!(5, clos, |client| {
+            assert!(update_secrets(client).await.is_ok());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_update_secrets_no_depl() {
         let clos = async |_, _| Err(StatusCode::NOT_FOUND);
         count_check!(1, clos, |client| {
-            assert!(mount_secret(client, "id").await.is_err());
+            assert!(update_secrets(client).await.is_err());
         });
     }
 
     #[tokio::test]
-    async fn test_mount_secret_no_spec() {
+    async fn test_update_secrets_no_spec() {
         let clos = async |_, _| {
             let mut depl = dummy_deployment();
             depl.spec = None;
             Ok(serde_json::to_string(&depl).unwrap())
         };
         count_check!(1, clos, |client| {
-            let err = mount_secret(client, "id").await.err().unwrap();
+            let err = update_secrets(client).await.err().unwrap();
             assert!(err.to_string().contains("but had no spec"));
         });
     }
 
     #[tokio::test]
-    async fn test_mount_secret_no_pod_spec() {
+    async fn test_update_secrets_no_pod_spec() {
         let clos = async |_, _| {
             let mut depl = dummy_deployment();
             let spec = depl.spec.as_mut().unwrap();
@@ -567,13 +626,13 @@ mod tests {
             Ok(serde_json::to_string(&depl).unwrap())
         };
         count_check!(1, clos, |client| {
-            let err = mount_secret(client, "id").await.err().unwrap();
+            let err = update_secrets(client).await.err().unwrap();
             assert!(err.to_string().contains("but had no pod spec"));
         });
     }
 
     #[tokio::test]
-    async fn test_mount_secret_no_containers() {
+    async fn test_update_secrets_no_containers() {
         let clos = async |_, _| {
             let mut depl = dummy_deployment();
             let spec = depl.spec.as_mut().unwrap();
@@ -582,39 +641,8 @@ mod tests {
             Ok(serde_json::to_string(&depl).unwrap())
         };
         count_check!(1, clos, |client| {
-            let err = mount_secret(client, "id").await.err().unwrap();
+            let err = update_secrets(client).await.err().unwrap();
             assert!(err.to_string().contains("but had no containers"));
-        });
-    }
-
-    #[tokio::test]
-    async fn test_unmount_secret() {
-        let clos = async |req: Request<Body>, ctr| match (ctr, req.method()) {
-            (0, &Method::GET) => {
-                let mut depl = dummy_deployment();
-                let spec = depl.spec.as_mut().unwrap();
-                let pod_spec = spec.template.spec.as_mut().unwrap();
-                pod_spec.volumes = Some(vec![Volume {
-                    name: "id".to_string(),
-                    ..Default::default()
-                }]);
-                let container = pod_spec.containers.get_mut(0).unwrap();
-                container.volume_mounts = Some(vec![VolumeMount {
-                    name: "id".to_string(),
-                    ..Default::default()
-                }]);
-                Ok(serde_json::to_string(&depl).unwrap())
-            }
-            (1, &Method::PUT) => {
-                let bytes = req.into_body().collect_bytes().await.unwrap().to_vec();
-                let body = String::from_utf8_lossy(&bytes);
-                assert!(!body.contains("id"));
-                Ok(serde_json::to_string(&dummy_deployment()).unwrap())
-            }
-            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
-        };
-        count_check!(2, clos, |client| {
-            assert!(unmount_secret(client, "id").await.is_ok());
         });
     }
 
@@ -638,19 +666,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_generate_secret_success() {
-        let clos = |client| generate_secret(client, "id", Default::default());
+        let clos = |client| generate_secret(client, "id");
         test_create_success::<_, _, Secret>(clos).await;
     }
 
     #[tokio::test]
     async fn test_generate_secret_already_exists() {
-        let clos = |client| generate_secret(client, "id", Default::default());
+        let clos = |client| generate_secret(client, "id");
         test_create_already_exists(clos).await;
     }
 
     #[tokio::test]
     async fn test_generate_secret_error() {
-        let clos = |client| generate_secret(client, "id", Default::default());
+        let clos = |client| generate_secret(client, "id");
         test_create_error(clos).await;
     }
 

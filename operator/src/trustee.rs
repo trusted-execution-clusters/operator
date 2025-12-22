@@ -404,12 +404,28 @@ mod tests {
     use kube::client::Body;
     use trusted_cluster_operator_test_utils::mock_client::*;
 
+    fn reference_values_from(reference_values: &[ReferenceValue], rv_name: &str) -> Vec<String> {
+        let rv = reference_values
+            .iter()
+            .find(|rv| rv.name == rv_name)
+            .unwrap();
+        let val_arr = rv.value.as_array().unwrap();
+        val_arr.iter().map(|v| v.as_str().unwrap().into()).collect()
+    }
+
     #[test]
     fn test_get_image_pcrs_success() {
         let config_map = dummy_pcrs_map();
         let image_pcrs = get_image_pcrs(config_map).unwrap();
         assert_eq!(image_pcrs.0["cos"].pcrs.len(), 2);
-        assert_eq!(image_pcrs.0["cos"].pcrs[0].value, "pcr0_val".as_bytes());
+        assert_eq!(
+            hex::encode(image_pcrs.0["cos"].pcrs[0].value.clone()),
+            "3f263b96ccbc33bb53d808771f9ab1e02d4dec8854f9530f749cde853a723273"
+        );
+        assert_eq!(
+            hex::encode(image_pcrs.0["cos"].pcrs[1].value.clone()),
+            "e58ada1ba75f2e4722b539824598ad5e10c55f2e4aeab2033f3b0a8ee3f3eca6"
+        );
     }
 
     #[test]
@@ -443,10 +459,16 @@ mod tests {
     fn test_recompute_reference_values() {
         let result = recompute_reference_values(dummy_pcrs());
         assert_eq!(result.len(), 3);
-        let rv = result.iter().find(|rv| rv.name == "tpm_pcr0").unwrap();
-        let val_arr = rv.value.as_array().unwrap();
-        let vals: Vec<_> = val_arr.iter().map(|v| v.as_str().unwrap()).collect();
-        assert_eq!(vals, vec![hex::encode("pcr0_val")]);
+        let vals = reference_values_from(&result, "tpm_pcr4");
+        assert_eq!(
+            vals,
+            vec!["3f263b96ccbc33bb53d808771f9ab1e02d4dec8854f9530f749cde853a723273",]
+        );
+        let vals = reference_values_from(&result, "tpm_pcr7");
+        assert_eq!(
+            vals,
+            vec!["e58ada1ba75f2e4722b539824598ad5e10c55f2e4aeab2033f3b0a8ee3f3eca6",]
+        );
     }
 
     #[tokio::test]

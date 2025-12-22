@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 use compute_pcrs_lib::Pcr;
+use compute_pcrs_lib::tpmevents::{TPMEvent, TPMEventID};
 use k8s_openapi::{api::core::v1::ConfigMap, chrono::Utc};
 use kube::Client;
 use operator::RvContextData;
@@ -18,14 +19,36 @@ pub fn dummy_pcrs() -> ImagePcrs {
             first_seen: Utc::now(),
             pcrs: vec![
                 Pcr {
-                    id: 0,
-                    value: "pcr0_val".into(),
-                    events: vec![],
+                    id: 4,
+                    value: hex::decode(
+                        "3f263b96ccbc33bb53d808771f9ab1e02d4dec8854f9530f749cde853a723273",
+                    )
+                    .unwrap(),
+                    events: vec![TPMEvent {
+                        name: "EV_EFI_ACTION".into(),
+                        pcr: 4,
+                        hash: hex::decode(
+                            "3d6772b4f84ed47595d72a2c4c5ffd15f5bb72c7507fe26f2aaee2c69d5633ba",
+                        )
+                        .unwrap(),
+                        id: TPMEventID::Pcr4EfiCall,
+                    }],
                 },
                 Pcr {
-                    id: 1,
-                    value: "pcr1_val".into(),
-                    events: vec![],
+                    id: 7,
+                    value: hex::decode(
+                        "e58ada1ba75f2e4722b539824598ad5e10c55f2e4aeab2033f3b0a8ee3f3eca6",
+                    )
+                    .unwrap(),
+                    events: vec![TPMEvent {
+                        name: "EV_EFI_VARIABLE_DRIVER_CONFIG".into(),
+                        pcr: 7,
+                        hash: hex::decode(
+                            "ccfc4bb32888a345bc8aeadaba552b627d99348c767681ab3141f5b01e40a40e",
+                        )
+                        .unwrap(),
+                        id: TPMEventID::Pcr7SecureBoot,
+                    }],
                 },
             ],
             reference: "".to_string(),

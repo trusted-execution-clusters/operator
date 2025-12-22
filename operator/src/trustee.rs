@@ -7,6 +7,7 @@
 use anyhow::{Context, Result};
 use base64::{Engine as _, engine::general_purpose};
 use clevis_pin_trustee_lib::Key as ClevisKey;
+use compute_pcrs_lib::pcrs::compile_pcrs;
 use compute_pcrs_lib::tpmevents::TPMEvent;
 use compute_pcrs_lib::tpmevents::combine::combine_images;
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
@@ -75,7 +76,10 @@ fn recompute_reference_values(image_pcrs: ImagePcrs) -> Vec<ReferenceValue> {
         .map(|v| v.pcrs.iter().flat_map(|p| p.events.clone()).collect())
         .collect();
 
-    let pcr_combinations = combine_images(&tpm_events);
+    let pcr_combinations = match image_pcrs.0.len() {
+        1 => vec![compile_pcrs(&tpm_events[0])],
+        _ => combine_images(&tpm_events),
+    };
     for pcr in pcr_combinations.iter().flatten() {
         reference_values_in
             .entry(format!("pcr{}", pcr.id))

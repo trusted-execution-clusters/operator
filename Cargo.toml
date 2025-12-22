@@ -17,6 +17,7 @@ clap = { version = "4.5.53", features = ["derive"] }
 clevis-pin-trustee-lib = { git = "https://github.com/latchset/clevis-pin-trustee" }
 compute-pcrs-lib = { git = "https://github.com/trusted-execution-clusters/compute-pcrs" }
 env_logger = "0.11.8"
+http = "1.4.0"
 ignition-config = "0.5.0"
 k8s-openapi = { version = "0.26.1", features = ["v1_33", "schemars"] }
 kube = { version = "2.0.1", default-features = false, features = ["derive", "runtime", "openssl-tls"] }

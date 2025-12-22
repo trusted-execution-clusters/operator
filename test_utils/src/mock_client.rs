@@ -3,19 +3,17 @@
 //
 // SPDX-License-Identifier: MIT
 
-use compute_pcrs_lib::Pcr;
 use http::{Method, Request, Response, StatusCode};
-use k8s_openapi::{api::core::v1::ConfigMap, chrono::Utc};
+use kube::api::ObjectMeta;
 use kube::{Client, client::Body, error::ErrorResponse};
-use operator::RvContextData;
 use serde::Serialize;
+use std::fmt::Debug;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::{collections::BTreeMap, convert::Infallible, sync::Arc};
+use std::{convert::Infallible, sync::Arc};
 use tower::service_fn;
+use trusted_cluster_operator_lib::{TrustedExecutionCluster, TrustedExecutionClusterSpec};
 
-use crate::trustee;
-use trusted_cluster_operator_lib::reference_values::{ImagePcr, ImagePcrs, PCR_CONFIG_FILE};
-
+#[macro_export]
 macro_rules! assert_kube_api_error {
     ($err:expr, $code:expr, $reason:expr, $message:expr, $status:expr) => {{
         let kube_error = $err
@@ -33,6 +31,7 @@ macro_rules! assert_kube_api_error {
     }};
 }
 
+#[macro_export]
 macro_rules! count_check {
     ($expected:literal, $closure:ident, |$client:ident| $body:block) => {
         use std::sync::atomic;
@@ -43,8 +42,7 @@ macro_rules! count_check {
     }
 }
 
-pub(crate) use assert_kube_api_error;
-pub(crate) use count_check;
+pub use count_check;
 
 async fn create_response<T: Future<Output = Result<String, StatusCode>>>(
     response: T,
@@ -107,6 +105,12 @@ where
     }
 }
 
+pub async fn assert_body_contains(req: Request<Body>, contains: &str) {
+    let bytes = req.into_body().collect_bytes().await.unwrap().to_vec();
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(body.contains(contains));
+}
+
 pub async fn test_create_success<
     F: Fn(Client) -> S,
     S: Future<Output = anyhow::Result<()>>,
@@ -135,6 +139,23 @@ pub async fn test_create_already_exists<
     });
 }
 
+async fn test_error<
+    F: Fn(Client) -> S,
+    S: Future<Output = anyhow::Result<T>>,
+    T: Debug,
+    G: Fn(Request<Body>, u32) -> U + Send + Sync + 'static,
+    U: Future<Output = Result<String, StatusCode>> + Send + 'static,
+>(
+    action: F,
+    server: G,
+) {
+    count_check!(1, server, |client| {
+        let err = action(client).await.unwrap_err();
+        let msg = "internal server error";
+        assert_kube_api_error!(err, 500, "ServerTimeout", msg, "Failure");
+    });
+}
+
 pub async fn test_create_error<F: Fn(Client) -> S, S: Future<Output = anyhow::Result<()>>>(
     create: F,
 ) {
@@ -142,60 +163,31 @@ pub async fn test_create_error<F: Fn(Client) -> S, S: Future<Output = anyhow::Re
         &Method::POST => Err(StatusCode::INTERNAL_SERVER_ERROR),
         _ => panic!("unexpected API interaction: {req:?}"),
     };
-    count_check!(1, clos, |client| {
-        let err = create(client).await.unwrap_err();
-        let msg = "internal server error";
-        assert_kube_api_error!(err, 500, "ServerTimeout", msg, "Failure");
-    });
+    test_error(create, clos).await;
 }
 
-pub fn dummy_pcrs() -> ImagePcrs {
-    ImagePcrs(BTreeMap::from([(
-        "cos".to_string(),
-        ImagePcr {
-            first_seen: Utc::now(),
-            pcrs: vec![
-                Pcr {
-                    id: 0,
-                    value: "pcr0_val".to_string(),
-                    parts: vec![],
-                },
-                Pcr {
-                    id: 1,
-                    value: "pcr1_val".to_string(),
-                    parts: vec![],
-                },
-            ],
-            reference: "ref".to_string(),
+pub async fn test_get_error<F: Fn(Client) -> S, S: Future<Output = anyhow::Result<()>>>(get: F) {
+    let clos = async |req: Request<_>, _| match req.method() {
+        &Method::GET => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        _ => panic!("unexpected API interaction: {req:?}"),
+    };
+    test_error(get, clos).await;
+}
+
+pub fn dummy_cluster() -> TrustedExecutionCluster {
+    TrustedExecutionCluster {
+        metadata: ObjectMeta {
+            name: Some("test".to_string()),
+            ..Default::default()
         },
-    )]))
-}
-
-pub fn dummy_trustee_map() -> ConfigMap {
-    ConfigMap {
-        data: Some(BTreeMap::from([(
-            trustee::REFERENCE_VALUES_FILE.to_string(),
-            "[]".to_string(),
-        )])),
-        ..Default::default()
-    }
-}
-
-pub fn dummy_pcrs_map() -> ConfigMap {
-    let data = BTreeMap::from([(
-        PCR_CONFIG_FILE.to_string(),
-        serde_json::to_string(&dummy_pcrs()).unwrap(),
-    )]);
-    ConfigMap {
-        data: Some(data),
-        ..Default::default()
-    }
-}
-
-pub fn generate_rv_ctx(client: Client) -> RvContextData {
-    RvContextData {
-        client,
-        owner_reference: Default::default(),
-        pcrs_compute_image: String::new(),
+        status: None,
+        spec: TrustedExecutionClusterSpec {
+            trustee_image: "".to_string(),
+            pcrs_compute_image: "".to_string(),
+            register_server_image: "".to_string(),
+            public_trustee_addr: Some("::".to_string()),
+            register_server_port: None,
+            trustee_kbs_port: None,
+        },
     }
 }

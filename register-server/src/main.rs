@@ -18,7 +18,7 @@ use std::net::SocketAddr;
 use uuid::Uuid;
 use warp::{http::StatusCode, reply, Filter};
 
-use trusted_cluster_operator_lib::*;
+use trusted_cluster_operator_lib::{Machine, MachineSpec, TrustedExecutionCluster};
 
 #[derive(Parser)]
 #[command(name = "register-server")]
@@ -142,8 +142,7 @@ async fn create_machine(client: Client, uuid: &str, client_ip: &str) -> anyhow::
     let machine_list = machines.list(&Default::default()).await?;
 
     for existing_machine in machine_list.items {
-        let existing_address = existing_machine.status.and_then(|s| s.address);
-        if existing_address.map(|a| a == client_ip).unwrap_or(false) {
+        if existing_machine.spec.registration_address == client_ip {
             if let Some(name) = &existing_machine.metadata.name {
                 info!("Found existing machine {name} with IP {client_ip}, deleting...");
                 machines.delete(name, &Default::default()).await?;
@@ -152,30 +151,21 @@ async fn create_machine(client: Client, uuid: &str, client_ip: &str) -> anyhow::
         }
     }
 
-    let name = format!("machine-{uuid}");
+    let machine_name = format!("machine-{uuid}");
     let machine = Machine {
         metadata: ObjectMeta {
-            name: Some(name.clone()),
+            name: Some(machine_name.clone()),
             ..Default::default()
         },
         spec: MachineSpec {
             id: uuid.to_string(),
+            registration_address: client_ip.to_string(),
         },
-        status: Some(MachineStatus {
-            address: Some(client_ip.to_string()),
-            conditions: None,
-        }),
+        status: None,
     };
 
     machines.create(&Default::default(), &machine).await?;
-    // create does not set status
-    let mut status_machine = machines.get_status(&name).await?;
-    status_machine.status = machine.status;
-    let status_data = serde_json::to_vec(&status_machine)?;
-    let params = Default::default();
-    machines.replace_status(&name, &params, status_data).await?;
-
-    info!("Created Machine: {name} with IP: {client_ip}");
+    info!("Created Machine: {machine_name} with IP: {client_ip}");
     Ok(())
 }
 
@@ -194,4 +184,116 @@ async fn main() {
 
     info!("Starting server on http://localhost:{}", args.port);
     warp::serve(routes).run(([0, 0, 0, 0], args.port)).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::{Method, Request};
+    use kube::api::ObjectList;
+    use trusted_cluster_operator_test_utils::mock_client::*;
+
+    const TEST_IP: &str = "12.34.56.78";
+
+    fn dummy_clusters() -> ObjectList<TrustedExecutionCluster> {
+        ObjectList {
+            types: Default::default(),
+            metadata: Default::default(),
+            items: vec![dummy_cluster()],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_public_trustee_addr() {
+        let clos = async |_, _| Ok(serde_json::to_string(&dummy_clusters()).unwrap());
+        count_check!(1, clos, |client| {
+            let addr = get_public_trustee_addr(client).await.unwrap();
+            assert_eq!(addr, "::".to_string());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_get_public_trustee_addr_multiple() {
+        let clos = async |_, _| {
+            let mut clusters = dummy_clusters();
+            clusters.items.push(clusters.items[0].clone());
+            Ok(serde_json::to_string(&clusters).unwrap())
+        };
+        count_check!(1, clos, |client| {
+            let err = get_public_trustee_addr(client).await.err().unwrap();
+            assert!(err.to_string().contains("More than one"));
+        });
+    }
+
+    #[tokio::test]
+    async fn test_get_public_trustee_no_addr() {
+        let clos = async |_, _| {
+            let mut clusters = dummy_clusters();
+            clusters.items[0].spec.public_trustee_addr = None;
+            Ok(serde_json::to_string(&clusters).unwrap())
+        };
+        count_check!(1, clos, |client| {
+            let err = get_public_trustee_addr(client).await.err().unwrap();
+            let contains = "did not specify a public Trustee address";
+            assert!(err.to_string().contains(contains));
+        });
+    }
+
+    #[tokio::test]
+    async fn test_get_public_trustee_error() {
+        test_get_error(async |c| get_public_trustee_addr(c).await.map(|_| ())).await;
+    }
+
+    fn dummy_machine() -> Machine {
+        Machine {
+            metadata: ObjectMeta {
+                name: Some("test".to_string()),
+                ..Default::default()
+            },
+            spec: MachineSpec {
+                id: "test".to_string(),
+                registration_address: TEST_IP.to_string(),
+            },
+            status: None,
+        }
+    }
+
+    fn dummy_machines() -> ObjectList<Machine> {
+        ObjectList {
+            types: Default::default(),
+            metadata: Default::default(),
+            items: vec![dummy_machine()],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_machine() {
+        let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
+            (0, &Method::GET) => Ok(serde_json::to_string(&dummy_machines()).unwrap()),
+            (1, &Method::POST) => Ok(serde_json::to_string(&dummy_machine()).unwrap()),
+            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        };
+        count_check!(2, clos, |client| {
+            assert!(create_machine(client, "test", "::").await.is_ok());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_create_machine_existing_ip() {
+        let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
+            (0, &Method::GET) => Ok(serde_json::to_string(&dummy_machines()).unwrap()),
+            (1, &Method::DELETE) | (2, &Method::POST) => {
+                Ok(serde_json::to_string(&dummy_machine()).unwrap())
+            }
+            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        };
+        count_check!(3, clos, |client| {
+            assert!(create_machine(client, "test", TEST_IP).await.is_ok());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_create_machine_error() {
+        test_get_error(async |c| create_machine(c, "test", TEST_IP).await.map(|_| ())).await;
+    }
 }

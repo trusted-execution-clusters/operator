@@ -169,7 +169,7 @@ pub async fn launch_keygen_controller(client: Client) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mock_client::*;
+    use trusted_cluster_operator_test_utils::mock_client::*;
 
     #[tokio::test]
     async fn test_create_reg_server_depl_success() {

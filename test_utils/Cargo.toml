@@ -16,14 +16,17 @@ anyhow.workspace = true
 trusted-cluster-operator-lib = { path = "../lib" }
 compute-pcrs-lib.workspace = true
 env_logger.workspace = true
+http.workspace = true
 ignition-config.workspace = true
 k8s-openapi.workspace = true
 kube = { workspace = true }
 log.workspace = true
 rand_core = "0.6"
+serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 ssh-key = { version = "0.6", features = ["rsa", "std"] }
 tokio = { workspace = true, features = ["process"] }
+tower = { version = "0.5.2", features = ["full"] }
 uuid.workspace = true
 which = "8.0"

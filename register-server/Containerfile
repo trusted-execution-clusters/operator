@@ -21,6 +21,7 @@ COPY register-server/src/lib.rs register-server/src/
 # Set only required crates as members to minimize rebuilds upon changes.
 # In debug builds, build dependencies to avoid full rebuild.
 RUN sed -i 's/members =.*/members = ["lib", "register-server"]/' Cargo.toml && \
+    sed -i '/\[dev-dependencies\]/,$d' register-server/Cargo.toml && \
     if [ "$build_type" = debug ]; then cargo build -p register-server --lib; fi
 
 COPY register-server/src register-server/src

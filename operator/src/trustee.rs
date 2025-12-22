@@ -401,6 +401,7 @@ mod tests {
     use super::*;
     use crate::mock_client::*;
     use compute_pcrs_lib::Pcr;
+    use compute_pcrs_lib::tpmevents::{TPMEvent, TPMEventID};
     use http::{Method, Request, StatusCode};
     use kube::client::Body;
 
@@ -411,14 +412,36 @@ mod tests {
                 first_seen: Utc::now(),
                 pcrs: vec![
                     Pcr {
-                        id: 0,
-                        value: "pcr0_val".into(),
-                        events: vec![],
+                        id: 4,
+                        value: hex::decode(
+                            "3f263b96ccbc33bb53d808771f9ab1e02d4dec8854f9530f749cde853a723273",
+                        )
+                        .unwrap(),
+                        events: vec![TPMEvent {
+                            name: "EV_EFI_ACTION".into(),
+                            pcr: 4,
+                            hash: hex::decode(
+                                "3d6772b4f84ed47595d72a2c4c5ffd15f5bb72c7507fe26f2aaee2c69d5633ba",
+                            )
+                            .unwrap(),
+                            id: TPMEventID::Pcr4EfiCall,
+                        }],
                     },
                     Pcr {
-                        id: 1,
-                        value: "pcr1_val".into(),
-                        events: vec![],
+                        id: 7,
+                        value: hex::decode(
+                            "e58ada1ba75f2e4722b539824598ad5e10c55f2e4aeab2033f3b0a8ee3f3eca6",
+                        )
+                        .unwrap(),
+                        events: vec![TPMEvent {
+                            name: "EV_EFI_VARIABLE_DRIVER_CONFIG".into(),
+                            pcr: 7,
+                            hash: hex::decode(
+                                "ccfc4bb32888a345bc8aeadaba552b627d99348c767681ab3141f5b01e40a40e",
+                            )
+                            .unwrap(),
+                            id: TPMEventID::Pcr7SecureBoot,
+                        }],
                     },
                 ],
                 reference: "".to_string(),
@@ -437,12 +460,28 @@ mod tests {
         }
     }
 
+    fn reference_values_from(reference_values: &[ReferenceValue], rv_name: &str) -> Vec<String> {
+        let rv = reference_values
+            .iter()
+            .find(|rv| rv.name == rv_name)
+            .unwrap();
+        let val_arr = rv.value.as_array().unwrap();
+        val_arr.iter().map(|v| v.as_str().unwrap().into()).collect()
+    }
+
     #[test]
     fn test_get_image_pcrs_success() {
         let config_map = dummy_pcrs_map();
         let image_pcrs = get_image_pcrs(config_map).unwrap();
         assert_eq!(image_pcrs.0["cos"].pcrs.len(), 2);
-        assert_eq!(image_pcrs.0["cos"].pcrs[0].value, "pcr0_val".as_bytes());
+        assert_eq!(
+            hex::encode(image_pcrs.0["cos"].pcrs[0].value.clone()),
+            "3f263b96ccbc33bb53d808771f9ab1e02d4dec8854f9530f749cde853a723273"
+        );
+        assert_eq!(
+            hex::encode(image_pcrs.0["cos"].pcrs[1].value.clone()),
+            "e58ada1ba75f2e4722b539824598ad5e10c55f2e4aeab2033f3b0a8ee3f3eca6"
+        );
     }
 
     #[test]
@@ -476,10 +515,16 @@ mod tests {
     fn test_recompute_reference_values() {
         let result = recompute_reference_values(dummy_pcrs());
         assert_eq!(result.len(), 3);
-        let rv = result.iter().find(|rv| rv.name == "tpm_pcr0").unwrap();
-        let val_arr = rv.value.as_array().unwrap();
-        let vals: Vec<_> = val_arr.iter().map(|v| v.as_str().unwrap()).collect();
-        assert_eq!(vals, vec![hex::encode("pcr0_val")]);
+        let vals = reference_values_from(&result, "tpm_pcr4");
+        assert_eq!(
+            vals,
+            vec!["3f263b96ccbc33bb53d808771f9ab1e02d4dec8854f9530f749cde853a723273",]
+        );
+        let vals = reference_values_from(&result, "tpm_pcr7");
+        assert_eq!(
+            vals,
+            vec!["e58ada1ba75f2e4722b539824598ad5e10c55f2e4aeab2033f3b0a8ee3f3eca6",]
+        );
     }
 
     #[tokio::test]

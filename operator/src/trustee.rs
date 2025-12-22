@@ -8,6 +8,8 @@ use anyhow::{Context, Result};
 use base64::{Engine as _, engine::general_purpose};
 use chrono::{DateTime, Utc};
 use clevis_pin_trustee_lib::Key as ClevisKey;
+use compute_pcrs_lib::tpmevents::TPMEvent;
+use compute_pcrs_lib::tpmevents::combine::combine_images;
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
     ConfigMap, ConfigMapVolumeSource, Container, ContainerPort, EmptyDirVolumeSource, EnvVar,
@@ -26,7 +28,7 @@ use log::info;
 use operator::{RvContextData, create_or_info_if_exists};
 use serde::{Serialize, Serializer};
 use serde_json::{Value::String as JsonString, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use trusted_cluster_operator_lib::endpoints::*;
 use trusted_cluster_operator_lib::reference_values::*;
@@ -70,14 +72,20 @@ pub fn get_image_pcrs(image_pcrs_map: ConfigMap) -> Result<ImagePcrs> {
 }
 
 fn recompute_reference_values(image_pcrs: ImagePcrs) -> Vec<ReferenceValue> {
-    // TODO many grub+shim:many OS image recompute once supported
     let mut reference_values_in =
-        BTreeMap::from([("svn".to_string(), vec![JsonString("1".to_string())])]);
-    for pcr in image_pcrs.0.values().flat_map(|v| &v.pcrs) {
+        BTreeMap::from([("svn".to_string(), BTreeSet::from(["1".to_string()]))]);
+    let tpm_events: Vec<Vec<TPMEvent>> = image_pcrs
+        .0
+        .values()
+        .map(|v| v.pcrs.iter().flat_map(|p| p.events.clone()).collect())
+        .collect();
+
+    let pcr_combinations = combine_images(&tpm_events);
+    for pcr in pcr_combinations.iter().flatten() {
         reference_values_in
             .entry(format!("pcr{}", pcr.id))
             .or_default()
-            .push(JsonString(hex::encode(pcr.value.clone())));
+            .insert(hex::encode(pcr.value.clone()));
     }
     reference_values_in
         .iter()
@@ -85,7 +93,7 @@ fn recompute_reference_values(image_pcrs: ImagePcrs) -> Vec<ReferenceValue> {
             version: "0.1.0".to_string(),
             name: format!("tpm_{name}"),
             expiration: Utc::now() + chrono::Duration::days(365),
-            value: serde_json::Value::Array(values.to_vec()),
+            value: serde_json::Value::Array(values.iter().map(|v| JsonString(v.clone())).collect()),
         })
         .collect()
 }
@@ -546,7 +554,10 @@ pub async fn generate_kbs_deployment(
 mod tests {
     use super::*;
     use crate::test_utils::*;
+    use compute_pcrs_lib::Pcr;
+    use compute_pcrs_lib::tpmevents::TPMEventID;
     use http::{Method, Request, StatusCode};
+    use k8s_openapi::jiff::Timestamp;
     use kube::client::Body;
     use trusted_cluster_operator_test_utils::mock_client::*;
 
@@ -868,5 +879,151 @@ mod tests {
     async fn test_generate_kbs_depl_error() {
         let clos = |client| generate_kbs_deployment(client, Default::default(), "image");
         test_create_error(clos).await;
+    }
+
+    #[test]
+    fn test_recompute_reference_values_pcr4() {
+        let image_pcrs = ImagePcrs(BTreeMap::from([
+            (
+                "cos1".to_string(),
+                ImagePcr {
+                    first_seen: Timestamp::now(),
+                    pcrs: vec![Pcr {
+                        id: 4,
+                        value: hex::decode("852718920421131081032051205110114719423559841238794129122376912159784392212168").unwrap(),
+                        events: vec![
+                            TPMEvent {
+                                name: "EV_EFI_ACTION".into(),
+                                pcr: 4,
+                                hash: hex::decode("3d6772b4f84ed47595d72a2c4c5ffd15f5bb72c7507fe26f2aaee2c69d5633ba")
+                                    .unwrap(),
+                                id: TPMEventID::Pcr4EfiCall,
+                            },
+                            TPMEvent {
+                                name: "EV_SEPARATOR".into(),
+                                pcr: 4,
+                                hash: hex::decode("df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119")
+                                    .unwrap(),
+                                id: TPMEventID::Pcr4Separator,
+                            },
+                            TPMEvent {
+                                name: "EV_EFI_BOOT_SERVICES_APPLICATION".into(),
+                                pcr: 4,
+                                hash: hex::decode("94896c17d49fc8c8df0cc2836611586edab1615ce7cb58cf13fc5798de56b367")
+                                    .unwrap(),
+                                id: TPMEventID::Pcr4Shim,
+                            },
+                            TPMEvent {
+                                name: "EV_EFI_BOOT_SERVICES_APPLICATION".into(),
+                                pcr: 4,
+                                hash: hex::decode("bc6844fc7b59b4f0c7da70a307fc578465411d7a2c34b0f4dc2cc154c873b644")
+                                    .unwrap(),
+                                id: TPMEventID::Pcr4Grub,
+                            },
+                            TPMEvent {
+                                name: "EV_EFI_BOOT_SERVICES_APPLICATION".into(),
+                                pcr: 4,
+                                hash: hex::decode("2b1dc59bc61dbbc3db11a6f3b0708c948efd46cceb7f6c8ea2024b8d1b8c829a")
+                                    .unwrap(),
+                                id: TPMEventID::Pcr4Vmlinuz,
+                            },
+                        ],
+                    },
+                    Pcr {
+                        id: 7,
+                        value: hex::decode("3f263b96ccbc33bb53d808771f9ab1e02d4dec8854f9530f749cde853a723273").unwrap(),
+                        events: vec![
+                            TPMEvent {
+                                name: "EV_EFI_ACTION".into(),
+                                pcr: 7,
+                                hash: hex::decode("3d6772b4f84ed47595d72a2c4c5ffd15f5bb72c7507fe26f2aaee2c69d5633ba")
+                                    .unwrap(),
+                                id: TPMEventID::Pcr7SecureBoot,
+                            },
+                        ]
+                    }],
+                    reference: "".to_string(),
+                },
+            ),
+            (
+                "cos2".to_string(),
+                ImagePcr {
+                    first_seen: Timestamp::now(),
+                    pcrs: vec![Pcr {
+                        id: 4,
+                        value: hex::decode("19925299236966772216371371471692276818611442625320115173412649113251558526237189").unwrap(),
+                        events: vec![
+                            TPMEvent {
+                                name: "EV_EFI_ACTION".into(),
+                                pcr: 4,
+                                hash: hex::decode("3d6772b4f84ed47595d72a2c4c5ffd15f5bb72c7507fe26f2aaee2c69d5633ba")
+                                    .unwrap(),
+                                id: TPMEventID::Pcr4EfiCall,
+                            },
+                            TPMEvent {
+                                name: "EV_SEPARATOR".into(),
+                                pcr: 4,
+                                hash: hex::decode("df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119")
+                                    .unwrap(),
+                                id: TPMEventID::Pcr4Separator,
+                            },
+                            TPMEvent {
+                                name: "EV_EFI_BOOT_SERVICES_APPLICATION".into(),
+                                pcr: 4,
+                                hash: hex::decode("1fed6fad5ca735adc80615d2a7e795e2f17f84e407b07979498c9edb1e04383f")
+                                    .unwrap(),
+                                id: TPMEventID::Pcr4Shim,
+                            },
+                            TPMEvent {
+                                name: "EV_EFI_BOOT_SERVICES_APPLICATION".into(),
+                                pcr: 4,
+                                hash: hex::decode("8f3adc6b42da2defa6d5ef3202badc39a5a22ceec068f106760592163a505a0e")
+                                    .unwrap(),
+                                id: TPMEventID::Pcr4Grub,
+                            },
+                            TPMEvent {
+                                name: "EV_EFI_BOOT_SERVICES_APPLICATION".into(),
+                                pcr: 4,
+                                hash: hex::decode("772c3a90820e4a76944d3715e6f700bc41e846b0049b7817f9feb3289a56d3f8")
+                                    .unwrap(),
+                                id: TPMEventID::Pcr4Vmlinuz,
+                            },
+                        ],
+                    },
+                    Pcr {
+                        id: 7,
+                        value: hex::decode("3f263b96ccbc33bb53d808771f9ab1e02d4dec8854f9530f749cde853a723273").unwrap(),
+                        events: vec![
+                            TPMEvent {
+                                name: "EV_EFI_ACTION".into(),
+                                pcr: 7,
+                                hash: hex::decode("3d6772b4f84ed47595d72a2c4c5ffd15f5bb72c7507fe26f2aaee2c69d5633ba")
+                                    .unwrap(),
+                                id: TPMEventID::Pcr7SecureBoot,
+                            },
+                        ]
+                    }],
+                    reference: "".to_string(),
+                },
+            ),
+        ]));
+
+        let result = recompute_reference_values(image_pcrs);
+        assert_eq!(result.len(), 3);
+        let vals_pcr4 = reference_values_from(&result, "tpm_pcr4");
+        assert_eq!(
+            vals_pcr4,
+            vec![
+                "47b742b3a2244cc7249ff3221ec640198044aac533a95abafded7921237508c1",
+                "551bbd142a716c67cd78336593c2eb3b547b575e810ced4501d761082b5cd4a8",
+                "c7fc63ec604348d8258993a9e344ba72041afd1473ad291a3171199b551aedbd",
+                "c9c3add791efc98f59977c89e673a34ad0b357872e9eb2c43d14607488e5d9e2",
+            ]
+        );
+        let vals_pcr7 = reference_values_from(&result, "tpm_pcr7");
+        assert_eq!(
+            vals_pcr7,
+            vec!["3f263b96ccbc33bb53d808771f9ab1e02d4dec8854f9530f749cde853a723273"]
+        );
     }
 }

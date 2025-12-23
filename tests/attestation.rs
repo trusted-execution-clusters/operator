@@ -46,17 +46,15 @@ impl SingleAttestationContext {
 
         let (_private_key, public_key, key_path) = virt::generate_ssh_key_pair()?;
         test_ctx.info(format!(
-            "Generated SSH key pair and added to ssh-agent: {:?}",
-            key_path
+            "Generated SSH key pair and added to ssh-agent: {key_path:?}"
         ));
 
         let register_server_url = format!(
-            "http://register-server.{}.svc.cluster.local:8000/ignition-clevis-pin-trustee",
-            namespace
+            "http://register-server.{namespace}.svc.cluster.local:8000/ignition-clevis-pin-trustee"
         );
         let image = "quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:latest";
 
-        test_ctx.info(format!("Creating VM: {}", vm_name));
+        test_ctx.info(format!("Creating VM: {vm_name}"));
         virt::create_kubevirt_vm(
             client,
             namespace,
@@ -67,11 +65,11 @@ impl SingleAttestationContext {
         )
         .await?;
 
-        test_ctx.info(format!("Waiting for VM {} to reach Running state", vm_name));
+        test_ctx.info(format!("Waiting for VM {vm_name} to reach Running state"));
         virt::wait_for_vm_running(client, namespace, vm_name, 300).await?;
-        test_ctx.info(format!("VM {} is Running", vm_name));
+        test_ctx.info(format!("VM {vm_name} is Running"));
 
-        test_ctx.info(format!("Waiting for SSH access to VM {}", vm_name));
+        test_ctx.info(format!("Waiting for SSH access to VM {vm_name}"));
         virt::wait_for_vm_ssh_ready(namespace, vm_name, &key_path, 600).await?;
         test_ctx.info("SSH access is ready");
 
@@ -124,8 +122,7 @@ async fn test_parallel_vm_attestation() -> anyhow::Result<()> {
     test_ctx.info("Generated SSH key pairs for both VMs");
 
     let register_server_url = format!(
-        "http://register-server.{}.svc.cluster.local:8000/ignition-clevis-pin-trustee",
-        namespace
+        "http://register-server.{namespace}.svc.cluster.local:8000/ignition-clevis-pin-trustee"
     );
     let image = "quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:latest";
 
@@ -233,7 +230,7 @@ async fn test_vm_reboot_attestation() -> anyhow::Result<()> {
     // Perform multiple reboots
     let num_reboots = 3;
     for i in 1..=num_reboots {
-        test_ctx.info(format!("Performing reboot {} of {}", i, num_reboots));
+        test_ctx.info(format!("Performing reboot {i} of {num_reboots}"));
 
         // Reboot the VM via SSH
         let _reboot_result = virt::virtctl_ssh_exec(
@@ -246,24 +243,22 @@ async fn test_vm_reboot_attestation() -> anyhow::Result<()> {
 
         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
 
-        test_ctx.info(format!("Waiting for SSH access after reboot {}", i));
+        test_ctx.info(format!("Waiting for SSH access after reboot {i}"));
         virt::wait_for_vm_ssh_ready(namespace, vm_name, &att_ctx.key_path, 300).await?;
 
         // Verify encrypted root is still present after reboot
-        test_ctx.info(format!("Verifying encrypted root after reboot {}", i));
+        test_ctx.info(format!("Verifying encrypted root after reboot {i}"));
         let has_encrypted_root =
             virt::verify_encrypted_root(namespace, vm_name, &att_ctx.key_path, &att_ctx.root_key).await?;
         assert!(
             has_encrypted_root,
-            "VM should have encrypted root device after reboot {}",
-            i
+            "VM should have encrypted root device after reboot {i}"
         );
-        test_ctx.info(format!("Reboot {}: attestation successful", i));
+        test_ctx.info(format!("Reboot {i}: attestation successful"));
     }
 
     test_ctx.info(format!(
-        "VM successfully rebooted {} times with encrypted root device maintained",
-        num_reboots
+        "VM successfully rebooted {num_reboots} times with encrypted root device maintained"
     ));
 
     test_ctx.cleanup().await?;

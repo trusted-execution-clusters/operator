@@ -49,10 +49,7 @@ pub fn generate_ssh_key_pair() -> anyhow::Result<(String, String, std::path::Pat
         let stderr = String::from_utf8_lossy(&ssh_add_output.stderr);
         // Clean up the key file if ssh-add fails
         let _ = fs::remove_file(&key_path);
-        return Err(anyhow::anyhow!(
-            "Failed to add SSH key to agent: {}",
-            stderr
-        ));
+        return Err(anyhow::anyhow!("Failed to add SSH key to agent: {stderr}"));
     }
 
     Ok((private_key_str, public_key_str, key_path))
@@ -243,8 +240,7 @@ pub async fn wait_for_vm_running(
         .with_timeout(Duration::from_secs(timeout_secs))
         .with_interval(Duration::from_secs(5))
         .with_error_message(format!(
-            "VirtualMachine {} did not reach Running phase after {} seconds",
-            vm_name, timeout_secs
+            "VirtualMachine {vm_name} did not reach Running phase after {timeout_secs} seconds"
         ));
 
     poller
@@ -264,8 +260,7 @@ pub async fn wait_for_vm_running(
                 }
 
                 Err(anyhow::anyhow!(
-                    "VirtualMachine {} is not in Running phase yet",
-                    name
+                    "VirtualMachine {name} is not in Running phase yet"
                 ))
             }
         })
@@ -284,7 +279,7 @@ pub async fn virtctl_ssh_exec(
         ));
     }
 
-    let _vm_target = format!("core@vmi/{}/{}", vm_name, namespace);
+    let _vm_target = format!("core@vmi/{vm_name}/{namespace}");
     let full_cmd = format!(
         "virtctl ssh -i {} core@vmi/{}/{} -t '-o IdentitiesOnly=yes' -t '-o StrictHostKeyChecking=no' --known-hosts /dev/null -c '{}'",
         key_path.display(),
@@ -296,7 +291,7 @@ pub async fn virtctl_ssh_exec(
     let output = Command::new("sh").arg("-c").arg(full_cmd).output().await?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow::anyhow!("virtctl ssh command failed: {}", stderr));
+        return Err(anyhow::anyhow!("virtctl ssh command failed: {stderr}"));
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -312,8 +307,7 @@ pub async fn wait_for_vm_ssh_ready(
         .with_timeout(Duration::from_secs(timeout_secs))
         .with_interval(Duration::from_secs(10))
         .with_error_message(format!(
-            "SSH access to VM {}/{} did not become available after {} seconds",
-            namespace, vm_name, timeout_secs
+            "SSH access to VM {namespace}/{vm_name} did not become available after {timeout_secs} seconds"
         ));
 
     poller
@@ -325,7 +319,7 @@ pub async fn wait_for_vm_ssh_ready(
                 // Try a simple command to check if SSH is ready
                 match virtctl_ssh_exec(&ns, &vm, &key, "echo ready").await {
                     Ok(_) => Ok(()),
-                    Err(e) => Err(anyhow::anyhow!("SSH not ready yet: {}", e)),
+                    Err(e) => Err(anyhow::anyhow!("SSH not ready yet: {e}")),
                 }
             }
         })

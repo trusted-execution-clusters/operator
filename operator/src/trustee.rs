@@ -72,7 +72,7 @@ fn recompute_reference_values(image_pcrs: ImagePcrs) -> Vec<ReferenceValue> {
         reference_values_in
             .entry(format!("pcr{}", pcr.id))
             .or_default()
-            .push(JsonString(pcr.value.clone()));
+            .push(JsonString(hex::encode(pcr.value.clone())));
     }
     reference_values_in
         .iter()
@@ -412,13 +412,13 @@ mod tests {
                 pcrs: vec![
                     Pcr {
                         id: 0,
-                        value: "pcr0_val".to_string(),
-                        parts: vec![],
+                        value: "pcr0_val".into(),
+                        events: vec![],
                     },
                     Pcr {
                         id: 1,
-                        value: "pcr1_val".to_string(),
-                        parts: vec![],
+                        value: "pcr1_val".into(),
+                        events: vec![],
                     },
                 ],
                 reference: "".to_string(),
@@ -442,7 +442,7 @@ mod tests {
         let config_map = dummy_pcrs_map();
         let image_pcrs = get_image_pcrs(config_map).unwrap();
         assert_eq!(image_pcrs.0["cos"].pcrs.len(), 2);
-        assert_eq!(image_pcrs.0["cos"].pcrs[0].value, "pcr0_val");
+        assert_eq!(image_pcrs.0["cos"].pcrs[0].value, "pcr0_val".as_bytes());
     }
 
     #[test]
@@ -479,7 +479,7 @@ mod tests {
         let rv = result.iter().find(|rv| rv.name == "tpm_pcr0").unwrap();
         let val_arr = rv.value.as_array().unwrap();
         let vals: Vec<_> = val_arr.iter().map(|v| v.as_str().unwrap()).collect();
-        assert_eq!(vals, vec!["pcr0_val".to_string()]);
+        assert_eq!(vals, vec![hex::encode("pcr0_val")]);
     }
 
     #[tokio::test]

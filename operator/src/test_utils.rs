@@ -19,16 +19,16 @@ pub fn dummy_pcrs() -> ImagePcrs {
             pcrs: vec![
                 Pcr {
                     id: 0,
-                    value: "pcr0_val".to_string(),
-                    parts: vec![],
+                    value: "pcr0_val".into(),
+                    events: vec![],
                 },
                 Pcr {
                     id: 1,
-                    value: "pcr1_val".to_string(),
-                    parts: vec![],
+                    value: "pcr1_val".into(),
+                    events: vec![],
                 },
             ],
-            reference: "ref".to_string(),
+            reference: "".to_string(),
         },
     )]))
 }

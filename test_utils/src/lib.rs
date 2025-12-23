@@ -14,6 +14,7 @@ use tokio::process::Command;
 
 pub mod timer;
 pub use timer::Poller;
+pub mod mock_client;
 
 #[cfg(feature = "virtualization")]
 pub mod virt;
@@ -308,7 +309,7 @@ impl TestContext {
                 "-register-server-image",
                 "localhost:5000/trusted-execution-clusters/registration-server:latest",
                 "-approved-image",
-                "quay.io/trusted-execution-clusters/fedora-coreos@sha256:e71dad00aa0e3d70540e726a0c66407e3004d96e045ab6c253186e327a2419e5",
+                "quay.io/trusted-execution-clusters/fedora-coreos@sha256:aaa7b3667f1e84f06b2039255f915dd97e0878da900414145b3c75c2e74569f0",
             ])
             .output()
             .await?;

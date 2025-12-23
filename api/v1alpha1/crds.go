@@ -27,7 +27,7 @@ var (
 
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;create;patch;update
 // +kubebuilder:rbac:groups="",resources=services,verbs=create
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=create
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=create;list;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;create;update
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=create;delete;list;watch
 // +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=trustedexecutionclusters,verbs=list;watch

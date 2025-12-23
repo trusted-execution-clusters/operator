@@ -370,13 +370,12 @@ impl TestContext {
                 async move {
                     let deployment = api.get(&name).await?;
 
-                    if let Some(status) = &deployment.status {
-                        if let Some(available_replicas) = status.available_replicas {
-                            if available_replicas == 1 {
-                                test_info!(&tn, "{} deployment has 1 available replica", name);
-                                return Ok(());
-                            }
-                        }
+                    if let Some(status) = &deployment.status
+                        && let Some(available_replicas) = status.available_replicas
+                        && available_replicas == 1
+                    {
+                        test_info!(&tn, "{} deployment has 1 available replica", name);
+                        return Ok(());
                     }
 
                     Err(anyhow!(
@@ -485,14 +484,14 @@ impl TestContext {
         let ns = self.test_namespace.clone();
         let sa_src = workspace_root.join("config/rbac/service_account.yaml");
         let sa_content = std::fs::read_to_string(&sa_src)?
-            .replace("namespace: system", &format!("namespace: {}", ns));
+            .replace("namespace: system", &format!("namespace: {ns}"));
         let sa_dst = rbac_temp_dir.join("service_account.yaml");
         std::fs::write(&sa_dst, sa_content)?;
 
         let role_path = rbac_temp_dir.join("role.yaml");
         let role_content = std::fs::read_to_string(&role_path)?.replace(
             "name: trusted-cluster-operator-role",
-            &format!("name: {}-trusted-cluster-operator-role", ns),
+            &format!("name: {ns}-trusted-cluster-operator-role"),
         );
         std::fs::write(&role_path, role_content)?;
 
@@ -500,21 +499,21 @@ impl TestContext {
         let rb = "name: manager-rolebinding";
         let role = "name: trusted-cluster-operator-role";
         let rb_content = std::fs::read_to_string(&rb_src)?
-            .replace(rb, &format!("name: {}-manager-rolebinding", ns))
-            .replace(role, &format!("name: {}-trusted-cluster-operator-role", ns))
-            .replace("namespace: system", &format!("namespace: {}", ns));
+            .replace(rb, &format!("name: {ns}-manager-rolebinding"))
+            .replace(role, &format!("name: {ns}-trusted-cluster-operator-role"))
+            .replace("namespace: system", &format!("namespace: {ns}"));
         let rb_dst = rbac_temp_dir.join("role_binding.yaml");
         std::fs::write(&rb_dst, rb_content)?;
 
         let le_role_src = workspace_root.join("config/rbac/leader_election_role.yaml");
         let le_role_content = std::fs::read_to_string(&le_role_src)?
-            .replace("namespace: system", &format!("namespace: {}", ns));
+            .replace("namespace: system", &format!("namespace: {ns}"));
         let le_role_dst = rbac_temp_dir.join("leader_election_role.yaml");
         std::fs::write(&le_role_dst, le_role_content)?;
 
         let le_rb_src = workspace_root.join("config/rbac/leader_election_role_binding.yaml");
         let le_rb_content = std::fs::read_to_string(&le_rb_src)?
-            .replace("namespace: system", &format!("namespace: {}", ns));
+            .replace("namespace: system", &format!("namespace: {ns}"));
         let le_rb_dst = rbac_temp_dir.join("leader_election_role_binding.yaml");
         std::fs::write(&le_rb_dst, le_rb_content)?;
 
@@ -570,13 +569,13 @@ impl TestContext {
         let cr_content = std::fs::read_to_string(&cr_manifest_path)?;
         let mut cr_value: serde_yaml::Value = serde_yaml::from_str(&cr_content)?;
 
-        if let Some(spec) = cr_value.get_mut("spec") {
-            if let Some(spec_map) = spec.as_mapping_mut() {
-                spec_map.insert(
-                    serde_yaml::Value::String("publicTrusteeAddr".to_string()),
-                    serde_yaml::Value::String(trustee_addr.clone()),
-                );
-            }
+        if let Some(spec) = cr_value.get_mut("spec")
+            && let Some(spec_map) = spec.as_mapping_mut()
+        {
+            spec_map.insert(
+                serde_yaml::Value::String("publicTrusteeAddr".to_string()),
+                serde_yaml::Value::String(trustee_addr.clone()),
+            );
         }
 
         let updated_content = serde_yaml::to_string(&cr_value)?;

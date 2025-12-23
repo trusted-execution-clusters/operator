@@ -38,16 +38,17 @@ impl SingleAttestationContext {
     async fn new(vm_name: &str, test_ctx: &TestContext) -> Result<Self> {
         let client = test_ctx.client();
         let namespace = test_ctx.namespace();
+
         let backend = virt::create_backend(client.clone(), namespace, vm_name)?;
 
-        test_ctx.info(format!("Creating VM: {}", vm_name));
+        test_ctx.info(format!("Creating VM: {vm_name}"));
         backend.create_vm().await?;
 
-        test_ctx.info(format!("Waiting for VM {} to reach Running state", vm_name));
+        test_ctx.info(format!("Waiting for VM {vm_name} to reach Running state"));
         backend.wait_for_running(600).await?;
-        test_ctx.info(format!("VM {} is Running", vm_name));
+        test_ctx.info(format!("VM {vm_name} is Running"));
 
-        test_ctx.info(format!("Waiting for SSH access to VM {}", vm_name));
+        test_ctx.info(format!("Waiting for SSH access to VM {vm_name}"));
         backend.wait_for_vm_ssh_ready(600).await?;
         test_ctx.info("SSH access is ready");
 
@@ -162,29 +163,29 @@ async fn test_vm_reboot_attestation() -> anyhow::Result<()> {
     // Perform multiple reboots
     let num_reboots = 3;
     for i in 1..=num_reboots {
-        test_ctx.info(format!("Performing reboot {} of {}", i, num_reboots));
+        test_ctx.info(format!("Performing reboot {i} of {num_reboots}"));
 
         // Reboot the VM via SSH
         let _reboot_result = att_ctx.backend.ssh_exec("sudo systemctl reboot").await;
 
-        test_ctx.info(format!("Waiting for lack of SSH access after reboot {}", i));
+        test_ctx.info(format!("Waiting for lack of SSH access after reboot {i}"));
         att_ctx.backend.wait_for_vm_ssh_unavail(30).await?;
 
-        test_ctx.info(format!("Waiting for SSH access after reboot {}", i));
+        test_ctx.info(format!("Waiting for SSH access after reboot {i}"));
         att_ctx.backend.wait_for_vm_ssh_ready(300).await?;
 
         // Verify encrypted root is still present after reboot
-        test_ctx.info(format!("Verifying encrypted root after reboot {}", i));
+        test_ctx.info(format!("Verifying encrypted root after reboot {i}"));
         let has_encrypted_root = att_ctx.verify_encrypted_root().await?;
         assert!(
             has_encrypted_root,
             "VM should have encrypted root device after reboot {i}"
         );
-        test_ctx.info(format!("Reboot {}: attestation successful", i));
+        test_ctx.info(format!("Reboot {i}: attestation successful"));
     }
 
     test_ctx.info(format!(
-        "VM successfully rebooted {num_reboots} times with encrypted root device maintained",
+        "VM successfully rebooted {num_reboots} times with encrypted root device maintained"
     ));
     att_ctx.cleanup().await?;
     test_ctx.cleanup().await?;

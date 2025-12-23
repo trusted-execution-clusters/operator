@@ -297,13 +297,13 @@ pub async fn handle_new_image(
     let config_maps: Api<ConfigMap> = Api::default_namespaced(ctx.client.clone());
     let mut image_pcrs_map = config_maps.get(PCR_CONFIG_MAP).await?;
     let mut image_pcrs = get_image_pcrs(image_pcrs_map.clone())?;
-    if let Some(pcr) = image_pcrs.0.get(resource_name) {
-        if pcr.reference == boot_image {
-            info!("Image {boot_image} was to be allowed, but already was allowed");
-            return trustee::update_reference_values(ctx)
-                .await
-                .map(|_| COMMITTED_REASON);
-        }
+    if let Some(pcr) = image_pcrs.0.get(resource_name)
+        && pcr.reference == boot_image
+    {
+        info!("Image {boot_image} was to be allowed, but already was allowed");
+        return trustee::update_reference_values(ctx)
+            .await
+            .map(|_| COMMITTED_REASON);
     }
     let image_ref: oci_client::Reference = boot_image.parse()?;
     if image_ref.digest().is_none() {

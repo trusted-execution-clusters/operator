@@ -60,14 +60,12 @@ async fn test_image_pcrs_configmap_updates() -> anyhow::Result<()> {
             async move {
                 let cm = api.get("image-pcrs").await?;
 
-                if let Some(data) = &cm.data {
-                    if let Some(image_pcrs_json) = data.get("image-pcrs.json") {
-                        if let Ok(image_pcrs) = serde_json::from_str::<ImagePcrs>(image_pcrs_json) {
-                            if !image_pcrs.0.is_empty() {
-                                return Ok(());
-                            }
-                        }
-                    }
+                if let Some(data) = &cm.data
+                    && let Some(image_pcrs_json) = data.get("image-pcrs.json")
+                    && let Ok(image_pcrs) = serde_json::from_str::<ImagePcrs>(image_pcrs_json)
+                    && !image_pcrs.0.is_empty()
+                {
+                    return Ok(());
                 }
 
                 Err(anyhow::anyhow!("image-pcrs ConfigMap not yet populated with image-pcrs.json data"))
@@ -167,12 +165,11 @@ async fn test_image_disallow() -> anyhow::Result<()> {
         let api = configmap_api.clone();
         async move {
             let cm = api.get("trustee-data").await?;
-            if let Some(data) = &cm.data {
-                if let Some(reference_values_json) = data.get("reference-values.json") {
-                    if !reference_values_json.contains(EXPECTED_PCR4) {
-                        return Ok(());
-                    }
-                }
+            if let Some(data) = &cm.data
+                && let Some(reference_values_json) = data.get("reference-values.json")
+                && !reference_values_json.contains(EXPECTED_PCR4)
+            {
+                return Ok(());
             }
             Err(anyhow::anyhow!("Reference value not yet removed"))
         }

@@ -133,13 +133,13 @@ async fn ak_reconcile(
     client: Arc<Client>,
 ) -> Result<Action, ControllerError> {
     let ak_name = ak.metadata.name.clone().unwrap_or_default();
-    info!("Attestation Key reconciliation for: {}", ak_name);
+    info!("Attestation Key reconciliation for: {ak_name}");
 
     let client = Arc::unwrap_or_clone(client);
     let machines: Api<Machine> = Api::default_namespaced(client.clone());
     let lp = ListParams::default();
     let machine_list: ObjectList<Machine> = machines.list(&lp).await.map_err(|e| {
-        eprintln!("Error fetching machine list: {}", e);
+        eprintln!("Error fetching machine list: {e}");
         ControllerError::Anyhow(e.into())
     })?;
     for machine in &machine_list.items {
@@ -180,15 +180,15 @@ async fn machine_reconcile(
     let aks: Api<AttestationKey> = Api::default_namespaced(client.clone());
     let lp = ListParams::default();
     let ak_list: ObjectList<AttestationKey> = aks.list(&lp).await.map_err(|e| {
-        eprintln!("Error fetching attestation key list: {}", e);
+        eprintln!("Error fetching attestation key list: {e}");
         ControllerError::Anyhow(e.into())
     })?;
     for ak in ak_list.items {
-        if let Some(ak_address) = &ak.spec.address {
-            if *ak_address == machine_address {
-                approve_ak(&ak, &machine, client.clone()).await?;
-                return Ok(Action::await_change());
-            }
+        if let Some(ak_address) = &ak.spec.address
+            && *ak_address == machine_address
+        {
+            approve_ak(&ak, &machine, client.clone()).await?;
+            return Ok(Action::await_change());
         }
     }
     Ok(Action::await_change())
@@ -313,10 +313,7 @@ async fn secret_reconcile(
         return Ok(Action::await_change());
     }
 
-    info!(
-        "Secret reconciliation for AttestationKey secret: {}",
-        secret_name
-    );
+    info!("Secret reconciliation for AttestationKey secret: {secret_name}");
 
     let secrets: Api<Secret> = Api::default_namespaced(Arc::unwrap_or_clone(client.clone()));
     finalizer(&secrets, ATTESTATION_KEY_SECRET_FINALIZER, secret, |ev| async move {
@@ -328,15 +325,14 @@ async fn secret_reconcile(
                     .await
                     .map(|_| Action::await_change())
                     .map_err(|e| {
-                        eprintln!("Error updating attestation key volumes on secret apply: {}", e);
+                        eprintln!("Error updating attestation key volumes on secret apply: {e}");
                         finalizer::Error::<ControllerError>::ApplyFailed(e.into())
                     })
             }
             Event::Cleanup(secret) => {
                 let secret_name = secret.metadata.name.clone().unwrap_or_default();
                 info!(
-                    "AttestationKey secret {} is being deleted, updating trustee deployment volumes",
-                    secret_name
+                    "AttestationKey secret {secret_name} is being deleted, updating trustee deployment volumes"
                 );
                 let client = Arc::unwrap_or_clone(client);
                 // Update trustee deployment - secrets with deletion_timestamp will be filtered out
@@ -345,8 +341,7 @@ async fn secret_reconcile(
                     .map(|_| Action::await_change())
                     .map_err(|e| {
                         eprintln!(
-                            "Error updating attestation key volumes during secret deletion: {}",
-                            e
+                            "Error updating attestation key volumes during secret deletion: {e}"
                         );
                         finalizer::Error::<ControllerError>::CleanupFailed(e.into())
                     })

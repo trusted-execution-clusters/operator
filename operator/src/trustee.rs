@@ -256,7 +256,7 @@ pub async fn update_attestation_keys(client: Client) -> Result<()> {
                     name: secret_name.to_string(),
                     items: Some(vec![KeyToPath {
                         key: "public_key".to_string(),
-                        path: format!("{}.pub", secret_name),
+                        path: format!("{secret_name}.pub"),
                         ..Default::default()
                     }]),
                     ..Default::default()

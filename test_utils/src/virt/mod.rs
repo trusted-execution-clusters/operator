@@ -242,8 +242,7 @@ pub trait VmBackend: Send + Sync {
             .with_timeout(Duration::from_secs(timeout_secs))
             .with_interval(Duration::from_secs(10))
             .with_error_message(format!(
-                "SSH access to VM did not become {}available after {} seconds",
-                avail_prefix, timeout_secs
+                "SSH access to VM did not become {avail_prefix}available after {timeout_secs} seconds"
             ));
 
         let check_fn = || {

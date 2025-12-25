@@ -8,12 +8,14 @@ set -euo pipefail
 
 BUNDLE_VERSION=""
 PREVIOUS_CSV=""
+NAMESPACE="trusted-execution-clusters"
 
-while getopts "v:p:" opt; do
+while getopts "v:p:n:" opt; do
   case $opt in
     v) BUNDLE_VERSION="$OPTARG" ;;
     p) PREVIOUS_CSV="$OPTARG" ;;
-    *) echo "Usage: $0 -v <bundle-version> [-p <previous-csv>]"; exit 1 ;;
+    n) NAMESPACE="$OPTARG" ;;
+    *) echo "Usage: $0 -v <bundle-version> [-p <previous-csv>] [-n <namespace>]"; exit 1 ;;
   esac
 done
 
@@ -39,6 +41,9 @@ mkdir -p "${BUNDLE_MANIFESTS}" "${BUNDLE_METADATA}"
 echo "=> Copying CRDs and static assets..."
 shopt -s nullglob
 cp "${PROJECT_ROOT}/config/crd"/*.yaml "${BUNDLE_MANIFESTS}/"
+cp "${PROJECT_ROOT}/config/rbac"/*.yaml "${BUNDLE_MANIFESTS}/"
+rm -f "${BUNDLE_MANIFESTS}/kustomization.yaml"
+rm -f "${BUNDLE_MANIFESTS}/service_account.yaml"
 cp "$CSV_TEMPLATE" "${BUNDLE_MANIFESTS}/"
 cp "$ANNOTATIONS_TEMPLATE" "${BUNDLE_METADATA}/"
 
@@ -59,7 +64,18 @@ for env_var in COMPUTE_PCRS_IMAGE REG_SERVER_IMAGE; do
 done
 
 # Patch RBAC rules
-yq -i ".spec.install.spec.permissions[0].rules = load(\"${RBAC_ROLE_FILE}\").rules" "$CSV_FILE"
+yq -i ".spec.install.spec.clusterPermissions[0].rules = load(\"${RBAC_ROLE_FILE}\").rules" "$CSV_FILE"
+
+echo "=> Patching RBAC binding namespaces..."
+for binding_file in role_binding.yaml metrics_auth_role_binding.yaml leader_election_role_binding.yaml; do
+  file_path="${BUNDLE_MANIFESTS}/${binding_file}"
+  if [ -f "$file_path" ]; then
+    echo "--> Patching ${binding_file}..."
+    yq -i ".subjects[0].namespace = \"${NAMESPACE}\"" "$file_path"
+  else
+    echo "WARN: Binding file ${binding_file} not found in bundle, skipping patch."
+  fi
+done
 
 # Set .spec.replaces for automatic upgrades if provided
 if [[ -n "$PREVIOUS_CSV" ]]; then

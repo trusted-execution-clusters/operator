@@ -77,23 +77,15 @@ This operator can be packaged and deployed as an OLM bundle. This workflow suppo
 
 **1. Prerequisites**
 
-*   **Setup Cluster:** Ensure your `kubectl` context points to your target cluster. For local development, you can create a `kind` cluster by running:
-    ```bash
-    # Set RUNTIME=docker if using Docker instead of Podman.
-    make cluster-up
-    ```
-
-*   **Login to Registry:**
-    ```bash
-    # Login to your remote container registry (e.g., quay.io)
-    docker login quay.io
-    ```
-
-*   **Install OLM:**
-    ```bash
-    # Install OLM on your target cluster
-    (cd /tmp && operator-sdk olm install)
-    ```
+For local development (kind):
+```bash
+# Set RUNTIME=docker if using Docker instead of Podman
+make cluster-up
+# Login to your remote container registry (e.g., quay.io)
+docker login quay.io
+# Install OLM on your target cluster
+(cd /tmp && operator-sdk olm install)
+```
 
 **2. Set Environment Variables**
 
@@ -114,11 +106,6 @@ The `push-all` target builds all operator images, generates the bundle, builds t
 make push-all
 ```
 
-You can optionally validate the generated bundle manifests at any time after the `bundle` has been generated:
-```bash
-(cd ./bundle && operator-sdk bundle validate .)
-```
-
 **4. Deploy the Bundle**
 
 Deploy the bundle to your cluster. We use `trusted-execution-clusters` as an example namespace.
@@ -135,20 +122,21 @@ Once the operator is running, you need to create a `TrustedExecutionCluster` cus
 First, you must update the example CR with the correct public address for the Trustee service, which must be accessible from your worker nodes or VMs.
 
 ```bash
-# Provide an address where your VMs can access the cluster.
-# When using a local kind cluster, this is often the kind bridge IP.
-$ ip route
-...
-192.168.122.0/24 dev virbr0 proto kernel scope link src 192.168.122.1
-...
-$ export TRUSTEE_ADDR=192.168.122.1
+# Determine an address reachable by the VMs (for libvirt, usually the bridge IP)
+ip route | grep virbr0
+# Example output:
+# 192.168.122.0/24 dev virbr0 proto kernel scope link src 192.168.122.1
+export TRUSTEE_ADDR=192.168.122.1
 
-# Use yq (or manually edit) to set the address in the CR.
-# Note: yq is installed via 'make build-tools'.
-$ yq -i '.spec.publicTrusteeAddr = "'$TRUSTEE_ADDR':8080"' config/deploy/trusted_execution_cluster_cr.yaml
+# Update the CR with the trustee address (yq is installed via `make build-tools`)
+yq -i '.spec.publicTrusteeAddr = "'$TRUSTEE_ADDR':8080"' \
+  config/deploy/trusted_execution_cluster_cr.yaml
 
-# Now, apply the configured CR
-$ kubectl apply -f config/deploy/trusted_execution_cluster_cr.yaml
+# Apply the configured CRs
+kubectl apply -f config/deploy/trusted_execution_cluster_cr.yaml
+kubectl apply -f config/deploy/approved_image_cr.yaml
+kubectl apply -f kind/kbs-forward.yaml
+kubectl apply -f kind/register-forward.yaml
 ```
 
 #### **Cleaning Up the Bundle Deployment**
@@ -166,7 +154,6 @@ To clean up your environment after running the non-OLM `Quick Start` method, exe
 make cluster-cleanup
 # Note: You must use the same RUNTIME environment variable for `cluster-down`
 # that you used for `cluster-up`. For example:
-#
 # RUNTIME=docker make cluster-down
 make cluster-down
 make clean

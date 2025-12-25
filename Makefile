@@ -104,7 +104,6 @@ release-tarball: manifests
 # OLM Bundle related variables
 BUNDLE_DIR := bundle
 BUNDLE_IMAGE := $(REGISTRY)/trusted-cluster-operator-bundle:$(TAG)
-BUNDLE_PACKAGE ?= trusted-cluster-operator
 PREVIOUS_CSV ?= ""  # optional previous CSV for OLM upgrades
 
 .PHONY: bundle bundle-image push-bundle
@@ -114,7 +113,7 @@ bundle: manifests
 	@OPERATOR_IMAGE=$(OPERATOR_IMAGE) \
 	COMPUTE_PCRS_IMAGE=$(COMPUTE_PCRS_IMAGE) \
 	REG_SERVER_IMAGE=$(REG_SERVER_IMAGE) \
-	scripts/generate-bundle-prod.sh -v $(TAG) $(if $(PREVIOUS_CSV),-p $(PREVIOUS_CSV))
+	scripts/generate-bundle-prod.sh -v $(TAG) -n $(NAMESPACE) $(if $(PREVIOUS_CSV),-p $(PREVIOUS_CSV))
 
 bundle-image: bundle
 	@echo "Building OLM bundle image..."

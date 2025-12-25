@@ -33,4 +33,3 @@ RUN cargo build -p operator $(if [ "$build_type" = release ]; then echo --releas
 FROM quay.io/fedora/fedora:42
 ARG build_type
 COPY --from=builder "/build/target/$build_type/operator" /usr/bin
-USER nobody

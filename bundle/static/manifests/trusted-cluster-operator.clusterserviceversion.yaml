@@ -72,7 +72,7 @@ spec:
   install:
     strategy: deployment
     spec:
-      permissions:
+      clusterPermissions:
         - serviceAccountName: trusted-cluster-operator
           # Rules are dynamically generated from config/rbac/role.yaml during the bundle build
           rules: []

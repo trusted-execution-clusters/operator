@@ -26,8 +26,8 @@ COMPUTE_PCRS_IMAGE=$(REGISTRY)/compute-pcrs:$(TAG)
 REG_SERVER_IMAGE=$(REGISTRY)/registration-server:$(TAG)
 # TODO add support for TPM AK verification, then move to a KBS with implemented verifier
 TRUSTEE_IMAGE ?= quay.io/trusted-execution-clusters/key-broker-service:tpm-verifier-built-in-as-20250711
-# tagged as 42.20250705.3.0
-APPROVED_IMAGE ?= quay.io/trusted-execution-clusters/fedora-coreos@sha256:e71dad00aa0e3d70540e726a0c66407e3004d96e045ab6c253186e327a2419e5
+# tagged as 42.20251012.2.0
+APPROVED_IMAGE ?= quay.io/trusted-execution-clusters/fedora-coreos@sha256:6997f51fd27d1be1b5fc2e6cc3ebf16c17eb94d819b5d44ea8d6cf5f826ee773
 
 BUILD_TYPE ?= release
 

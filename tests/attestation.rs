@@ -48,7 +48,7 @@ impl SingleAttestationContext {
         test_ctx.info(format!("VM {} is Running", vm_name));
 
         test_ctx.info(format!("Waiting for SSH access to VM {}", vm_name));
-        virt::wait_for_vm_ssh_ready(namespace, vm_name, &key_path, 300).await?;
+        virt::wait_for_vm_ssh_ready(namespace, vm_name, &key_path, 600).await?;
         test_ctx.info("SSH access is ready");
 
         Ok(Self {
@@ -148,8 +148,8 @@ async fn test_parallel_vm_attestation() -> anyhow::Result<()> {
     // Wait for SSH access on both VMs in parallel
     test_ctx.info("Waiting for SSH access on both VMs");
     let (ssh1_ready, ssh2_ready) = tokio::join!(
-        virt::wait_for_vm_ssh_ready(namespace, vm1_name, &key_path1, 300),
-        virt::wait_for_vm_ssh_ready(namespace, vm2_name, &key_path2, 300)
+        virt::wait_for_vm_ssh_ready(namespace, vm1_name, &key_path1, 900),
+        virt::wait_for_vm_ssh_ready(namespace, vm2_name, &key_path2, 900)
     );
 
     ssh1_ready?;
@@ -258,6 +258,7 @@ async fn test_vm_reboot_delete_machine() -> anyhow::Result<()> {
     let list = machines.list(&Default::default()).await?;
     let name = list.items[0].metadata.name.as_ref().unwrap();
     machines.delete(name, &Default::default()).await?;
+    wait_for_resource_deleted(&machines, name, 120, 5).await?;
 
     test_ctx.info("Performing reboot, expecting missing resource");
     let _reboot_result = virt::virtctl_ssh_exec(

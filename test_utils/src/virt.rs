@@ -193,6 +193,7 @@ pub async fn create_kubevirt_vm(
                         },
                         "resources": {
                             "requests": {
+                                "cpu": "2",
                                 "memory": "4096M"
                             }
                         }

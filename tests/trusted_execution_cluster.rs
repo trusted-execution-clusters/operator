@@ -62,8 +62,10 @@ async fn test_image_pcrs_configmap_updates() -> anyhow::Result<()> {
 
                 if let Some(data) = &cm.data {
                     if let Some(image_pcrs_json) = data.get("image-pcrs.json") {
-                        if !image_pcrs_json.is_empty() {
-                            return Ok(());
+                        if let Ok(image_pcrs) = serde_json::from_str::<ImagePcrs>(image_pcrs_json) {
+                            if !image_pcrs.0.is_empty() {
+                                return Ok(());
+                            }
                         }
                     }
                 }

@@ -134,6 +134,7 @@ endif
 	$(YQ) '.spec.publicTrusteeAddr = "$(TRUSTEE_ADDR):8080"' \
 		-i $(DEPLOY_PATH)/trusted_execution_cluster_cr.yaml
 	$(YQ) '.namespace = "$(NAMESPACE)"' -i config/rbac/kustomization.yaml
+	$(KUBECTL) create namespace $(NAMESPACE) || true
 	$(KUBECTL) apply -f $(DEPLOY_PATH)/operator.yaml
 	$(KUBECTL) apply -f config/crd
 	$(KUBECTL) apply -k config/rbac
@@ -171,7 +172,7 @@ test: crds-rs
 test-release: crds-rs
 	cargo test --workspace --bins --release
 
-integration-tests: generate trusted-cluster-gen
+integration-tests: generate trusted-cluster-gen crds-rs
 	RUST_LOG=info cargo test --test trusted_execution_cluster --test attestation \
 		--features virtualization -- --no-capture  --test-threads=1
 

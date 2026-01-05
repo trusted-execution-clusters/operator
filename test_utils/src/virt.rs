@@ -61,10 +61,11 @@ pub fn generate_ssh_key_pair() -> anyhow::Result<(String, String, std::path::Pat
 pub fn generate_ignition_config(
     ssh_public_key: &str,
     register_server_url: &str,
+    namespace: &str,
 ) -> serde_json::Value {
     // Create the ignition configuration
     let ignition = Ignition {
-        version: "3.5.0".to_string(),
+        version: "3.6.0-experimental".to_string(),
         config: Some(IgnitionConfig {
             merge: Some(vec![Resource {
                 source: Some(register_server_url.to_string()),
@@ -133,7 +134,29 @@ pub fn generate_ignition_config(
         }),
     };
 
-    serde_json::to_value(&config).expect("Failed to serialize ignition config")
+    let mut ignition_json =
+        serde_json::to_value(&config).expect("Failed to serialize ignition config");
+
+    // Add attestation key registration field
+    let attestation_url = format!(
+        "http://attestation-key-register.{}.svc.cluster.local:8001/register-ak",
+        namespace
+    );
+
+    if let Some(obj) = ignition_json.as_object_mut() {
+        obj.insert(
+            "attestation".to_string(),
+            serde_json::json!({
+                "attestation_key": {
+                    "registration": {
+                        "url": attestation_url
+                    }
+                }
+            }),
+        );
+    }
+
+    ignition_json
 }
 
 /// Create a KubeVirt VirtualMachine with the specified configuration
@@ -145,7 +168,9 @@ pub async fn create_kubevirt_vm(
     register_server_url: &str,
     image: &str,
 ) -> anyhow::Result<()> {
-    let ignition_config = generate_ignition_config(ssh_public_key, register_server_url);
+    use kube::Api;
+
+    let ignition_config = generate_ignition_config(ssh_public_key, register_server_url, namespace);
     let ignition_json = serde_json::to_string(&ignition_config)?;
 
     let vm = VirtualMachine {

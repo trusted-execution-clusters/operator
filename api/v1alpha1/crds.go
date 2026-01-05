@@ -25,20 +25,19 @@ var (
 	AddToScheme = SchemeBuilder.AddToScheme
 )
 
-<<<<<<< HEAD
 // +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=trustedexecutionclusters;machines;approvedimages;attestationkeys,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=trustedexecutionclusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=machines/finalizers,verbs=update
 // +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=trustedexecutionclusters/status;machines/status;approvedimages/status,verbs=get;patch;update
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=trustedexecutionclusters,verbs=list;watch
 // +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=trustedexecutionclusters/status,verbs=patch
 // +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=approvedimages/status,verbs=patch
 // +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=attestationkeys/status,verbs=patch
 // +kubebuilder:rbac:groups="",resources=configmaps;services;secrets,verbs=create;get;list;watch
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
-// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=create
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=create;get;list
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=create;get;list;watch;patch
 
 // TrustedExecutionClusterSpec defines the desired state of TrustedExecutionCluster
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.publicTrusteeAddr) || has(self.publicTrusteeAddr)", message="Value is required once set"

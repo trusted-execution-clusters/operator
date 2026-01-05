@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: CC0-1.0
 
 [workspace]
-members = ["compute-pcrs", "lib", "operator", "register-server", "test_utils", "tests"]
+members = ["attestation-key-register", "compute-pcrs", "lib", "operator", "register-server", "test_utils", "tests"]
 resolver = "3"
 
 [workspace.package]
@@ -27,3 +27,4 @@ serde_json = "1.0.148"
 serde_yaml = "0.9"
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
 uuid = { version = "1.19", features = ["v4", "serde"] }
+warp = "0.3"

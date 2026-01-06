@@ -12,6 +12,7 @@ path = [
   "docs/pics/*",
   "docs/design/*",
   "docs/dev/*",
+  "lib/src/vendor_kopium/*",
   "tests/README.md",
   "examples/vm-coreos-ign.yaml",
   "scripts/install-kubevirt.sh"

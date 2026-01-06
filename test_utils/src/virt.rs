@@ -1,14 +1,20 @@
 // SPDX-FileCopyrightText: Alice Frosi <afrosi@redhat.com>
+// SPDX-FileCopyrightText: Jakob Naucke <jnaucke@redhat.com>
 //
 // SPDX-License-Identifier: MIT
 
+use clevis_pin_trustee_lib::Key as ClevisKey;
 use ignition_config::v3_5::{
     Config, Dropin, File, Ignition, IgnitionConfig, Passwd, Resource, Storage, Systemd, Unit, User,
 };
-use kube::Client;
+use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
+use kube::api::ObjectMeta;
+use kube::{Api, Client};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 use tokio::process::Command;
+use trusted_cluster_operator_lib::virtualmachines::*;
 
 use super::Poller;
 
@@ -131,7 +137,6 @@ pub fn generate_ignition_config(
 }
 
 /// Create a KubeVirt VirtualMachine with the specified configuration
-/// TODO create rust a create for KubeVirt virtual machines
 pub async fn create_kubevirt_vm(
     client: &Client,
     namespace: &str,
@@ -140,93 +145,87 @@ pub async fn create_kubevirt_vm(
     register_server_url: &str,
     image: &str,
 ) -> anyhow::Result<()> {
-    use kube::Api;
-    use kube::api::PostParams;
-    use kube::core::DynamicObject;
-    use kube::discovery;
-
     let ignition_config = generate_ignition_config(ssh_public_key, register_server_url);
     let ignition_json = serde_json::to_string(&ignition_config)?;
 
-    let vm_spec = serde_json::json!({
-        "apiVersion": "kubevirt.io/v1",
-        "kind": "VirtualMachine",
-        "metadata": {
-            "name": vm_name,
-            "namespace": namespace
+    let vm = VirtualMachine {
+        metadata: ObjectMeta {
+            name: Some(vm_name.to_string()),
+            namespace: Some(namespace.to_string()),
+            ..Default::default()
         },
-        "spec": {
-            "runStrategy": "Always",
-            "template": {
-                "metadata": {
-                    "annotations": {
-                        "kubevirt.io/ignitiondata": ignition_json
-                    }
-                },
-                "spec": {
-                    "domain": {
-                        "features": {
-                            "smm": {
-                                "enabled": true
-                            }
+        spec: VirtualMachineSpec {
+            run_strategy: Some("Always".to_string()),
+            template: VirtualMachineTemplate {
+                metadata: Some(BTreeMap::from([(
+                    "annotations".to_string(),
+                    serde_json::json!({"kubevirt.io/ignitiondata": ignition_json}),
+                )])),
+                spec: Some(VirtualMachineTemplateSpec {
+                    domain: VirtualMachineTemplateSpecDomain {
+                        features: Some(VirtualMachineTemplateSpecDomainFeatures {
+                            smm: Some(VirtualMachineTemplateSpecDomainFeaturesSmm {
+                                enabled: Some(true),
+                            }),
+                            ..Default::default()
+                        }),
+                        firmware: Some(VirtualMachineTemplateSpecDomainFirmware {
+                            bootloader: Some(VirtualMachineTemplateSpecDomainFirmwareBootloader {
+                                efi: Some(VirtualMachineTemplateSpecDomainFirmwareBootloaderEfi {
+                                    persistent: Some(true),
+                                    ..Default::default()
+                                }),
+                                ..Default::default()
+                            }),
+                            ..Default::default()
+                        }),
+                        devices: VirtualMachineTemplateSpecDomainDevices {
+                            disks: Some(vec![VirtualMachineTemplateSpecDomainDevicesDisks {
+                                name: "containerdisk".to_string(),
+                                disk: Some(VirtualMachineTemplateSpecDomainDevicesDisksDisk {
+                                    bus: Some("virtio".to_string()),
+                                    ..Default::default()
+                                }),
+                                ..Default::default()
+                            }]),
+                            tpm: Some(VirtualMachineTemplateSpecDomainDevicesTpm {
+                                persistent: Some(true),
+                                ..Default::default()
+                            }),
+                            rng: Some(VirtualMachineTemplateSpecDomainDevicesRng {}),
+                            ..Default::default()
                         },
-                        "firmware": {
-                            "bootloader": {
-                                "efi": {
-                                    "persistent": true
-                                }
-                            }
-                        },
-                        "devices": {
-                            "tpm": {
-                                "persistent": true
-                            },
-                            "disks": [
-                                {
-                                    "name": "containerdisk",
-                                    "disk": {
-                                        "bus": "virtio"
-                                    }
-                                }
-                            ],
-                            "rng": {}
-                        },
-                        "resources": {
-                            "requests": {
-                                "cpu": "2",
-                                "memory": "4096M"
-                            }
-                        }
+                        resources: Some(VirtualMachineTemplateSpecDomainResources {
+                            requests: Some(BTreeMap::from([
+                                (
+                                    "memory".to_string(),
+                                    IntOrString::String("4096M".to_string()),
+                                ),
+                                ("cpu".to_string(), IntOrString::Int(2)),
+                            ])),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
                     },
-                    "volumes": [
-                        {
-                            "name": "containerdisk",
-                            "containerDisk": {
-                                "image": image,
-                                "imagePullPolicy": "Always"
-                            }
-                        }
-                    ]
-                }
-            }
-        }
-    });
+                    volumes: Some(vec![VirtualMachineTemplateSpecVolumes {
+                        name: "containerdisk".to_string(),
+                        container_disk: Some(VirtualMachineTemplateSpecVolumesContainerDisk {
+                            image: image.to_string(),
+                            image_pull_policy: Some("Always".to_string()),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                }),
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
 
-    let discovery = discovery::Discovery::new(client.clone()).run().await?;
-
-    let apigroup = discovery
-        .groups()
-        .find(|g| g.name() == "kubevirt.io")
-        .ok_or_else(|| anyhow::anyhow!("kubevirt.io API group not found"))?;
-
-    let (ar, _caps) = apigroup
-        .recommended_kind("VirtualMachine")
-        .ok_or_else(|| anyhow::anyhow!("VirtualMachine kind not found"))?;
-
-    let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), namespace, &ar);
-    let vm_object: DynamicObject = serde_json::from_value(vm_spec)?;
-
-    api.create(&PostParams::default(), &vm_object).await?;
+    let vms: Api<VirtualMachine> = Api::namespaced(client.clone(), namespace);
+    vms.create(&Default::default(), &vm).await?;
 
     Ok(())
 }
@@ -238,23 +237,7 @@ pub async fn wait_for_vm_running(
     vm_name: &str,
     timeout_secs: u64,
 ) -> anyhow::Result<()> {
-    use kube::api::Api;
-    use kube::core::DynamicObject;
-    use kube::discovery;
-
-    // Discover the VirtualMachine API
-    let discovery = discovery::Discovery::new(client.clone()).run().await?;
-
-    let apigroup = discovery
-        .groups()
-        .find(|g| g.name() == "kubevirt.io")
-        .ok_or_else(|| anyhow::anyhow!("kubevirt.io API group not found"))?;
-
-    let (ar, _caps) = apigroup
-        .recommended_kind("VirtualMachine")
-        .ok_or_else(|| anyhow::anyhow!("VirtualMachine kind not found"))?;
-
-    let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), namespace, &ar);
+    let api: Api<VirtualMachine> = Api::namespaced(client.clone(), namespace);
 
     let poller = Poller::new()
         .with_timeout(Duration::from_secs(timeout_secs))
@@ -272,12 +255,10 @@ pub async fn wait_for_vm_running(
                 let vm = api.get(&name).await?;
 
                 // Check VM status phase
-                if let Some(status) = vm.data.get("status") {
-                    if let Some(phase) = status.get("printableStatus") {
-                        if let Some(phase_str) = phase.as_str() {
-                            if phase_str == "Running" {
-                                return Ok(());
-                            }
+                if let Some(status) = vm.status {
+                    if let Some(phase) = status.printable_status {
+                        if phase.as_str() == "Running" {
+                            return Ok(());
                         }
                     }
                 }
@@ -355,6 +336,7 @@ pub async fn verify_encrypted_root(
     namespace: &str,
     vm_name: &str,
     key_path: &Path,
+    encryption_key: &[u8],
 ) -> anyhow::Result<bool> {
     let output = virtctl_ssh_exec(namespace, vm_name, key_path, "lsblk -o NAME,TYPE -J").await?;
 
@@ -362,50 +344,30 @@ pub async fn verify_encrypted_root(
     let lsblk_output: serde_json::Value = serde_json::from_str(&output)?;
 
     // Look for a device with name "root" and type "crypt"
-    if let Some(blockdevices) = lsblk_output.get("blockdevices") {
-        if let Some(devices) = blockdevices.as_array() {
-            for device in devices {
-                // Check the device itself
-                if is_root_crypt_device(device) {
-                    return Ok(true);
-                }
-
-                // Check children devices recursively
-                if let Some(children) = device.get("children") {
-                    if let Some(children_arr) = children.as_array() {
-                        for child in children_arr {
-                            if is_root_crypt_device(child) {
-                                return Ok(true);
-                            }
-                            // Check nested children
-                            if let Some(nested_children) = child.get("children") {
-                                if let Some(nested_arr) = nested_children.as_array() {
-                                    for nested in nested_arr {
-                                        if is_root_crypt_device(nested) {
-                                            return Ok(true);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    let get_children = |val: &serde_json::Value| {
+        let children = val.get("children").and_then(|v| v.as_array());
+        children.map(|v| v.to_vec()).unwrap_or_default()
+    };
+    let devices = lsblk_output.get("blockdevices").and_then(|v| v.as_array());
+    for child in devices.into_iter().flatten().flat_map(get_children) {
+        if get_children(&child).iter().any(|nested| {
+            let name = nested.get("name").and_then(|n| n.as_str());
+            let dev_type = nested.get("type").and_then(|t| t.as_str());
+            name == Some("root") && dev_type == Some("crypt")
+        }) {
+            let jwk: ClevisKey = serde_json::from_slice(encryption_key)?;
+            let key = jwk.key;
+            let dev = child.get("name").and_then(|n| n.as_str()).unwrap();
+            let cmd = format!(
+                "jose jwe dec \
+                 -k <(jose fmt -j '{{}}' -q oct -s kty -Uq $(printf {key} | jose b64 enc -I-) -s k -Uo-) \
+                 -i <(sudo cryptsetup token export --token-id 0 /dev/{dev} | jose fmt -j- -Og jwe -o-) \
+                 | sudo cryptsetup luksOpen --test-passphrase --key-file=- /dev/{dev}",
+            );
+            let exec = virtctl_ssh_exec(namespace, vm_name, key_path, &cmd).await;
+            return exec.map(|_| true);
         }
     }
 
     Ok(false)
-}
-
-fn is_root_crypt_device(device: &serde_json::Value) -> bool {
-    let name = device.get("name").and_then(|n| n.as_str());
-    let dev_type = device.get("type").and_then(|t| t.as_str());
-
-    if let (Some(n), Some(t)) = (name, dev_type) {
-        if n == "root" && t == "crypt" {
-            return true;
-        }
-    }
-
-    false
 }

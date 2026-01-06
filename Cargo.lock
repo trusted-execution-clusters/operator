@@ -3779,6 +3779,7 @@ name = "trusted-cluster-operator-test-utils"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clevis-pin-trustee-lib",
  "compute-pcrs-lib",
  "env_logger",
  "http 1.4.0",

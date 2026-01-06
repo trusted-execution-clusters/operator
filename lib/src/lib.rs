@@ -6,9 +6,13 @@ pub mod conditions;
 pub mod reference_values;
 
 mod kopium;
+#[allow(clippy::all)]
+mod vendor_kopium;
 pub use kopium::approvedimages::*;
 pub use kopium::machines::*;
 pub use kopium::trustedexecutionclusters::*;
+pub use vendor_kopium::virtualmachineinstances;
+pub use vendor_kopium::virtualmachines;
 
 use conditions::*;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};

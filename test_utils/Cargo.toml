@@ -13,6 +13,7 @@ virtualization = []
 
 [dependencies]
 anyhow.workspace = true
+clevis-pin-trustee-lib.workspace = true
 trusted-cluster-operator-lib = { path = "../lib" }
 compute-pcrs-lib.workspace = true
 env_logger.workspace = true

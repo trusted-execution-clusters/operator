@@ -26,7 +26,7 @@ OPERATOR_IMAGE=$(REGISTRY)/trusted-cluster-operator:$(TAG)
 COMPUTE_PCRS_IMAGE=$(REGISTRY)/compute-pcrs:$(TAG)
 REG_SERVER_IMAGE=$(REGISTRY)/registration-server:$(TAG)
 ATTESTATION_KEY_REGISTER_IMAGE=$(REGISTRY)/attestation-key-register:$(TAG)
-TRUSTEE_IMAGE ?= quay.io/trusted-execution-clusters/key-broker-service:latest
+TRUSTEE_IMAGE ?= quay.io/trusted-execution-clusters/key-broker-service:20260106
 # tagged as 42.20250705.3.0
 APPROVED_IMAGE ?= quay.io/fedora/fedora-coreos@sha256:8f11c87187dfe83145001e9571948f9ab466e9f4a8b1e092a4798e5db1030dc3
 

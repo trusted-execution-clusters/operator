@@ -15,7 +15,8 @@ path = [
   "lib/src/vendor_kopium/*",
   "tests/README.md",
   "examples/vm-coreos-ign.yaml",
-  "scripts/install-kubevirt.sh"
+  "scripts/install-kubevirt.sh",
+  ".tekton/*"
 ]
 SPDX-FileCopyrightText = [
     "Alice Frosi <afrosi@redhat.com>",

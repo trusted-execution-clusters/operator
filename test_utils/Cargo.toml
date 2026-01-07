@@ -22,7 +22,7 @@ ignition-config.workspace = true
 k8s-openapi.workspace = true
 kube = { workspace = true }
 log.workspace = true
-rand_core = "0.6"
+rand_core = "0.9"
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true

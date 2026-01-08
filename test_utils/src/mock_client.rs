@@ -178,6 +178,7 @@ pub fn dummy_cluster() -> TrustedExecutionCluster {
     TrustedExecutionCluster {
         metadata: ObjectMeta {
             name: Some("test".to_string()),
+            uid: Some("uid".to_string()),
             ..Default::default()
         },
         status: None,

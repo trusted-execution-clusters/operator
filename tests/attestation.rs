@@ -346,3 +346,20 @@ async fn test_vm_restart_operator_existing() -> anyhow::Result<()> {
     Ok(())
 }
 }
+
+virt_test! {
+async fn test_vm_restart_operator_new() -> anyhow::Result<()> {
+    let test_ctx = setup!().await?;
+    test_ctx.info("Testing operator restart - new VM should boot");
+    let vm_name = "test-coreos-operator-restart-new";
+
+    let deployments: Api<Deployment> =
+        Api::namespaced(test_ctx.client().clone(), test_ctx.namespace());
+    deployments.restart("trusted-cluster-operator").await?;
+    test_ctx.info("Restarted operator deployment");
+
+    let _ = SingleAttestationContext::new(vm_name, &test_ctx).await?;
+    test_ctx.cleanup().await?;
+    Ok(())
+}
+}

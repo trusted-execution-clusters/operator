@@ -3,7 +3,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -30,6 +30,12 @@ mod trustee;
 use crate::conditions::*;
 use operator::*;
 
+struct ClusterContext {
+    client: Client,
+    /// UID of cluster that watchers are based on
+    uid: Mutex<Option<String>>,
+}
+
 fn is_installed(status: Option<TrustedExecutionClusterStatus>) -> bool {
     let chk = |c: &Condition| c.type_ == INSTALLED_CONDITION && c.status == "True";
     status
@@ -38,16 +44,52 @@ fn is_installed(status: Option<TrustedExecutionClusterStatus>) -> bool {
         .unwrap_or(false)
 }
 
+/// Launch reference value-related watchers. Is run once per TrustedExecutionCluster and operator
+/// process. Returns whether watchers were launched.
+async fn launch_rv_watchers(
+    cluster: Arc<TrustedExecutionCluster>,
+    ctx: Arc<ClusterContext>,
+    name: &str,
+) -> Result<bool> {
+    let client = ctx.client.clone();
+    let mut launch_watchers = false;
+    if let Ok(mut ctx_uid) = ctx.uid.lock() {
+        let err = format!("TrustedExecutionCluster {name} had no UID");
+        let cluster_uid = cluster.metadata.uid.clone().expect(&err);
+        if ctx_uid.is_none() || ctx_uid.clone() != Some(cluster_uid.clone()) {
+            launch_watchers = true;
+            *ctx_uid = Some(cluster_uid);
+        }
+    } else {
+        warn!("Failed to acquire lock on context UID store");
+    }
+    if launch_watchers {
+        info!(
+            "First registration of TrustedExecutionCluster {name} by this operator. \
+             Launching reference value watchers."
+        );
+        let owner_reference = generate_owner_reference(&*cluster)?;
+        let rv_ctx = RvContextData {
+            client,
+            owner_reference: owner_reference.clone(),
+            pcrs_compute_image: cluster.spec.pcrs_compute_image.clone(),
+        };
+        reference_values::launch_rv_image_controller(rv_ctx.clone()).await;
+        reference_values::launch_rv_job_controller(rv_ctx.clone()).await;
+    }
+    Ok(launch_watchers)
+}
+
 async fn reconcile(
     cluster: Arc<TrustedExecutionCluster>,
-    client: Arc<Client>,
+    ctx: Arc<ClusterContext>,
 ) -> Result<Action, ControllerError> {
     let generation = cluster.metadata.generation;
     let known_address = cluster.spec.public_trustee_addr.is_some();
     let address_condition = known_trustee_address_condition(known_address, generation);
     let mut conditions = Some(vec![address_condition]);
 
-    let kube_client = Arc::unwrap_or_clone(client);
+    let kube_client = ctx.client.clone();
     let err = "trusted execution cluster had no name";
     let name = &cluster.metadata.name.clone().expect(err);
     let clusters: Api<TrustedExecutionCluster> = Api::default_namespaced(kube_client.clone());
@@ -60,6 +102,7 @@ async fn reconcile(
         return Ok(Action::await_change());
     }
 
+    let _ = launch_rv_watchers(cluster.clone(), ctx, name).await?;
     if is_installed(cluster.status.clone()) {
         return Ok(Action::await_change());
     }
@@ -107,13 +150,6 @@ async fn install_trustee_configuration(
         Err(e) => error!("Failed to create the KBS configuration configmap: {e}"),
     }
 
-    let rv_ctx = RvContextData {
-        client: client.clone(),
-        owner_reference: owner_reference.clone(),
-        pcrs_compute_image: cluster.spec.pcrs_compute_image.clone(),
-    };
-    reference_values::launch_rv_image_controller(rv_ctx.clone()).await;
-    reference_values::launch_rv_job_controller(rv_ctx.clone()).await;
     match reference_values::create_pcrs_config_map(client.clone(), owner_reference.clone()).await {
         Ok(_) => info!("Created bare configmap for PCRs"),
         Err(e) => error!("Failed to create the PCRs configmap: {e}"),
@@ -204,15 +240,18 @@ async fn main() -> Result<()> {
     info!("trusted execution clusters operator",);
     let cl: Api<TrustedExecutionCluster> = Api::default_namespaced(kube_client.clone());
 
-    // Launch all controllers
+    // Launch all controllers except reference value-related ones
     register_server::launch_keygen_controller(kube_client.clone()).await;
     attestation_key_register::launch_ak_controller(kube_client.clone()).await;
     attestation_key_register::launch_machine_ak_controller(kube_client.clone()).await;
     attestation_key_register::launch_secret_ak_controller(kube_client.clone()).await;
 
-    let client = Arc::new(kube_client);
+    let ctx = Arc::new(ClusterContext {
+        client: kube_client,
+        uid: Mutex::new(None),
+    });
     Controller::new(cl, watcher::Config::default())
-        .run(reconcile, controller_error_policy, client)
+        .run(reconcile, controller_error_policy, ctx)
         .for_each(controller_info)
         .await;
 
@@ -229,6 +268,47 @@ mod tests {
     use super::*;
     use trusted_cluster_operator_test_utils::mock_client::*;
 
+    fn dummy_cluster_ctx(client: Client) -> ClusterContext {
+        ClusterContext {
+            client,
+            uid: Mutex::new(None),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_launch_watchers_create() {
+        let clos = async |req, ctr| panic!("unexpected API interaction: {req:?}, counter {ctr}");
+        count_check!(0, clos, |client| {
+            let cluster = Arc::new(dummy_cluster());
+            let ctx = Arc::new(dummy_cluster_ctx(client));
+            assert!(launch_rv_watchers(cluster, ctx, "test").await.unwrap());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_launch_watchers_update() {
+        let clos = async |req, ctr| panic!("unexpected API interaction: {req:?}, counter {ctr}");
+        count_check!(0, clos, |client| {
+            let cluster = Arc::new(dummy_cluster());
+            let mut ctx = dummy_cluster_ctx(client);
+            ctx.uid = Mutex::new(Some("def".to_string()));
+            let result = launch_rv_watchers(cluster, Arc::new(ctx), "test");
+            assert!(result.await.unwrap());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_launch_watchers_existing() {
+        let clos = async |req, ctr| panic!("unexpected API interaction: {req:?}, counter {ctr}");
+        count_check!(0, clos, |client| {
+            let cluster = dummy_cluster();
+            let mut ctx = dummy_cluster_ctx(client);
+            ctx.uid = Mutex::new(cluster.metadata.uid.clone());
+            let result = launch_rv_watchers(Arc::new(cluster), Arc::new(ctx), "test");
+            assert!(!result.await.unwrap());
+        });
+    }
+
     #[tokio::test]
     async fn test_reconcile_uninstalling() {
         let clos = async |req: Request<Body>, ctr| match req.method() {
@@ -241,7 +321,7 @@ mod tests {
         count_check!(1, clos, |client| {
             let mut cluster = dummy_cluster();
             cluster.metadata.deletion_timestamp = Some(Time(Utc::now()));
-            let result = reconcile(Arc::new(cluster), Arc::new(client)).await;
+            let result = reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client))).await;
             assert_eq!(result.unwrap(), Action::await_change());
         });
     }
@@ -256,16 +336,19 @@ mod tests {
                     metadata: Default::default(),
                 };
                 Ok(serde_json::to_string(&object_list).unwrap())
-            } else if ctr == 1 && req.method() == Method::PATCH {
+            } else if 1 < ctr && ctr < 4 {
+                // Watchers
+                Ok(serde_json::to_string(&dummy_cluster()).unwrap())
+            } else if ctr == 4 && req.method() == Method::PATCH {
                 assert_body_contains(req, NOT_INSTALLED_REASON_NON_UNIQUE).await;
                 Ok(serde_json::to_string(&dummy_cluster()).unwrap())
             } else {
                 panic!("unexpected API interaction: {req:?}, counter {ctr}");
             }
         };
-        count_check!(2, clos, |client| {
+        count_check!(4, clos, |client| {
             let cluster = Arc::new(dummy_cluster());
-            let result = reconcile(cluster, Arc::new(client)).await;
+            let result = reconcile(cluster, Arc::new(dummy_cluster_ctx(client))).await;
             assert_eq!(result.unwrap(), Action::requeue(Duration::from_secs(60)));
         });
     }
@@ -276,9 +359,9 @@ mod tests {
             r if r.method() == Method::GET => Err(StatusCode::INTERNAL_SERVER_ERROR),
             _ => panic!("unexpected API interaction: {req:?}"),
         };
-        count_check!(1, clos, |client| {
+        count_check!(3, clos, |client| {
             let cluster = Arc::new(dummy_cluster());
-            let result = reconcile(cluster, Arc::new(client)).await;
+            let result = reconcile(cluster, Arc::new(dummy_cluster_ctx(client))).await;
             assert!(result.is_err());
         });
     }

@@ -16,19 +16,9 @@ metadata:
           },
           "spec": {
             "trusteeImage": "quay.io/trusted-execution-clusters/key-broker-service:tpm-verifier-built-in-as-20250711",
-            "pcrsComputeImage": "quay.io/trusted-execution-clusters/compute-pcrs:latest",
-            "registerServerImage": "quay.io/trusted-execution-clusters/registration-server:latest"
-          }
-        },
-        {
-          "apiVersion": "trusted-execution-clusters.io/v1alpha1",
-          "kind": "Machine",
-          "metadata": {
-            "name": "example-machine"
-          },
-          "spec": {
-            "id": "c3e3e3e3-c3e3-c3e3-c3e3-c3e3e3e3e3e3",
-            "address": "192.168.1.100"
+            "pcrsComputeImage": "quay.io/trusted-execution-clusters/compute-pcrs:0.1.0",
+            "registerServerImage": "quay.io/trusted-execution-clusters/registration-server:0.1.0",
+            "publicTrusteeAddr": "<trustee-address>"
           }
         },
         {
@@ -43,13 +33,13 @@ metadata:
         }
       ]
     olm.skipRange: ">=0.0.0 <1.0.0"
-    containerImage: "quay.io/trusted-execution-clusters/trusted-cluster-operator:v0.1.0"
+    containerImage: "quay.io/trusted-execution-clusters/trusted-cluster-operator:0.1.0"
     capabilities: Basic Install
   name: trusted-cluster-operator.v0.1.0
   namespace: placeholder
 spec:
   displayName: Trusted Execution Cluster Operator
-  description: An operator to manage trusted execution cluster, which are Kubernetes cluster that can attest their integrity to a relying party
+  description: An operator to manage a trusted execution cluster, which is a Kubernetes cluster that can attest its integrity to a relying party
   version: 0.1.0
   minKubeVersion: "1.27.0"
   provider:
@@ -57,7 +47,6 @@ spec:
   icon:
     - base64data: "<base64 PNG>"
       mediatype: "image/png"
-  # replaces: trusted-cluster-operator.vX.Y.Z # Uncomment and set this to the previous CSV name when updating the operator.
 
   maturity: alpha
   installModes:
@@ -69,6 +58,15 @@ spec:
       supported: false
     - type: AllNamespaces
       supported: false
+  relatedImages:
+    - name: trusted-cluster-operator
+      image: quay.io/trusted-execution-clusters/trusted-cluster-operator:0.1.0
+    - name: compute-pcrs
+      image: quay.io/trusted-execution-clusters/compute-pcrs:0.1.0
+    - name: registration-server
+      image: quay.io/trusted-execution-clusters/registration-server:0.1.0
+    - name: trustee
+      image: quay.io/trusted-execution-clusters/key-broker-service:tpm-verifier-built-in-as-20250711
   install:
     strategy: deployment
     spec:
@@ -82,11 +80,11 @@ spec:
             replicas: 1
             selector:
               matchLabels:
-                name: trusted-cluster-operator
+                app: trusted-cluster-operator
             template:
               metadata:
                 labels:
-                  name: trusted-cluster-operator
+                  app: trusted-cluster-operator
               spec:
                 securityContext:
                   runAsNonRoot: true
@@ -94,7 +92,7 @@ spec:
                 serviceAccountName: trusted-cluster-operator
                 containers:
                   - name: trusted-cluster-operator
-                    image: quay.io/trusted-execution-clusters/trusted-cluster-operator:v0.1.0
+                    image: quay.io/trusted-execution-clusters/trusted-cluster-operator:0.1.0
                     command:
                       - /usr/bin/operator
                     imagePullPolicy: IfNotPresent
@@ -109,10 +107,6 @@ spec:
                             fieldPath: metadata.name
                       - name: OPERATOR_NAME
                         value: "trusted-cluster-operator"
-                      - name: COMPUTE_PCRS_IMAGE
-                        value: "quay.io/trusted-execution-clusters/compute-pcrs:v0.1.0"
-                      - name: REGISTER_SERVER_IMAGE
-                        value: "quay.io/trusted-execution-clusters/registration-server:v0.1.0"
                     resources:
                       limits:
                         cpu: 500m

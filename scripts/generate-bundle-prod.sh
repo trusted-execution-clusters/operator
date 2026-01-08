@@ -22,7 +22,7 @@ done
 [[ -z "$BUNDLE_VERSION" ]] && { echo "Error: bundle version cannot be empty"; exit 1; }
 
 # Required environment variables
-for var in OPERATOR_IMAGE COMPUTE_PCRS_IMAGE REG_SERVER_IMAGE; do
+for var in OPERATOR_IMAGE COMPUTE_PCRS_IMAGE REG_SERVER_IMAGE TRUSTEE_IMAGE; do
     : "${!var:?Please export $var}"
 done
 
@@ -58,10 +58,11 @@ yq -i ".metadata.annotations.containerImage = \"${OPERATOR_IMAGE}\"" "$CSV_FILE"
 # Patch deployment container image
 yq -i ".spec.install.spec.deployments[0].spec.template.spec.containers[0].image = \"${OPERATOR_IMAGE}\"" "$CSV_FILE"
 
-# Patch environment variables
-for env_var in COMPUTE_PCRS_IMAGE REG_SERVER_IMAGE; do
-  yq -i "(.spec.install.spec.deployments[0].spec.template.spec.containers[0].env[] | select(.name == \"$env_var\")).value = \"${!env_var}\"" "$CSV_FILE"
-done
+# Patch relatedImages section for air-gapped environments
+yq -i "(.spec.relatedImages[] | select(.name == \"trusted-cluster-operator\")).image = \"${OPERATOR_IMAGE}\"" "$CSV_FILE"
+yq -i "(.spec.relatedImages[] | select(.name == \"compute-pcrs\")).image = \"${COMPUTE_PCRS_IMAGE}\"" "$CSV_FILE"
+yq -i "(.spec.relatedImages[] | select(.name == \"registration-server\")).image = \"${REG_SERVER_IMAGE}\"" "$CSV_FILE"
+yq -i "(.spec.relatedImages[] | select(.name == \"trustee\")).image = \"${TRUSTEE_IMAGE}\"" "$CSV_FILE"
 
 # Patch RBAC rules
 yq -i ".spec.install.spec.clusterPermissions[0].rules = load(\"${RBAC_ROLE_FILE}\").rules" "$CSV_FILE"

@@ -31,6 +31,6 @@ COPY operator/src operator/src
 RUN cargo build -p operator $(if [ "$build_type" = release ]; then echo --release; fi)
 
 # Distribution stage
-FROM quay.io/fedora/fedora:42
+FROM quay.io/fedora/fedora:44
 ARG build_type
 COPY --from=builder "/build/target/$build_type/operator" /usr/bin

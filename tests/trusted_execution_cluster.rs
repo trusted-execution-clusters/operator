@@ -11,7 +11,7 @@ use trusted_cluster_operator_lib::reference_values::ImagePcrs;
 use trusted_cluster_operator_lib::{ApprovedImage, TrustedExecutionCluster};
 use trusted_cluster_operator_test_utils::*;
 
-const EXPECTED_PCR4: &str = "551bbd142a716c67cd78336593c2eb3b547b575e810ced4501d761082b5cd4a8";
+const EXPECTED_PCR4: &str = "ff2b357be4a4bc66be796d4e7b2f1f27077dc89b96220aae60b443bcf4672525";
 
 named_test!(
     async fn test_trusted_execution_cluster_uninstall() -> anyhow::Result<()> {
@@ -103,7 +103,7 @@ async fn test_image_pcrs_configmap_updates() -> anyhow::Result<()> {
                 Part { name: "EV_SEPARATOR".to_string(), hash: "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119".to_string() },
                 Part { name: "EV_EFI_BOOT_SERVICES_APPLICATION".to_string(), hash: "94896c17d49fc8c8df0cc2836611586edab1615ce7cb58cf13fc5798de56b367".to_string() },
                 Part { name: "EV_EFI_BOOT_SERVICES_APPLICATION".to_string(), hash: "bc6844fc7b59b4f0c7da70a307fc578465411d7a2c34b0f4dc2cc154c873b644".to_string() },
-                Part { name: "EV_EFI_BOOT_SERVICES_APPLICATION".to_string(), hash: "2b1dc59bc61dbbc3db11a6f3b0708c948efd46cceb7f6c8ea2024b8d1b8c829a".to_string() },
+                Part { name: "EV_EFI_BOOT_SERVICES_APPLICATION".to_string(), hash: "72c613f1b4d60dcf51f82f3458cca246580d23150130ec6751ac6fa62c867364".to_string() },
             ],
         },
         Pcr {

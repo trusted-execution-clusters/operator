@@ -188,6 +188,8 @@ pub fn dummy_cluster() -> TrustedExecutionCluster {
             public_trustee_addr: Some("::".to_string()),
             register_server_port: None,
             trustee_kbs_port: None,
+            attestation_key_register_image: "".to_string(),
+            attestation_key_register_port: None,
         },
     }
 }

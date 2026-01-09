@@ -4,6 +4,7 @@ insecure_http = true
 
 [admin]
 insecure_api = true
+type = "InsecureAllowAll"
 
 [attestation_token]
 insecure_key = true

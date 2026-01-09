@@ -42,3 +42,20 @@ pub fn installed_condition(reason: &str, generation: Option<i64>) -> Condition {
         observed_generation: generation,
     }
 }
+
+pub fn attestation_key_approved_condition(reason: &str, generation: Option<i64>) -> Condition {
+    Condition {
+        type_: ATTESTATION_KEY_APPROVED_CONDITION.to_string(),
+        status: condition_status(reason == ATTESTATION_KEY_MACHINE_APPROVE),
+        reason: reason.to_string(),
+        message: match reason {
+            ATTESTATION_KEY_MACHINE_APPROVE => {
+                "Attestation key approved automatically based on machine registration"
+            }
+            _ => "",
+        }
+        .to_string(),
+        last_transition_time: Time(Utc::now()),
+        observed_generation: generation,
+    }
+}

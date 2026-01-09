@@ -353,7 +353,7 @@ impl TestContext {
 
         test_info!(&self.test_name, "Preparing RBAC manifests");
 
-        let sa_src = workspace_root.join("config/rbac/service_account.yaml");
+        let sa_src = workspace_root.join("config/rbac/base/service_account.yaml");
         let sa_content = std::fs::read_to_string(&sa_src)?
             .replace("namespace: system", &format!("namespace: {}", ns));
         let sa_dst = rbac_temp_dir.join("service_account.yaml");
@@ -366,7 +366,7 @@ impl TestContext {
         );
         std::fs::write(&role_path, role_content)?;
 
-        let rb_src = workspace_root.join("config/rbac/role_binding.yaml");
+        let rb_src = workspace_root.join("config/rbac/base/role_binding.yaml");
         let rb_content = std::fs::read_to_string(&rb_src)?
             .replace(
                 "name: manager-rolebinding",
@@ -380,13 +380,13 @@ impl TestContext {
         let rb_dst = rbac_temp_dir.join("role_binding.yaml");
         std::fs::write(&rb_dst, rb_content)?;
 
-        let le_role_src = workspace_root.join("config/rbac/leader_election_role.yaml");
+        let le_role_src = workspace_root.join("config/rbac/base/leader_election_role.yaml");
         let le_role_content = std::fs::read_to_string(&le_role_src)?
             .replace("namespace: system", &format!("namespace: {}", ns));
         let le_role_dst = rbac_temp_dir.join("leader_election_role.yaml");
         std::fs::write(&le_role_dst, le_role_content)?;
 
-        let le_rb_src = workspace_root.join("config/rbac/leader_election_role_binding.yaml");
+        let le_rb_src = workspace_root.join("config/rbac/base/leader_election_role_binding.yaml");
         let le_rb_content = std::fs::read_to_string(&le_rb_src)?
             .replace("namespace: system", &format!("namespace: {}", ns));
         let le_rb_dst = rbac_temp_dir.join("leader_election_role_binding.yaml");

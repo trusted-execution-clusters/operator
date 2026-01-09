@@ -3,6 +3,21 @@
 # SPDX-License-Identifier: CC0-1.0
 
 namespace: trusted-execution-clusters
+patches:
+  - target:
+      kind: ClusterRoleBinding
+      name: manager-rolebinding
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: NAMESPACE-manager-rolebinding
+  - target:
+      kind: ClusterRoleBinding
+      name: metrics-auth-rolebinding
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: NAMESPACE-metrics-auth-rolebinding
 resources:
   # All RBAC will be applied under this service account in
   # the deployment namespace. You may comment out this resource

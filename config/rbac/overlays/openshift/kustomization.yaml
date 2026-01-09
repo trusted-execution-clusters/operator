@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Yalan Zhang <yalzhang@redhat.com>
+#
+# SPDX-License-Identifier: CC0-1.0
+
+# Kustomize overlay for OpenShift clusters
+# This extends the base RBAC configuration with OpenShift-specific resources
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - scc.yaml
+
+patches:
+  - target:
+      kind: SecurityContextConstraints
+      name: trusted-cluster-scc
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: NAMESPACE-trusted-cluster-scc
+      - op: replace
+        path: /users/0
+        value: system:serviceaccount:NAMESPACE:trusted-cluster-operator

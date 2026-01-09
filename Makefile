@@ -6,6 +6,7 @@
 .PHONY: all build build-tools crds-rs generate manifests cluster-up cluster-down image push install-trustee install clean fmt-check clippy lint test test-release release-tarball
 
 NAMESPACE ?= trusted-execution-clusters
+PLATFORM ?= kind
 
 KUBECTL=kubectl
 
@@ -41,10 +42,12 @@ reg-server: crds-rs
 	cargo build -p register-server
 
 CRD_YAML_PATH = config/crd
+RBAC_YAML_PATH = config/rbac/base
 API_PATH = api/v1alpha1
 generate: $(CONTROLLER_GEN)
 	$(CONTROLLER_GEN) rbac:roleName=trusted-cluster-operator-role crd webhook paths="./..." \
-		output:crd:artifacts:config=$(CRD_YAML_PATH)
+		output:crd:artifacts:config=$(CRD_YAML_PATH) \
+		output:rbac:artifacts:config=$(RBAC_YAML_PATH)
 
 RS_LIB_PATH = lib/src
 CRD_RS_PATH = $(RS_LIB_PATH)/kopium
@@ -132,10 +135,15 @@ endif
 	scripts/clean-cluster-kind.sh $(OPERATOR_IMAGE) $(COMPUTE_PCRS_IMAGE) $(REG_SERVER_IMAGE)
 	$(YQ) '.spec.publicTrusteeAddr = "$(TRUSTEE_ADDR):8080"' \
 		-i $(DEPLOY_PATH)/trusted_execution_cluster_cr.yaml
-	$(YQ) '.namespace = "$(NAMESPACE)"' -i config/rbac/kustomization.yaml
+	$(YQ) '.namespace = "$(NAMESPACE)"' -i config/rbac/base/kustomization.yaml
+	$(YQ) '.patches[0].patch = "- op: replace\n  path: /metadata/name\n  value: $(NAMESPACE)-manager-rolebinding"' -i config/rbac/base/kustomization.yaml
+	$(YQ) '.patches[1].patch = "- op: replace\n  path: /metadata/name\n  value: $(NAMESPACE)-metrics-auth-rolebinding"' -i config/rbac/base/kustomization.yaml
+	@if [ "$(PLATFORM)" = "openshift" ]; then \
+		$(YQ) '.patches[0].patch = "- op: replace\n  path: /metadata/name\n  value: $(NAMESPACE)-trusted-cluster-scc\n- op: replace\n  path: /users/0\n  value: system:serviceaccount:$(NAMESPACE):trusted-cluster-operator"' -i config/rbac/overlays/openshift/kustomization.yaml; \
+	fi
 	$(KUBECTL) apply -f $(DEPLOY_PATH)/operator.yaml
 	$(KUBECTL) apply -f config/crd
-	$(KUBECTL) apply -k config/rbac
+	$(KUBECTL) apply -k config/rbac/overlays/$(PLATFORM)
 	$(KUBECTL) apply -f $(DEPLOY_PATH)/trusted_execution_cluster_cr.yaml
 	$(KUBECTL) apply -f $(DEPLOY_PATH)/approved_image_cr.yaml
 	$(KUBECTL) apply -f kind/register-forward.yaml
@@ -147,7 +155,7 @@ install-kubevirt:
 clean:
 	cargo clean
 	rm -rf bin manifests $(CRD_YAML_PATH) $(CRD_RS_PATH)
-	rm -f trusted-cluster-gen config/rbac/role.yaml .crates.toml .crates2.json
+	rm -f trusted-cluster-gen config/rbac/base/role.yaml .crates.toml .crates2.json
 
 fmt-check:
 	cargo fmt -- --check

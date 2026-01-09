@@ -355,14 +355,14 @@ impl TestContext {
 
         let sa_src = workspace_root.join("config/rbac/base/service_account.yaml");
         let sa_content = std::fs::read_to_string(&sa_src)?
-            .replace("namespace: system", &format!("namespace: {}", ns));
+            .replace("namespace: system", &format!("namespace: {ns}"));
         let sa_dst = rbac_temp_dir.join("service_account.yaml");
         std::fs::write(&sa_dst, sa_content)?;
 
         let role_path = rbac_temp_dir.join("role.yaml");
         let role_content = std::fs::read_to_string(&role_path)?.replace(
             "name: trusted-cluster-operator-role",
-            &format!("name: {}-trusted-cluster-operator-role", ns),
+            &format!("name: {ns}-trusted-cluster-operator-role"),
         );
         std::fs::write(&role_path, role_content)?;
 
@@ -370,25 +370,25 @@ impl TestContext {
         let rb_content = std::fs::read_to_string(&rb_src)?
             .replace(
                 "name: manager-rolebinding",
-                &format!("name: {}-manager-rolebinding", ns),
+                &format!("name: {ns}-manager-rolebinding"),
             )
             .replace(
                 "name: trusted-cluster-operator-role",
-                &format!("name: {}-trusted-cluster-operator-role", ns),
+                &format!("name: {ns}-trusted-cluster-operator-role"),
             )
-            .replace("namespace: system", &format!("namespace: {}", ns));
+            .replace("namespace: system", &format!("namespace: {ns}"));
         let rb_dst = rbac_temp_dir.join("role_binding.yaml");
         std::fs::write(&rb_dst, rb_content)?;
 
         let le_role_src = workspace_root.join("config/rbac/base/leader_election_role.yaml");
         let le_role_content = std::fs::read_to_string(&le_role_src)?
-            .replace("namespace: system", &format!("namespace: {}", ns));
+            .replace("namespace: system", &format!("namespace: {ns}"));
         let le_role_dst = rbac_temp_dir.join("leader_election_role.yaml");
         std::fs::write(&le_role_dst, le_role_content)?;
 
         let le_rb_src = workspace_root.join("config/rbac/base/leader_election_role_binding.yaml");
         let le_rb_content = std::fs::read_to_string(&le_rb_src)?
-            .replace("namespace: system", &format!("namespace: {}", ns));
+            .replace("namespace: system", &format!("namespace: {ns}"));
         let le_rb_dst = rbac_temp_dir.join("leader_election_role_binding.yaml");
         std::fs::write(&le_rb_dst, le_rb_content)?;
 
@@ -397,7 +397,7 @@ impl TestContext {
             r#"# SPDX-FileCopyrightText: Generated for testing
 # SPDX-License-Identifier: CC0-1.0
 
-namespace: {}
+namespace: {ns}
 
 resources:
   - service_account.yaml
@@ -405,8 +405,7 @@ resources:
   - role_binding.yaml
   - leader_election_role.yaml
   - leader_election_role_binding.yaml
-"#,
-            ns
+"#
         );
 
         let temp_kustomization_path = rbac_temp_dir.join("kustomization.yaml");
@@ -434,7 +433,7 @@ resources:
             &self.test_name,
             "Updating CR manifest with publicTrusteeAddr"
         );
-        let trustee_addr = format!("kbs-service.{}.svc.cluster.local:8080", ns);
+        let trustee_addr = format!("kbs-service.{ns}.svc.cluster.local:8080");
         let cr_manifest_path = manifests_path.join("trusted_execution_cluster_cr.yaml");
 
         let cr_content = std::fs::read_to_string(&cr_manifest_path)?;
@@ -492,8 +491,7 @@ resources:
             .with_timeout(Duration::from_secs(60))
             .with_interval(Duration::from_secs(5))
             .with_error_message(format!(
-                "image-pcrs ConfigMap in the namespace {} not found",
-                ns
+                "image-pcrs ConfigMap in the namespace {ns} not found"
             ));
 
         let test_name_owned = self.test_name.clone();

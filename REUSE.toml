@@ -6,6 +6,7 @@ path = [
   "Cargo.lock",
   "go.sum",
   "PROJECT",
+  ".github/renovate.json",
   "operator/src/kbs-config.toml",
   "operator/src/resource.rego",
   "operator/src/tpm.rego",

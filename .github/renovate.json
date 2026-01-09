@@ -1,0 +1,9 @@
+{
+    "packageRules": [
+        {
+            "matchPackageNames": ["quay.io/fedora/fedora"],
+            "allowedVersions": "!/rawhide/"
+        }
+    ],
+    "postUpdateOptions": ["gomodTidy"]
+}

@@ -9,6 +9,7 @@ NAMESPACE ?= trusted-execution-clusters
 PLATFORM ?= kind
 
 KUBECTL=kubectl
+INTEGRATION_TEST_THREADS ?= 1
 
 LOCALBIN ?= $(shell pwd)/bin
 CONTROLLER_TOOLS_VERSION ?= v0.19.0
@@ -180,7 +181,7 @@ test-release: crds-rs
 
 integration-tests: generate trusted-cluster-gen crds-rs
 	RUST_LOG=info cargo test --test trusted_execution_cluster --test attestation \
-		--features virtualization -- --no-capture  --test-threads=3
+		--features virtualization -- --no-capture  --test-threads=$(INTEGRATION_TEST_THREADS)
 
 $(LOCALBIN):
 	mkdir -p $(LOCALBIN)

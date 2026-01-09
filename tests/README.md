@@ -12,12 +12,13 @@ VM, like getting the serial console and verifying that the guest has correctly b
 N.B KubeVirt requires the cluster to be run as a privileged container on the host in order to handle the devices. Therefore, for now, we have moved to Docker with kind in order to generate the cluster. In the future, we might be able to move to rootful podman.
 
 Run the tests locally with kind:
-```
+```bash
 export RUNTIME=docker
 make cluster-up
 export REGISTRY=localhost:5000/trusted-execution-clusters
 make push
 make install-kubevirt
+# Set $INTEGRATION_TEST_THREADS to multi-thread (>4G memory per test)
 make integration-tests
 ```
 

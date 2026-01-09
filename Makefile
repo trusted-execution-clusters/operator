@@ -116,6 +116,7 @@ bundle: manifests
 	@OPERATOR_IMAGE=$(OPERATOR_IMAGE) \
 	COMPUTE_PCRS_IMAGE=$(COMPUTE_PCRS_IMAGE) \
 	REG_SERVER_IMAGE=$(REG_SERVER_IMAGE) \
+	TRUSTEE_IMAGE=$(TRUSTEE_IMAGE) \
 	scripts/generate-bundle-prod.sh -v $(TAG) -n $(NAMESPACE) $(if $(PREVIOUS_CSV),-p $(PREVIOUS_CSV))
 
 bundle-image: bundle

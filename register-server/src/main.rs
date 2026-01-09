@@ -83,7 +83,14 @@ async fn get_public_trustee_addr(client: Client) -> anyhow::Result<String> {
     let clusters: Api<TrustedExecutionCluster> = Api::default_namespaced(client);
     let params = Default::default();
     let mut list = clusters.list(&params).await?;
-    if list.items.len() != 1 {
+    if list.items.is_empty() {
+        return Err(anyhow!(
+            "No TrustedExecutionCluster found in namespace {namespace}. \
+             Ensure that this register-server is in the same namespace \
+             as the TrustedExecutionCluster you're targeting.
+             Cancelling Ignition Clevis PIN request.",
+        ));
+    } else if list.items.len() > 1 {
         return Err(anyhow!(
             "More than one TrustedExecutionCluster found in namespace {namespace}. \
              trusted-cluster-operator does not support more than one TrustedExecutionCluster. \
@@ -209,6 +216,19 @@ mod tests {
         count_check!(1, clos, |client| {
             let addr = get_public_trustee_addr(client).await.unwrap();
             assert_eq!(addr, "::".to_string());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_get_public_trustee_addr_none() {
+        let clos = async |_, _| {
+            let mut clusters = dummy_clusters();
+            clusters.items.clear();
+            Ok(serde_json::to_string(&clusters).unwrap())
+        };
+        count_check!(1, clos, |client| {
+            let err = get_public_trustee_addr(client).await.err().unwrap();
+            assert!(err.to_string().contains("No TrustedExecutionCluster found"));
         });
     }
 

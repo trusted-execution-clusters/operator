@@ -3951,6 +3951,7 @@ dependencies = [
  "compute-pcrs-lib",
  "env_logger",
  "fs_extra",
+ "glob",
  "http 1.4.0",
  "ignition-config",
  "k8s-openapi",

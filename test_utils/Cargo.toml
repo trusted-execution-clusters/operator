@@ -35,3 +35,4 @@ tower = "0.5.2"
 trusted-cluster-operator-lib = { path = "../lib" }
 uuid.workspace = true
 which = "8.0"
+glob = "0.3.3"

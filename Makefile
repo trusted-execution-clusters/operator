@@ -164,7 +164,7 @@ endif
 		sed 's/<NAMESPACE>/$(NAMESPACE)/g' kind/kbs-forward.yaml | $(KUBECTL) apply -f -; \
 	fi
 	$(KUBECTL) apply -f $(DEPLOY_PATH)/trusted_execution_cluster_cr.yaml
-	$(KUBECTL) apply -f $(DEPLOY_PATH)/approved_image_cr.yaml
+	$(KUBECTL) apply -f '$(DEPLOY_PATH)/approved_image_cr_*.yaml'
 
 install-kubevirt:
 	scripts/install-kubevirt.sh

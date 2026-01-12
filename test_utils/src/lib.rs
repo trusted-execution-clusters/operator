@@ -5,6 +5,7 @@
 
 use anyhow::{Result, anyhow};
 use fs_extra::dir;
+use glob::glob;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{ConfigMap, Namespace};
 use kube::api::DeleteParams;
@@ -228,7 +229,7 @@ pub struct TestContext {
 }
 
 impl TestContext {
-    pub async fn new(test_name: &str) -> Result<Self> {
+    pub async fn new(test_name: &str, approved_images: &[&str]) -> Result<Self> {
         INIT.call_once(|| {
             let _ = env_logger::builder().is_test(true).try_init();
         });
@@ -248,7 +249,7 @@ impl TestContext {
         ctx.manifests_dir = manifests_dir;
 
         ctx.create_namespace().await?;
-        ctx.apply_operator_manifests().await?;
+        ctx.apply_operator_manifests(approved_images).await?;
 
         test_info!(
             &ctx.test_name,
@@ -417,7 +418,11 @@ impl TestContext {
             .await
     }
 
-    async fn generate_manifests(&self, workspace_root: &PathBuf) -> Result<(PathBuf, PathBuf)> {
+    async fn generate_manifests(
+        &self,
+        workspace_root: &PathBuf,
+        approved_images: &[&str],
+    ) -> Result<(PathBuf, PathBuf)> {
         let ns = self.test_namespace.clone();
         let controller_gen_path = workspace_root.join("bin/controller-gen-v0.19.0");
 
@@ -476,6 +481,11 @@ impl TestContext {
         args.extend(&["-register-server-image", &reg_srv_img]);
         args.extend(&["-attestation-key-register-image", &att_reg_img]);
         args.extend(&["-approved-image", &approved_image]);
+        args.extend(
+            approved_images
+                .iter()
+                .flat_map(|&i| vec!["-approved-image", i]),
+        );
         let manifest_gen = Command::new(&trusted_cluster_gen_path).args(args).output();
         let manifest_gen_output = manifest_gen.await?;
         if !manifest_gen_output.status.success() {
@@ -485,11 +495,13 @@ impl TestContext {
         Ok((crd_temp_dir, rbac_temp_dir))
     }
 
-    async fn apply_operator_manifests(&self) -> Result<()> {
+    async fn apply_operator_manifests(&self, approved_images: &[&str]) -> Result<()> {
         let manifests_dir = &self.manifests_dir;
         test_info!(&self.test_name, "Generating manifests in {manifests_dir}");
         let workspace_root = env::current_dir()?.join("..");
-        let (crd_temp_dir, rbac_temp_dir) = self.generate_manifests(&workspace_root).await?;
+        let (crd_temp_dir, rbac_temp_dir) = self
+            .generate_manifests(&workspace_root, approved_images)
+            .await?;
         test_info!(&self.test_name, "Manifests generated successfully");
 
         let tec = "trustedexecutionclusters.trusted-execution-clusters.io";
@@ -620,13 +632,20 @@ impl TestContext {
         let cr_manifest_str = cr_manifest_path.to_str().unwrap();
         kube_apply!(cr_manifest_str, &self.test_name, "Applying CR manifest");
 
-        let approved_image_path = manifests_path.join("approved_image_cr.yaml");
-        let approved_image_str = approved_image_path.to_str().unwrap();
-        kube_apply!(
-            approved_image_str,
-            &self.test_name,
-            "Applying ApprovedImage manifest"
-        );
+        let approved_image_paths = glob(
+            manifests_path
+                .join("approved_image_cr_*.yaml")
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Invalid ApprovedImage manifest path"))?,
+        )?;
+        for approved_image_path in approved_image_paths.filter_map(Result::ok) {
+            let approved_image_str = approved_image_path.to_str().unwrap();
+            kube_apply!(
+                approved_image_str,
+                &self.test_name,
+                "Applying ApprovedImage manifest"
+            );
+        }
 
         let deployments_api: Api<Deployment> = Api::namespaced(self.client.clone(), &ns);
 
@@ -700,7 +719,9 @@ macro_rules! virt_test {
 
 #[macro_export]
 macro_rules! setup {
-    () => {{ $crate::TestContext::new(TEST_NAME) }};
+    () => {{ $crate::TestContext::new(TEST_NAME, &[]) }};
+
+    ($images:expr) => {{ $crate::TestContext::new(TEST_NAME, &$images) }};
 }
 
 async fn setup_test_client() -> Result<Client> {

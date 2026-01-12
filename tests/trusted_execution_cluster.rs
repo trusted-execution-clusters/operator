@@ -255,7 +255,7 @@ async fn test_image_disallow() -> anyhow::Result<()> {
     let namespace = test_ctx.namespace();
 
     let images: Api<ApprovedImage> = Api::namespaced(client.clone(), namespace);
-    images.delete("coreos", &DeleteParams::default()).await?;
+    images.delete("coreos-0", &DeleteParams::default()).await?;
 
     let configmap_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
     let poller = Poller::new()

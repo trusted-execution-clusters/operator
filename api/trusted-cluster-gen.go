@@ -21,6 +21,17 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+type stringSlice []string
+
+func (s *stringSlice) String() string {
+	return strings.Join(*s, ", ")
+}
+
+func (s *stringSlice) Set(value string) error {
+	*s = append(*s, value)
+	return nil
+}
+
 type Args struct {
 	outputDir                   string
 	image                       string
@@ -29,7 +40,7 @@ type Args struct {
 	pcrsComputeImage            string
 	registerServerImage         string
 	attestationKeyRegisterImage string
-	approvedImage               string
+	approvedImages              stringSlice
 }
 
 func main() {
@@ -41,7 +52,7 @@ func main() {
 	flag.StringVar(&args.pcrsComputeImage, "pcrs-compute-image", "quay.io/trusted-execution-clusters/compute-pcrs:latest", "Container image with the Trusted Execution Clusters compute-pcrs binary")
 	flag.StringVar(&args.registerServerImage, "register-server-image", "quay.io/trusted-execution-clusters/register-server:latest", "Register server image to use in the deployment")
 	flag.StringVar(&args.attestationKeyRegisterImage, "attestation-key-register-image", "quay.io/trusted-execution-clusters/attestation-key-register:latest", "Attestation key register image to use in the deployment")
-	flag.StringVar(&args.approvedImage, "approved-image", "", "When set, defines an initial approved image. Must be a bootable container image with SHA reference.")
+	flag.Var(&args.approvedImages, "approved-image", "When set, defines an initial approved image. Must be a bootable container image with SHA reference. Can be set multiple times.")
 	flag.Parse()
 
 	log.SetFlags(log.LstdFlags)
@@ -167,34 +178,33 @@ func generateTrustedExecutionClusterCR(args *Args) error {
 }
 
 func generateApprovedImageCR(args *Args) error {
-	if args.approvedImage == "" {
-		return nil
+	for i, approvedImage := range args.approvedImages {
+		approvedImage := &v1alpha1.ApprovedImage{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: v1alpha1.GroupVersion.String(),
+				Kind:       "ApprovedImage",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("coreos-%d", i),
+				Namespace: args.namespace,
+			},
+			Spec: v1alpha1.ApprovedImageSpec{
+				Reference: approvedImage,
+			},
+		}
+
+		approvedImageYAML, err := yaml.Marshal(approvedImage)
+		if err != nil {
+			return fmt.Errorf("failed to marshal ApprovedImage CR %d: %v", i, err)
+		}
+
+		outputPath := filepath.Join(args.outputDir, fmt.Sprintf("approved_image_cr_%d.yaml", i))
+		if err := writeResources(outputPath, []string{string(approvedImageYAML)}); err != nil {
+			return fmt.Errorf("failed to write %s: %v", outputPath, err)
+		}
+		log.Printf("Generated ApprovedImage CR at %s", outputPath)
 	}
 
-	approvedImage := &v1alpha1.ApprovedImage{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: v1alpha1.GroupVersion.String(),
-			Kind:       "ApprovedImage",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "coreos",
-			Namespace: args.namespace,
-		},
-		Spec: v1alpha1.ApprovedImageSpec{
-			Reference: args.approvedImage,
-		},
-	}
-
-	approvedImageYAML, err := yaml.Marshal(approvedImage)
-	if err != nil {
-		return fmt.Errorf("failed to marshal ApprovedImage CR: %v", err)
-	}
-
-	outputPath := filepath.Join(args.outputDir, "approved_image_cr.yaml")
-	if err := writeResources(outputPath, []string{string(approvedImageYAML)}); err != nil {
-		return fmt.Errorf("failed to write %s: %v", outputPath, err)
-	}
-	log.Printf("Generated ApprovedImage CR at %s", outputPath)
 	return nil
 }
 

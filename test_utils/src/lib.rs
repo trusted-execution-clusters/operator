@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+use glob::glob;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{ConfigMap, Namespace};
 use kube::api::DeleteParams;
@@ -463,15 +464,22 @@ resources:
             .ok_or_else(|| anyhow::anyhow!("Invalid CR manifest path"))?;
         kube_apply!(cr_manifest_str, &self.test_name, "Applying CR manifest");
 
-        let approved_image_path = manifests_path.join("approved_image_cr.yaml");
-        let approved_image_str = approved_image_path
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("Invalid ApprovedImage manifest path"))?;
-        kube_apply!(
-            approved_image_str,
-            &self.test_name,
-            "Applying ApprovedImage manifest"
-        );
+        let approved_image_paths = glob(
+            manifests_path
+                .join("approved_image_cr_*.yaml")
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Invalid ApprovedImage manifest path"))?,
+        )?;
+        for approved_image_path in approved_image_paths.filter_map(Result::ok) {
+            let approved_image_str = approved_image_path
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Invalid ApprovedImage manifest path"))?;
+            kube_apply!(
+                approved_image_str,
+                &self.test_name,
+                "Applying ApprovedImage manifest"
+            );
+        }
 
         let deployments_api: Api<Deployment> = Api::namespaced(self.client.clone(), &ns);
 

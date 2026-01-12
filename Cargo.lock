@@ -3874,6 +3874,7 @@ dependencies = [
  "clevis-pin-trustee-lib",
  "compute-pcrs-lib",
  "env_logger",
+ "glob",
  "http 1.4.0",
  "ignition-config",
  "k8s-openapi",

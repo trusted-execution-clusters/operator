@@ -22,6 +22,8 @@ pub mod virt;
 
 use compute_pcrs_lib::Pcr;
 
+pub const DEFAULT_TEST_FCOS_IMAGE: &str = "quay.io/trusted-execution-clusters/fedora-coreos@sha256:79a0657399e6c67c7c95b8a09193d18e5675b5aa3cfb4d75ea5c8d4d53b2af74";
+
 pub fn compare_pcrs(actual: &[Pcr], expected: &[Pcr]) -> bool {
     if actual.len() != expected.len() {
         return false;
@@ -83,7 +85,7 @@ pub struct TestContext {
 }
 
 impl TestContext {
-    pub async fn new(test_name: &str) -> anyhow::Result<Self> {
+    pub async fn new(test_name: &str, approved_images: &[&str]) -> anyhow::Result<Self> {
         INIT.call_once(|| {
             let _ = env_logger::builder().is_test(true).try_init();
         });
@@ -103,7 +105,7 @@ impl TestContext {
         ctx.manifests_dir = manifests_dir;
 
         ctx.create_namespace().await?;
-        ctx.apply_operator_manifests().await?;
+        ctx.apply_operator_manifests(approved_images).await?;
 
         test_info!(
             &ctx.test_name,
@@ -242,7 +244,7 @@ impl TestContext {
             .await
     }
 
-    async fn apply_operator_manifests(&self) -> anyhow::Result<()> {
+    async fn apply_operator_manifests(&self, approved_images: &[&str]) -> anyhow::Result<()> {
         test_info!(
             &self.test_name,
             "Generating manifests in {}",
@@ -301,25 +303,31 @@ impl TestContext {
             ));
         }
 
+        let mut trusted_cluster_gen_args = vec![
+            "-namespace",
+            &ns,
+            "-output-dir",
+            &self.manifests_dir,
+            "-image",
+            "localhost:5000/trusted-execution-clusters/trusted-cluster-operator:latest",
+            "-pcrs-compute-image",
+            "localhost:5000/trusted-execution-clusters/compute-pcrs:latest",
+            "-trustee-image",
+            "quay.io/trusted-execution-clusters/key-broker-service:20260106",
+            "-register-server-image",
+            "localhost:5000/trusted-execution-clusters/registration-server:latest",
+            "-attestation-key-register-image",
+            "localhost:5000/trusted-execution-clusters/attestation-key-register:latest",
+        ];
+
+        trusted_cluster_gen_args.extend(
+            approved_images
+                .iter()
+                .flat_map(|&i| vec!["-approved-image", i]),
+        );
+
         let manifest_gen_output = Command::new(&trusted_cluster_gen_path)
-            .args([
-                "-namespace",
-                &ns,
-                "-output-dir",
-                &self.manifests_dir,
-                "-image",
-                "localhost:5000/trusted-execution-clusters/trusted-cluster-operator:latest",
-                "-pcrs-compute-image",
-                "localhost:5000/trusted-execution-clusters/compute-pcrs:latest",
-                "-trustee-image",
-                "quay.io/trusted-execution-clusters/key-broker-service:20260106",
-                "-register-server-image",
-                "localhost:5000/trusted-execution-clusters/registration-server:latest",
-                "-attestation-key-register-image",
-                "localhost:5000/trusted-execution-clusters/attestation-key-register:latest",
-                "-approved-image",
-                "quay.io/trusted-execution-clusters/fedora-coreos@sha256:79a0657399e6c67c7c95b8a09193d18e5675b5aa3cfb4d75ea5c8d4d53b2af74"
-            ])
+            .args(trusted_cluster_gen_args)
             .output()
             .await?;
 
@@ -548,7 +556,9 @@ macro_rules! virt_test {
 
 #[macro_export]
 macro_rules! setup {
-    () => {{ $crate::TestContext::new(TEST_NAME) }};
+    () => {{ $crate::TestContext::new(TEST_NAME, &[DEFAULT_TEST_FCOS_IMAGE]) }};
+
+    ($images:expr) => {{ $crate::TestContext::new(TEST_NAME, &$images) }};
 }
 
 async fn setup_test_client() -> anyhow::Result<Client> {

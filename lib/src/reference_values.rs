@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: MIT
 
 use compute_pcrs_lib::Pcr;
-use k8s_openapi::chrono::{DateTime, Utc};
+use k8s_openapi::jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -13,7 +13,7 @@ pub const PCR_CONFIG_FILE: &str = "image-pcrs.json";
 
 #[derive(Deserialize, Serialize)]
 pub struct ImagePcr {
-    pub first_seen: DateTime<Utc>,
+    pub first_seen: Timestamp,
     pub pcrs: Vec<Pcr>,
     pub reference: String,
 }

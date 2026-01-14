@@ -9,10 +9,5 @@ set -x
 
 . scripts/common.sh
 
-for image in "$@"; do
-	if ${RUNTIME} exec -ti kind-control-plane crictl inspecti ${image} &> /dev/null ; then
-		echo "Delete image ${image}"
-		${RUNTIME} exec -ti kind-control-plane crictl rmi ${image}
-	fi
-done
 kubectl delete deploy trusted-cluster-operator -n trusted-execution-clusters || true
+kubectl delete trustedexecutionclusters trusted-execution-cluster -n trusted-execution-clusters || true

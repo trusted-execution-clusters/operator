@@ -54,7 +54,7 @@ impl SingleAttestationContext {
             "http://register-server.{}.svc.cluster.local:8000/ignition-clevis-pin-trustee",
             namespace
         );
-        let image = "quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:latest";
+        let image = "quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:2026-14-01";
 
         test_ctx.info(format!("Creating VM: {}", vm_name));
         virt::create_kubevirt_vm(
@@ -127,7 +127,7 @@ async fn test_parallel_vm_attestation() -> anyhow::Result<()> {
         "http://register-server.{}.svc.cluster.local:8000/ignition-clevis-pin-trustee",
         namespace
     );
-    let image = "quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:latest";
+    let image = "quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:2026-14-01";
 
     // Launch both VMs in parallel
     let vm1_name = "test-coreos-vm1";

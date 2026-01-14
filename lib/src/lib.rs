@@ -9,6 +9,7 @@ mod kopium;
 #[allow(clippy::all)]
 mod vendor_kopium;
 pub use kopium::approvedimages::*;
+pub use kopium::attestationkeys::*;
 pub use kopium::machines::*;
 pub use kopium::trustedexecutionclusters::*;
 pub use vendor_kopium::virtualmachineinstances;

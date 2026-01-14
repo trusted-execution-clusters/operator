@@ -19,6 +19,7 @@ use operator::generate_owner_reference;
 use trusted_cluster_operator_lib::{TrustedExecutionCluster, TrustedExecutionClusterStatus};
 use trusted_cluster_operator_lib::{conditions::*, update_status};
 
+mod attestation_key_register;
 mod conditions;
 mod reference_values;
 mod register_server;
@@ -87,7 +88,8 @@ async fn reconcile(
     update_status!(clusters, name, status)?;
 
     install_trustee_configuration(kube_client.clone(), &cluster).await?;
-    install_register_server(kube_client, &cluster).await?;
+    install_register_server(kube_client.clone(), &cluster).await?;
+    install_attestation_key_register(kube_client, &cluster).await?;
     let condition = installed_condition(INSTALLED_REASON, generation);
     conditions.as_mut().unwrap().push(condition);
     update_status!(clusters, name, TrustedExecutionClusterStatus { conditions })?;
@@ -159,7 +161,37 @@ async fn install_register_server(client: Client, cluster: &TrustedExecutionClust
         Err(e) => error!("Failed to create register server service: {e}"),
     }
 
-    register_server::launch_keygen_controller(client).await;
+    Ok(())
+}
+
+async fn install_attestation_key_register(
+    client: Client,
+    cluster: &TrustedExecutionCluster,
+) -> Result<()> {
+    let owner_reference = generate_owner_reference(cluster)?;
+
+    match attestation_key_register::create_attestation_key_register_deployment(
+        client.clone(),
+        owner_reference.clone(),
+        &cluster.spec.attestation_key_register_image,
+    )
+    .await
+    {
+        Ok(_) => info!("Attestation key register deployment created/updated successfully"),
+        Err(e) => error!("Failed to create attestation key register deployment: {e}"),
+    }
+
+    let port = cluster.spec.attestation_key_register_port;
+    match attestation_key_register::create_attestation_key_register_service(
+        client.clone(),
+        owner_reference,
+        port,
+    )
+    .await
+    {
+        Ok(_) => info!("Attestation key register service created/updated successfully"),
+        Err(e) => error!("Failed to create attestation key register service: {e}"),
+    }
 
     Ok(())
 }
@@ -171,6 +203,12 @@ async fn main() -> Result<()> {
     let kube_client = Client::try_default().await?;
     info!("trusted execution clusters operator",);
     let cl: Api<TrustedExecutionCluster> = Api::default_namespaced(kube_client.clone());
+
+    // Launch all controllers
+    register_server::launch_keygen_controller(kube_client.clone()).await;
+    attestation_key_register::launch_ak_controller(kube_client.clone()).await;
+    attestation_key_register::launch_machine_ak_controller(kube_client.clone()).await;
+    attestation_key_register::launch_secret_ak_controller(kube_client.clone()).await;
 
     let client = Arc::new(kube_client);
     Controller::new(cl, watcher::Config::default())

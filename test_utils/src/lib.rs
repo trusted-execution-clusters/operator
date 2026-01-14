@@ -312,11 +312,13 @@ impl TestContext {
                 "-pcrs-compute-image",
                 "localhost:5000/trusted-execution-clusters/compute-pcrs:latest",
                 "-trustee-image",
-                "quay.io/trusted-execution-clusters/key-broker-service:tpm-verifier-built-in-as-20250711",
+                "quay.io/trusted-execution-clusters/key-broker-service:20260106",
                 "-register-server-image",
                 "localhost:5000/trusted-execution-clusters/registration-server:latest",
+                "-attestation-key-register-image",
+                "localhost:5000/trusted-execution-clusters/attestation-key-register:latest",
                 "-approved-image",
-                "quay.io/trusted-execution-clusters/fedora-coreos@sha256:e71dad00aa0e3d70540e726a0c66407e3004d96e045ab6c253186e327a2419e5",
+                "quay.io/fedora/fedora-coreos@sha256:8f11c87187dfe83145001e9571948f9ab466e9f4a8b1e092a4798e5db1030dc3"
             ])
             .output()
             .await?;

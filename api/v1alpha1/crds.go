@@ -28,10 +28,10 @@ var (
 // +kubebuilder:rbac:groups="",resources=configmaps;services;secrets,verbs=create;get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=create;delete;get;list;patch;update;watch
-// +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=trustedexecutionclusters;machines;approvedimages,verbs=create;delete;get;list;patch;update;watch
+// +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=trustedexecutionclusters;machines;approvedimages;attestationkeys,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=trustedexecutionclusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=machines/finalizers,verbs=update
-// +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=trustedexecutionclusters/status;machines/status;approvedimages/status,verbs=get;patch;update
+// +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=trustedexecutionclusters/status;machines/status;approvedimages/status;attestationkeys/status,verbs=get;patch;update
 
 // TrustedExecutionClusterSpec defines the desired state of TrustedExecutionCluster
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.publicTrusteeAddr) || has(self.publicTrusteeAddr)", message="Value is required once set"
@@ -48,6 +48,10 @@ type TrustedExecutionClusterSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Value is immutable"
 	RegisterServerImage string `json:"registerServerImage"`
 
+	// Image reference to trusted-cluster-operator's attestation-key-register image
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Value is immutable"
+	AttestationKeyRegisterImage *string `json:"attestationKeyRegisterImage"`
+
 	// Address where attester can connect to Trustee
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Value is immutable"
@@ -62,6 +66,11 @@ type TrustedExecutionClusterSpec struct {
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Value is immutable"
 	RegisterServerPort int32 `json:"registerServerPort,omitempty"`
+
+	// Port that trusted-cluster-operator's attestation-key-register serves on
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Value is immutable"
+	AttestationKeyRegisterPort int32 `json:"attestationKeyRegisterPort,omitempty"`
 }
 
 // TrustedExecutionClusterStatus defines the observed state of TrustedExecutionCluster.
@@ -191,4 +200,52 @@ type ApprovedImageList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []ApprovedImage `json:"items"`
+}
+
+// AttestationKeySpec
+type AttestationKeySpec struct {
+	// PublicKey defines the attestation public key to be registered as trusted key.
+	// +required
+	PublicKey string `json:"publicKey"`
+
+	// Address defines the address of the machine associated to the attestation key.
+	// +optional
+	Address *string `json:"address,omitempty"`
+}
+
+// AttestationKeyStatus defines the observed state of AttestationKey.
+type AttestationKeyStatus struct {
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+
+// AttestationKey represents the Attestation Key to be added as to the trusted key for trustee.
+type AttestationKey struct {
+	metav1.TypeMeta `json:",inline"`
+
+	// metadata is a standard object metadata
+	// +optional
+	metav1.ObjectMeta `json:"metadata,omitempty,omitzero"`
+
+	// spec defines the desired state of AttestationKey
+	// +required
+	Spec AttestationKeySpec `json:"spec"`
+
+	// status defines the observed state of AttestationKey
+	// +optional
+	Status AttestationKeyStatus `json:"status,omitempty,omitzero"`
+}
+
+// +kubebuilder:object:root=true
+
+// AttestationKeyList contains a list of AttestationKey
+type AttestationKeyList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []AttestationKey `json:"items"`
 }

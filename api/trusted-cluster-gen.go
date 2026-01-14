@@ -22,13 +22,14 @@ import (
 )
 
 type Args struct {
-	outputDir           string
-	image               string
-	namespace           string
-	trusteeImage        string
-	pcrsComputeImage    string
-	registerServerImage string
-	approvedImage       string
+	outputDir                   string
+	image                       string
+	namespace                   string
+	trusteeImage                string
+	pcrsComputeImage            string
+	registerServerImage         string
+	attestationKeyRegisterImage string
+	approvedImage               string
 }
 
 func main() {
@@ -39,6 +40,7 @@ func main() {
 	flag.StringVar(&args.trusteeImage, "trustee-image", "operators", "Container image with all-in-one Trustee")
 	flag.StringVar(&args.pcrsComputeImage, "pcrs-compute-image", "quay.io/trusted-execution-clusters/compute-pcrs:latest", "Container image with the Trusted Execution Clusters compute-pcrs binary")
 	flag.StringVar(&args.registerServerImage, "register-server-image", "quay.io/trusted-execution-clusters/register-server:latest", "Register server image to use in the deployment")
+	flag.StringVar(&args.attestationKeyRegisterImage, "attestation-key-register-image", "quay.io/trusted-execution-clusters/attestation-key-register:latest", "Attestation key register image to use in the deployment")
 	flag.StringVar(&args.approvedImage, "approved-image", "", "When set, defines an initial approved image. Must be a bootable container image with SHA reference.")
 	flag.Parse()
 
@@ -138,12 +140,14 @@ func generateTrustedExecutionClusterCR(args *Args) error {
 			Namespace: args.namespace,
 		},
 		Spec: v1alpha1.TrustedExecutionClusterSpec{
-			TrusteeImage:        args.trusteeImage,
-			PcrsComputeImage:    args.pcrsComputeImage,
-			RegisterServerImage: args.registerServerImage,
-			PublicTrusteeAddr:   nil,
-			TrusteeKbsPort:      0,
-			RegisterServerPort:  0,
+			TrusteeImage:                args.trusteeImage,
+			PcrsComputeImage:            args.pcrsComputeImage,
+			RegisterServerImage:         args.registerServerImage,
+			AttestationKeyRegisterImage: &args.attestationKeyRegisterImage,
+			PublicTrusteeAddr:           nil,
+			TrusteeKbsPort:              0,
+			RegisterServerPort:          0,
+			AttestationKeyRegisterPort:  0,
 		},
 	}
 

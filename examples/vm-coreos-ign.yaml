@@ -17,14 +17,14 @@ spec:
                   }
                 ]
               },
-              "version": "3.5.0"
+              "version": "3.6.0-experimental"
             },
             "passwd": {
               "users": [
                 {
                   "name": "core",
                   "sshAuthorizedKeys": [
-                    "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCWvljBdqqjHvIOIKftFbDTJ4DvWa8cbnZlK9HHrn7lhXwvmCY0FkvL9dtD0azgJkwYRMGyOAqDMTk6S1oV04ZjAlbQgmtoldiAtkIJez6uZV3AdBzm0UnOD8O0sIhtRHfCAGxiAcT5oANfCD+YpJ7c4LPAetX/OaU40cLSVU1dA6YNAB5hZoqJ5h54W6gf6NEK5zkHclDsSO9oeyxkeirNAeL83GdLmX76PAAtQkr4H5K6S9ZnGd5at7HxRdZ5KuGElmwYwMxsWBOxZFl8glQ4UgAIX7TWopUYxZNNmYtTl1GwPJA+UyYfu60ryX6YOic3H/s9GUADqq/7ahKvnWa6iRa0+xkdy+GrrJMQOmBoCHzUGECDeu+N1JEcuHGnMy+bDSsGG6mz5dQT+VqdVcqosnGesobeuGOswAA2yW9rc/I4s7i9zGRzOD5u+xE/topYstqXZ3PYUgjzTi1V3pTwgBf5SSJYaxIap1s7nupZ86CjU3hvCdjcEQ69b3zYmKSjsGJ6+deL+C17CYYBqqUllYce2a/LoAwB4d1wGQ8vu8gwhyaI+tg2z0PZDGae21rF2ahYueOOd8W4nuqPuxtOUE80g3S3iYGKkctLNM/iWB/HFRyykg/Go/vllL1tapqfW2d5YGihXMO/iy4vtXaxA8pGKcnrcX8dvb8ufQt59w== core"
+                    "<your-ssh-key>"
                   ]
                 }
               ]
@@ -57,6 +57,13 @@ spec:
                   "name": "serial-getty@ttyS0.service"
                 }
               ]
+            },
+            "attestation": {
+              "attestation_key": {
+                "registration": {
+                  "url": "http://attestation-key-register.trusted-execution-clusters.svc.cluster.local:8001/register-ak"
+                }
+              }
             }
           }
     spec:
@@ -82,5 +89,5 @@ spec:
       volumes:
       - name: containerdisk
         containerDisk:
-          image: "quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:latest"
+          image: "quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:20260106"
           imagePullPolicy: Always

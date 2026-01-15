@@ -5,17 +5,13 @@
 
 use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
-use k8s_openapi::{
-    api::{
-        apps::v1::{Deployment, DeploymentSpec},
-        core::v1::{
-            Container, ContainerPort, PodSpec, PodTemplateSpec, Service, ServicePort, ServiceSpec,
-        },
-    },
-    apimachinery::pkg::{
-        apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference},
-        util::intstr::IntOrString,
-    },
+use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
+use k8s_openapi::api::core::v1::{
+    Container, ContainerPort, PodSpec, PodTemplateSpec, Service, ServicePort, ServiceSpec,
+};
+use k8s_openapi::apimachinery::pkg::{
+    apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference},
+    util::intstr::IntOrString,
 };
 use kube::runtime::{
     controller::{Action, Controller},
@@ -37,9 +33,19 @@ pub async fn create_register_server_deployment(
     client: Client,
     owner_reference: OwnerReference,
     image: &str,
+    secret: &Option<String>,
 ) -> Result<()> {
     let app_label = "register-server";
     let labels = BTreeMap::from([("app".to_string(), app_label.to_string())]);
+
+    let mut args = vec!["--port".to_string(), REGISTER_SERVER_PORT.to_string()];
+    let volumes = read_certificate(client.clone(), secret).await?;
+    if volumes.is_some() {
+        args.push("--cert-path".to_string());
+        args.push(format!("{TLS_DIR}/tls.crt"));
+        args.push("--key-path".to_string());
+        args.push(format!("{TLS_DIR}/tls.key"));
+    }
 
     let deployment = Deployment {
         metadata: ObjectMeta {
@@ -67,9 +73,11 @@ pub async fn create_register_server_deployment(
                             container_port: REGISTER_SERVER_PORT,
                             ..Default::default()
                         }]),
-                        args: Some(vec!["--port".to_string(), REGISTER_SERVER_PORT.to_string()]),
+                        args: Some(args),
+                        volume_mounts: volumes.as_ref().map(|(_, vm)| vec![vm.clone()]),
                         ..Default::default()
                     }],
+                    volumes: volumes.as_ref().map(|(v, _)| vec![v.clone()]),
                     ..Default::default()
                 }),
             },
@@ -205,13 +213,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_reg_server_depl_success() {
-        let clos = |client| create_register_server_deployment(client, Default::default(), "image");
+        let clos =
+            |client| create_register_server_deployment(client, Default::default(), "image", &None);
         test_create_success::<_, _, Deployment>(clos).await;
     }
 
     #[tokio::test]
     async fn test_create_reg_server_depl_error() {
-        let clos = |client| create_register_server_deployment(client, Default::default(), "image");
+        let clos =
+            |client| create_register_server_deployment(client, Default::default(), "image", &None);
         test_create_error(clos).await;
     }
 

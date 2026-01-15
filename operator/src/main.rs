@@ -183,6 +183,7 @@ async fn install_register_server(client: Client, cluster: &TrustedExecutionClust
         client.clone(),
         owner_reference.clone(),
         &cluster.spec.register_server_image,
+        &cluster.spec.register_server_secret,
     )
     .await
     {

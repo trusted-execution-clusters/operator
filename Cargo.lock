@@ -124,6 +124,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arc-swap"
+version = "1.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69f7f8c3906b62b754cd5326047894316021dcfe5a194c8ea52bdd94934a3457"
+
+[[package]]
 name = "async-broadcast"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -311,6 +317,7 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1df331683d982a0b9492b38127151e6453639cd34926eb9c07d4cd8c6d22bfc"
 dependencies = [
+ "arc-swap",
  "bytes",
  "either",
  "fs-err",
@@ -318,7 +325,11 @@ dependencies = [
  "http-body 1.0.1",
  "hyper 1.8.1",
  "hyper-util",
+ "openssl",
+ "openssl-sys",
+ "pin-project-lite",
  "tokio",
+ "tokio-openssl",
  "tower-service",
 ]
 
@@ -4121,6 +4132,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-openssl"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59df6849caa43bb7567f9a36f863c447d95a11d5903c9cc334ba32576a27eadd"
+dependencies = [
+ "openssl",
+ "openssl-sys",
+ "tokio",
+]
+
+[[package]]
 name = "tokio-rustls"
 version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4267,6 +4289,7 @@ dependencies = [
  "k8s-openapi 0.27.0",
  "kube 3.0.1",
  "log",
+ "percent-encoding",
  "rand_core",
  "serde",
  "serde_json",

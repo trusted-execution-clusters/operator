@@ -6,12 +6,16 @@
 use anyhow::{Result, anyhow};
 use fs_extra::dir;
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{ConfigMap, Namespace};
-use kube::api::DeleteParams;
+use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Secret};
+use kube::api::{DeleteParams, ObjectMeta};
 use kube::{Api, Client};
 use std::path::{Path, PathBuf};
 use std::{collections::BTreeMap, env, sync::Once, time::Duration};
 use tokio::process::Command;
+use trusted_cluster_operator_lib::certificates::{
+    Certificate, CertificateIssuerRef, CertificateSpec,
+};
+use trusted_cluster_operator_lib::issuers::{Issuer, IssuerCa, IssuerSpec};
 
 use trusted_cluster_operator_lib::TrustedExecutionCluster;
 use trusted_cluster_operator_lib::endpoints::*;
@@ -31,6 +35,9 @@ const PLATFORM_ENV: &str = "PLATFORM";
 const CLUSTER_URL_ENV: &str = "CLUSTER_URL";
 const YELLOW: &str = "\x1b[33m";
 const ANSI_RESET: &str = "\x1b[0m";
+
+const ROOT_SECRET: &str = "root-secret";
+const REG_SECRET: &str = "reg-srv-secret";
 
 pub fn compare_pcrs(actual: &[Pcr], expected: &[Pcr]) -> bool {
     if actual.len() != expected.len() {
@@ -136,7 +143,7 @@ trait K8sPlatform: Send + Sync {
         client: Client,
         namespace: &str,
         service: &str,
-        port: i32,
+        port: Option<i32>,
     ) -> Result<String>;
 }
 
@@ -164,9 +171,13 @@ impl K8sPlatform for Kind {
         _: Client,
         namespace: &str,
         service: &str,
-        port: i32,
+        port: Option<i32>,
     ) -> Result<String> {
-        Ok(format!("{service}.{namespace}.svc.cluster.local:{port}"))
+        let url = format!("{service}.{namespace}.svc.cluster.local");
+        Ok(match port {
+            Some(port) => format!("{url}:{port}"),
+            None => url,
+        })
     }
 }
 
@@ -195,7 +206,7 @@ impl K8sPlatform for OpenShift {
         client: Client,
         namespace: &str,
         service: &str,
-        _: i32,
+        _: Option<i32>,
     ) -> Result<String> {
         let routes: Api<Route> = Api::namespaced(client.clone(), namespace);
         if let Ok(route) = routes.get(service).await {
@@ -220,7 +231,7 @@ impl K8sPlatform for OtherK8s {
         Ok(())
     }
 
-    async fn get_cluster_url(&self, _: Client, _: &str, _: &str, _: i32) -> Result<String> {
+    async fn get_cluster_url(&self, _: Client, _: &str, _: &str, _: Option<i32>) -> Result<String> {
         Err(anyhow!(
             "Set {CLUSTER_URL_ENV} when {PLATFORM_ENV} is not one of: kind, openshift"
         ))
@@ -231,10 +242,14 @@ pub async fn get_cluster_url(
     client: Client,
     namespace: &str,
     service: &str,
-    port: i32,
+    port: Option<i32>,
 ) -> Result<String> {
     if let Ok(url) = env::var(CLUSTER_URL_ENV) {
-        return Ok(format!("{service}.{namespace}.{url}:{port}"));
+        let full_url = format!("{service}.{namespace}.{url}");
+        return Ok(match port {
+            Some(port) => format!("{full_url}:{port}"),
+            None => full_url,
+        });
     }
     get_k8s_platform()
         .get_cluster_url(client, namespace, service, port)
@@ -440,6 +455,97 @@ impl TestContext {
             .await
     }
 
+    async fn create_certificate(
+        &self,
+        service_name: &str,
+        cert_name: &str,
+        secret_name: &str,
+        issuer_name: &str,
+    ) -> Result<()> {
+        let ns = &self.test_namespace;
+        let domain = get_cluster_url(self.client.clone(), ns, service_name, None).await?;
+        let certs: Api<Certificate> = Api::namespaced(self.client.clone(), ns);
+        let cert = Certificate {
+            metadata: ObjectMeta {
+                name: Some(cert_name.to_string()),
+                ..Default::default()
+            },
+            spec: CertificateSpec {
+                secret_name: secret_name.to_string(),
+                issuer_ref: CertificateIssuerRef {
+                    name: issuer_name.to_string(),
+                    ..Default::default()
+                },
+                dns_names: Some(vec![domain]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        certs.create(&Default::default(), &cert).await?;
+        Ok(())
+    }
+
+    async fn set_certificates(&self) -> anyhow::Result<()> {
+        let ns = &self.test_namespace;
+        let root_issuer_name = "root-issuer";
+        let root_issuer = Issuer {
+            metadata: ObjectMeta {
+                name: Some(root_issuer_name.to_string()),
+                ..Default::default()
+            },
+            spec: IssuerSpec {
+                self_signed: Some(Default::default()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let issuers: Api<Issuer> = Api::namespaced(self.client.clone(), ns);
+        issuers.create(&Default::default(), &root_issuer).await?;
+        let root_cert = Certificate {
+            metadata: ObjectMeta {
+                name: Some("root-cert".to_string()),
+                ..Default::default()
+            },
+            spec: CertificateSpec {
+                secret_name: ROOT_SECRET.to_string(),
+                is_ca: Some(true),
+                issuer_ref: CertificateIssuerRef {
+                    name: root_issuer_name.to_string(),
+                    ..Default::default()
+                },
+                common_name: Some("selfsigned-ca".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let certs: Api<Certificate> = Api::namespaced(self.client.clone(), ns);
+        certs.create(&Default::default(), &root_cert).await?;
+        let issuer_name = "issuer";
+        let issuer = Issuer {
+            metadata: ObjectMeta {
+                name: Some(issuer_name.to_string()),
+                ..Default::default()
+            },
+            spec: IssuerSpec {
+                ca: Some(IssuerCa {
+                    secret_name: ROOT_SECRET.to_string(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        issuers.create(&Default::default(), &issuer).await?;
+
+        let svc = REGISTER_SERVER_SERVICE;
+        self.create_certificate(svc, "reg-srv-cert", REG_SECRET, issuer_name)
+            .await?;
+
+        let secrets: Api<Secret> = Api::namespaced(self.client.clone(), &self.test_namespace);
+        wait_for_resource_created(&secrets, REG_SECRET, 15, 1).await?;
+        Ok(())
+    }
+
     async fn generate_manifests(&self, workspace_root: &PathBuf) -> Result<(PathBuf, PathBuf)> {
         let ns = self.test_namespace.clone();
         let controller_gen_pattern = workspace_root.join("bin/controller-gen-*");
@@ -518,6 +624,7 @@ impl TestContext {
         let (crd_temp_dir, rbac_temp_dir) = self.generate_manifests(&workspace_root).await?;
         test_info!(&self.test_name, "Manifests generated successfully");
 
+        self.set_certificates().await?;
         let tec = "trustedexecutionclusters.trusted-execution-clusters.io";
         let args = ["get", "crd", tec];
         let crd_check_output = Command::new("kubectl").args(args).output().await?;
@@ -618,9 +725,9 @@ impl TestContext {
     }
 
     async fn apply_operator_manifest(&self, manifests_path: &Path) -> Result<()> {
-        let ns = self.test_namespace.clone();
+        let ns = &self.test_namespace;
         let trustee_addr =
-            get_cluster_url(self.client.clone(), &ns, TRUSTEE_SERVICE, TRUSTEE_PORT).await?;
+            get_cluster_url(self.client.clone(), ns, TRUSTEE_SERVICE, Some(TRUSTEE_PORT)).await?;
         let cr_manifest_path = manifests_path.join("trusted_execution_cluster_cr.yaml");
 
         let cr_content = std::fs::read_to_string(&cr_manifest_path)?;
@@ -632,11 +739,16 @@ impl TestContext {
             serde_yaml::Value::String(trustee_addr.clone()),
         );
 
+        spec_map.insert(
+            serde_yaml::Value::String("registerServerSecret".to_string()),
+            serde_yaml::Value::String(REG_SECRET.to_string()),
+        );
+
         if get_virt_provider()? == VirtProvider::Kubevirt {
             let platform = get_k8s_platform();
             let svc = ATTESTATION_KEY_REGISTER_SERVICE;
             let port = ATTESTATION_KEY_REGISTER_PORT;
-            let address = platform.get_cluster_url(self.client.clone(), &ns, svc, port);
+            let address = platform.get_cluster_url(self.client.clone(), ns, svc, Some(port));
             spec_map.insert(
                 serde_yaml::Value::String("publicAttestationKeyRegisterAddr".to_string()),
                 serde_yaml::Value::String(address.await?),
@@ -662,7 +774,7 @@ impl TestContext {
             "Applying ApprovedImage manifest"
         );
 
-        let deployments_api: Api<Deployment> = Api::namespaced(self.client.clone(), &ns);
+        let deployments_api: Api<Deployment> = Api::namespaced(self.client.clone(), ns);
 
         self.wait_for_deployment_ready(&deployments_api, "trusted-cluster-operator", 120)
             .await?;
@@ -675,14 +787,14 @@ impl TestContext {
 
         let platform = get_k8s_platform();
         for svc in ["kbs-service", "attestation-key-register", "register-server"] {
-            platform.expose(&ns, svc, &self.test_name).await?;
+            platform.expose(ns, svc, &self.test_name).await?;
         }
 
         test_info!(
             &self.test_name,
             "Waiting for image-pcrs ConfigMap to be created"
         );
-        let configmap_api: Api<ConfigMap> = Api::namespaced(self.client.clone(), &ns);
+        let configmap_api: Api<ConfigMap> = Api::namespaced(self.client.clone(), ns);
 
         let err = format!("image-pcrs ConfigMap in the namespace {ns} not found");
         let poller = Poller::new()
@@ -748,6 +860,19 @@ fn test_namespace_name() -> String {
     format!("{namespace_prefix}test-{uuid}")
 }
 
+pub async fn wait_for_resource_created<K>(
+    api: &Api<K>,
+    resource_name: &str,
+    timeout_secs: u64,
+    interval_secs: u64,
+) -> anyhow::Result<()>
+where
+    K: kube::Resource<DynamicType = ()> + Clone + std::fmt::Debug,
+    K: k8s_openapi::serde::de::DeserializeOwned,
+{
+    wait_for_resource_state(api, resource_name, timeout_secs, interval_secs, true).await
+}
+
 pub async fn wait_for_resource_deleted<K>(
     api: &Api<K>,
     resource_name: &str,
@@ -758,24 +883,41 @@ where
     K: kube::Resource<DynamicType = ()> + Clone + std::fmt::Debug,
     K: k8s_openapi::serde::de::DeserializeOwned,
 {
+    wait_for_resource_state(api, resource_name, timeout_secs, interval_secs, false).await
+}
+
+async fn wait_for_resource_state<K>(
+    api: &Api<K>,
+    resource_name: &str,
+    timeout_secs: u64,
+    interval_secs: u64,
+    state: bool,
+) -> Result<()>
+where
+    K: kube::Resource<DynamicType = ()> + Clone + std::fmt::Debug,
+    K: k8s_openapi::serde::de::DeserializeOwned,
+{
     let poller = Poller::new()
         .with_timeout(Duration::from_secs(timeout_secs))
         .with_interval(Duration::from_secs(interval_secs))
-        .with_error_message(format!("waiting for {resource_name} to be deleted"));
+        .with_error_message(format!(
+            "{resource_name} did not reach state {} after {timeout_secs} seconds",
+            if state { "created" } else { "deleted" }
+        ));
 
-    poller
-        .poll_async(|| {
-            let api = api.clone();
-            let name = resource_name.to_string();
-            async move {
-                match api.get(&name).await {
-                    Ok(_) => Err("{name} still exists, retrying..."),
-                    Err(kube::Error::Api(ae)) if ae.code == 404 => Ok(()),
-                    Err(e) => {
-                        panic!("Unexpected error while fetching {name}: {e:?}");
-                    }
-                }
+    let check = || {
+        let api = api.clone();
+        let name = resource_name.to_string();
+        async move {
+            let result = api.get(&name).await;
+            if let Err(kube::Error::Api(ae)) = &result
+                && ae.code != 404
+            {
+                panic!("Unexpected error while fetching {name}: {ae:?}");
             }
-        })
-        .await
+            let err = anyhow!("{name} not in desired state: {result:?}");
+            (result.is_err() ^ state).then_some(()).ok_or(err)
+        }
+    };
+    poller.poll_async(check).await
 }

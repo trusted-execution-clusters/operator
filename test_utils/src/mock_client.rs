@@ -5,7 +5,8 @@
 
 use http::{Method, Request, Response, StatusCode};
 use kube::api::ObjectMeta;
-use kube::{Client, client::Body, error::ErrorResponse};
+use kube::core::{Status, response::StatusSummary};
+use kube::{Client, client::Body};
 use serde::Serialize;
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -58,11 +59,12 @@ async fn create_response<T: Future<Output = Result<String, StatusCode>>>(
                 StatusCode::BAD_REQUEST => ("bad request", "BadRequest"),
                 _ => (unknown_msg.as_str(), "Unknown"),
             };
-            let error_response = ErrorResponse {
-                status: "Failure".to_string(),
+            let error_response = Status {
+                status: Some(StatusSummary::Failure),
                 message: message.to_string(),
                 reason: reason.to_string(),
                 code: status_code.as_u16(),
+                ..Default::default()
             };
             let error_json = serde_json::to_string(&error_response).unwrap();
             (Body::from(error_json.into_bytes()), status_code)
@@ -152,7 +154,7 @@ async fn test_error<
     count_check!(1, server, |client| {
         let err = action(client).await.unwrap_err();
         let msg = "internal server error";
-        assert_kube_api_error!(err, 500, "ServerTimeout", msg, "Failure");
+        assert_kube_api_error!(err, 500, "ServerTimeout", msg, Some(StatusSummary::Failure));
     });
 }
 

@@ -15,7 +15,7 @@ use k8s_openapi::{
         },
     },
     apimachinery::pkg::apis::meta::v1::OwnerReference,
-    chrono::Utc,
+    jiff::Timestamp,
 };
 use kube::api::{DeleteParams, ObjectMeta};
 use kube::runtime::{
@@ -321,7 +321,7 @@ pub async fn handle_new_image(
     }
 
     let image_pcr = ImagePcr {
-        first_seen: Utc::now(),
+        first_seen: Timestamp::now(),
         pcrs: label.unwrap(),
         reference: boot_image.to_string(),
     };
@@ -377,7 +377,7 @@ mod tests {
                 ..Default::default()
             },
             status: Some(JobStatus {
-                completion_time: Some(Time(Utc::now())),
+                completion_time: Some(Time(Timestamp::now())),
                 ..Default::default()
             }),
             ..Default::default()

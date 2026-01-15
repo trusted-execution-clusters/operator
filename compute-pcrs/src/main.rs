@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use compute_pcrs_lib::*;
-use k8s_openapi::{api::core::v1::ConfigMap, chrono::Utc};
+use k8s_openapi::{api::core::v1::ConfigMap, jiff::Timestamp};
 use kube::{Api, Client};
 
 use trusted_cluster_operator_lib::{conditions::INSTALLED_REASON, reference_values::*, *};
@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
     let mut image_pcrs: ImagePcrs = serde_json::from_str(image_pcrs_str)?;
 
     let image_pcr = ImagePcr {
-        first_seen: Utc::now(),
+        first_seen: Timestamp::now(),
         reference: args.image,
         pcrs,
     };

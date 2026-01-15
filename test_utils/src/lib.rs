@@ -22,6 +22,7 @@ use trusted_cluster_operator_lib::routes::Route;
 
 pub mod timer;
 pub use timer::Poller;
+pub mod constants;
 pub mod mock_client;
 
 #[cfg(feature = "virtualization")]

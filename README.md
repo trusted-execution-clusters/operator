@@ -13,6 +13,7 @@ within the cluster.
 -   `/api`: Defines the `TrustedExecutionCluster` Custom Resource Definition (CRD) and associated CRDs and RBAC definitions in Go. Also contains a program to generate a `TrustedExecutionCluster` CR and associated deployment.
 -   `/operator`: Contains the source code for the Kubernetes operator itself.
 -   `/register-server`: A server that provides Clevis PINs for key retrieval with random UUIDs.
+-   `/attestation-key-register`: A server that accepts attestation key registrations from VMs and creates AttestationKey resources.
 -   `/compute-pcrs`: A program to compute PCR reference values using the [compute-pcrs library](https://github.com/trusted-execution-clusters/compute-pcrs) and insert them into a ConfigMap, run as a Job.
 -   `/lib`: Shared Rust definitions, including translated CRDs
 -   `/scripts`: Helper scripts for managing a local `kind` development cluster.
@@ -63,7 +64,7 @@ make REGISTRY=localhost:5000 manifests
 make TRUSTEE_ADDR=$ip install
 ```
 
-The KBS port will be forwarded to `8080` on your machine; the node register server to `8000`, where new Ignition configs are served at `/register`.
+The KBS port will be forwarded to `8080` on your machine; the node register server to `8000`, where new Ignition configs are served at `/register`. The attestation-key-register service runs on port `8001` within the cluster for VM attestation key registration.
 
 ### Test
 
@@ -108,7 +109,7 @@ make push-all
 
 **4. Deploy the Bundle**
 
-Deploy the bundle to your cluster. You can install it in any namespace. This guide uses `trusted-execution-clusters` as the example namespace.
+Deploy the bundle to your cluster. You can install it in any namespace.
 
 ```bash
 # Example: Install in namespace 'trusted-execution-clusters'
@@ -141,8 +142,6 @@ yq -i '.spec.publicTrusteeAddr = "'$TRUSTEE_ADDR':8080"' \
 # Apply the configured CRs
 kubectl apply -f config/deploy/trusted_execution_cluster_cr.yaml
 kubectl apply -f config/deploy/approved_image_cr.yaml
-sed 's/<NAMESPACE>/trusted-execution-clusters/g' kind/kbs-forward.yaml | kubectl apply -f -
-sed 's/<NAMESPACE>/trusted-execution-clusters/g' kind/register-forward.yaml | kubectl apply -f -
 ```
 
 #### **Cleaning Up the Bundle Deployment**

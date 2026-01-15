@@ -15,10 +15,11 @@ metadata:
             "name": "example-trustedexecutioncluster"
           },
           "spec": {
-            "trusteeImage": "quay.io/trusted-execution-clusters/key-broker-service:tpm-verifier-built-in-as-20250711",
+            "trusteeImage": "quay.io/trusted-execution-clusters/key-broker-service:20260106",
             "pcrsComputeImage": "quay.io/trusted-execution-clusters/compute-pcrs:0.1.0",
             "registerServerImage": "quay.io/trusted-execution-clusters/registration-server:0.1.0",
-            "publicTrusteeAddr": "<trustee-address>"
+            "attestationKeyRegisterImage": "quay.io/trusted-execution-clusters/attestation-key-register:0.1.0",
+            "publicTrusteeAddr": "kbs-service.trusted-execution-clusters.svc.cluster.local:8080"
           }
         },
         {
@@ -28,7 +29,7 @@ metadata:
             "name": "example-approvedimage"
           },
           "spec": {
-            "image": "quay.io/fedora/fedora-coreos@sha256:e71dad00aa0e3d70540e726a0c66407e3004d96e045ab6c253186e327a2419e5"
+            "image": "quay.io/fedora/fedora-coreos@sha256:8f11c87187dfe83145001e9571948f9ab466e9f4a8b1e092a4798e5db1030dc3"
           }
         }
       ]
@@ -65,8 +66,10 @@ spec:
       image: quay.io/trusted-execution-clusters/compute-pcrs:0.1.0
     - name: registration-server
       image: quay.io/trusted-execution-clusters/registration-server:0.1.0
+    - name: attestation-key-register
+      image: quay.io/trusted-execution-clusters/attestation-key-register:0.1.0
     - name: trustee
-      image: quay.io/trusted-execution-clusters/key-broker-service:tpm-verifier-built-in-as-20250711
+      image: quay.io/trusted-execution-clusters/key-broker-service:20260106
   install:
     strategy: deployment
     spec:
@@ -151,3 +154,8 @@ spec:
         kind: ApprovedImage
         displayName: Approved Image
         description: Represents a container image approved for execution.
+      - name: attestationkeys.trusted-execution-clusters.io
+        version: v1alpha1
+        kind: AttestationKey
+        displayName: Attestation Key
+        description: Represents an attestation key to be registered with the trustee.

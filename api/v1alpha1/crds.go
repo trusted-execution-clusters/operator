@@ -44,6 +44,8 @@ var (
 // +kubebuilder:validation:XValidation:rule="has(oldSelf.attestationKeyRegisterImage) == has(self.attestationKeyRegisterImage)", message="Value must be set at creation"
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.publicAttestationKeyRegisterAddr) || has(self.publicAttestationKeyRegisterAddr)", message="Value is required once set"
 // +kubebuilder:validation:XValidation:rule="has(oldSelf.publicAttestationKeyRegisterAddr) == has(self.publicAttestationKeyRegisterAddr)", message="Value must be set at creation"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.registerServerSecret) || has(self.registerServerSecret)", message="Value is required once set"
+// +kubebuilder:validation:XValidation:rule="has(oldSelf.registerServerSecret) == has(self.registerServerSecret)", message="Value must be set at creation"
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.publicTrusteeAddr) || has(self.publicTrusteeAddr)", message="Value is required once set"
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.trusteeKbsPort) || has(self.trusteeKbsPort)", message="Value is required once set"
 // +kubebuilder:validation:XValidation:rule="has(oldSelf.trusteeKbsPort) == has(self.trusteeKbsPort)", message="Value must be set at creation"
@@ -80,6 +82,11 @@ type TrustedExecutionClusterSpec struct {
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Value is immutable"
 	PublicAttestationKeyRegisterAddr *string `json:"publicAttestationKeyRegisterAddr,omitempty"`
+
+	// Secret with tls.{crt,key} for register-server
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Value is immutable"
+	RegisterServerSecret *string `json:"registerServerSecret"`
 
 	// Address where attester can connect to Trustee
 	// +optional

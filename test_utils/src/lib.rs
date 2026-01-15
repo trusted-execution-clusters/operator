@@ -16,6 +16,7 @@ use trusted_cluster_operator_lib::reference_values::ImagePcrs;
 
 pub mod timer;
 pub use timer::Poller;
+pub mod constants;
 pub mod mock_client;
 
 #[cfg(feature = "virtualization")]

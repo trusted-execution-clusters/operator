@@ -13,6 +13,7 @@ use kube::{Api, Client};
 use std::path::{Path, PathBuf};
 use std::{collections::BTreeMap, env, sync::Once, time::Duration};
 use tokio::process::Command;
+use trusted_cluster_operator_lib::reference_values::ImagePcrs;
 
 use trusted_cluster_operator_lib::TrustedExecutionCluster;
 use trusted_cluster_operator_lib::endpoints::*;
@@ -688,6 +689,95 @@ impl TestContext {
             }
         };
         poller.poll_async(check_fn).await?;
+
+        Ok(())
+    }
+
+    pub async fn verify_expected_pcrs(&self, expected_pcrs: &[&[Pcr]]) -> anyhow::Result<()> {
+        let client = self.client();
+        let namespace = self.namespace();
+
+        let configmap_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+
+        let poller = Poller::new()
+            .with_timeout(Duration::from_secs(180))
+            .with_interval(Duration::from_secs(5))
+            .with_error_message("image-pcrs ConfigMap not populated with data".to_string());
+
+        poller
+            .poll_async(|| {
+                let api = configmap_api.clone();
+                async move {
+                    let cm = api.get("image-pcrs").await?;
+
+                    if let Some(data) = &cm.data
+                        && let Some(image_pcrs_json) = data.get("image-pcrs.json")
+                        && let Ok(image_pcrs) = serde_json::from_str::<ImagePcrs>(image_pcrs_json)
+                        && image_pcrs.0.len() == expected_pcrs.len()
+                    {
+                        return Ok(());
+                    }
+
+                    Err(anyhow::anyhow!(
+                        "image-pcrs ConfigMap not yet populated with image-pcrs.json data"
+                    ))
+                }
+            })
+            .await?;
+
+        let image_pcrs_cm = configmap_api.get("image-pcrs").await?;
+        assert_eq!(image_pcrs_cm.metadata.name.as_deref(), Some("image-pcrs"));
+
+        let data = image_pcrs_cm
+            .data
+            .as_ref()
+            .expect("image-pcrs ConfigMap should have data field");
+
+        assert!(!data.is_empty(), "image-pcrs ConfigMap should have data");
+
+        let image_pcrs_json = data
+            .get("image-pcrs.json")
+            .expect("image-pcrs ConfigMap should have image-pcrs.json key");
+
+        assert!(
+            !image_pcrs_json.is_empty(),
+            "image-pcrs.json should not be empty"
+        );
+
+        // Parse the image-pcrs.json using the ImagePcrs structure
+        let image_pcrs: ImagePcrs = serde_json::from_str(image_pcrs_json)
+            .expect("image-pcrs.json should be valid ImagePcrs JSON");
+
+        assert!(
+            !image_pcrs.0.is_empty(),
+            "image-pcrs.json should contain at least one image entry"
+        );
+
+        test_info!(
+            &self.test_name,
+            "Checking into {} image results:",
+            image_pcrs.0.len()
+        );
+        let mut found_expected_pcrs = false;
+
+        assert_eq!(
+            image_pcrs.0.len(),
+            expected_pcrs.len(),
+            "image-pcrs.json should contain {} image entries",
+            expected_pcrs.len()
+        );
+
+        for (i, (_image_ref, image_data)) in image_pcrs.0.iter().enumerate() {
+            if compare_pcrs(&image_data.pcrs, expected_pcrs[i]) {
+                found_expected_pcrs = true;
+                break;
+            }
+        }
+
+        assert!(
+            found_expected_pcrs,
+            "At least one image should have the expected PCR values"
+        );
 
         Ok(())
     }

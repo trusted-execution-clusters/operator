@@ -10,6 +10,8 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+axum = "0.8.8"
+axum-server = "0.8.0"
 clap.workspace = true
 clevis-pin-trustee-lib.workspace = true
 trusted-cluster-operator-lib = { path = "../lib" }
@@ -22,7 +24,6 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 uuid.workspace = true
-warp.workspace = true
 
 [dev-dependencies]
 http.workspace = true

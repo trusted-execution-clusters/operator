@@ -4,6 +4,8 @@
 // SPDX-License-Identifier: MIT
 
 use anyhow::Context;
+use axum::response::{IntoResponse, Json};
+use axum::{http::StatusCode, routing::get, Router};
 use clap::Parser;
 use clevis_pin_trustee_lib::{
     AttestationKey, Config as ClevisConfig, Registration, Server as ClevisServer,
@@ -15,9 +17,8 @@ use ignition_config::v3_5::{
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use kube::{Api, Client};
 use log::{error, info};
-use std::convert::Infallible;
+use std::net::SocketAddr;
 use uuid::Uuid;
-use warp::{http::StatusCode, reply, Filter};
 
 use trusted_cluster_operator_lib::endpoints::*;
 use trusted_cluster_operator_lib::{
@@ -116,7 +117,7 @@ fn generate_ignition(id: &str, endpoint_info: &EndpointInfo) -> IgnitionConfig {
     }
 }
 
-async fn register_handler() -> Result<impl warp::Reply, Infallible> {
+async fn register_handler() -> impl IntoResponse {
     let id = Uuid::new_v4().to_string();
     let internal_error = |e: anyhow::Error| {
         let code = StatusCode::INTERNAL_SERVER_ERROR;
@@ -125,7 +126,7 @@ async fn register_handler() -> Result<impl warp::Reply, Infallible> {
             "code": code.as_u16(),
             "message": format!("{e:#}")
         });
-        Ok(reply::with_status(reply::json(&msg), code))
+        (code, Json(msg))
     };
 
     let kube_client = match Client::try_default().await {
@@ -167,10 +168,7 @@ async fn register_handler() -> Result<impl warp::Reply, Infallible> {
         );
     }
 
-    Ok(reply::with_status(
-        reply::json(&ignition_json),
-        StatusCode::OK,
-    ))
+    (StatusCode::OK, Json(ignition_json))
 }
 
 async fn create_machine(
@@ -202,15 +200,14 @@ async fn main() {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
     let args = Args::parse();
+    let endpoint = format!("/{REGISTER_SERVER_RESOURCE}");
+    let app = Router::new().route(&endpoint, get(register_handler));
+    let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
+    let service = app.into_make_service();
+    info!("Starting server on http://{addr}");
 
-    let register_route = warp::path(REGISTER_SERVER_RESOURCE)
-        .and(warp::get())
-        .and_then(register_handler);
-
-    let routes = register_route;
-
-    info!("Starting server on http://localhost:{}", args.port);
-    warp::serve(routes).run(([0, 0, 0, 0], args.port)).await;
+    let run = axum_server::bind(addr).serve(service).await;
+    run.expect("Server failed");
 }
 
 #[cfg(test)]

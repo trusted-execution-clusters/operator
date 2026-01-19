@@ -89,5 +89,5 @@ spec:
       volumes:
       - name: containerdisk
         containerDisk:
-          image: "quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:20260106"
+          image: "quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:2026-14-01"
           imagePullPolicy: Always

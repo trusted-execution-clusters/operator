@@ -13,7 +13,7 @@ IMAGES=(
 	"quay.io/kubevirt/virt-operator:${KV_VERSION}"
 	"$TRUSTEE_IMAGE"
 	"$APPROVED_IMAGE"
-	"quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:20260106"
+	"quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:2026-14-01"
 )
 
 for IMAGE in "${IMAGES[@]}"; do

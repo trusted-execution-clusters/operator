@@ -30,6 +30,7 @@ ATTESTATION_KEY_REGISTER_IMAGE=$(REGISTRY)/attestation-key-register:$(TAG)
 TRUSTEE_IMAGE ?= quay.io/trusted-execution-clusters/key-broker-service:20260106
 # tagged as 2026-01-20-attestation
 APPROVED_IMAGE ?= quay.io/trusted-execution-clusters/fedora-coreos@sha256:79a0657399e6c67c7c95b8a09193d18e5675b5aa3cfb4d75ea5c8d4d53b2af74
+TEST_IMAGE ?= quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:2026-14-01
 
 BUILD_TYPE ?= release
 
@@ -191,6 +192,7 @@ test-release: crds-rs
 
 integration-tests: generate trusted-cluster-gen crds-rs
 	RUST_LOG=info REGISTRY=$(REGISTRY) TAG=$(TAG) \
+		TRUSTEE_IMAGE=$(TRUSTEE_IMAGE) APPROVED_IMAGE=$(APPROVED_IMAGE) TEST_IMAGE=$(TEST_IMAGE) \
 		cargo test --test trusted_execution_cluster --test attestation \
 		--features virtualization -- --no-capture  --test-threads=$(INTEGRATION_TEST_THREADS)
 

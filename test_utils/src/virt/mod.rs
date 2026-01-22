@@ -14,7 +14,7 @@ use std::{env, path::PathBuf, time::Duration};
 use trusted_cluster_operator_lib::Machine;
 
 use super::Poller;
-use crate::get_cluster_url;
+use crate::{get_cluster_url, get_env};
 
 /// Environment variable name for selecting the VM provider
 pub const VIRT_PROVIDER_ENV: &str = "VIRT_PROVIDER";
@@ -194,13 +194,14 @@ pub fn create_backend(
 ) -> Result<Box<dyn VmBackend>> {
     let provider = get_virt_provider()?;
     let (public_key, key_path) = generate_ssh_key_pair()?;
+    let image = get_env("TEST_IMAGE")?;
     let config = VmConfig {
         client,
         namespace: namespace.to_string(),
         vm_name: vm_name.to_string(),
         ssh_public_key: public_key,
         ssh_private_key: key_path,
-        image: "quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:2026-14-01".to_string(),
+        image,
     };
     match provider {
         VirtProvider::Kubevirt => Ok(Box::new(kubevirt::KubevirtBackend(config))),

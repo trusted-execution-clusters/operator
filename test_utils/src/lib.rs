@@ -72,6 +72,10 @@ macro_rules! kube_apply {
     }
 }
 
+fn get_env(name: &str) -> anyhow::Result<String> {
+    std::env::var(name).map_err(|e| anyhow::anyhow!("Environment variable {name} is required: {e}"))
+}
+
 pub fn get_cluster_url() -> String {
     std::env::var("CLUSTER_URL").unwrap_or_else(|_| "svc.cluster.local".to_string())
 }
@@ -304,10 +308,11 @@ impl TestContext {
                 trusted_cluster_gen_path.display()
             ));
         }
-        let repo = std::env::var("REGISTRY")
-            .unwrap_or_else(|_| "localhost:5000".to_string());
-        let tag = std::env::var("TAG")
-            .unwrap_or_else(|_| "latest".to_string());
+
+        let repo = std::env::var("REGISTRY").unwrap_or_else(|_| "localhost:5000".to_string());
+        let tag = std::env::var("TAG").unwrap_or_else(|_| "latest".to_string());
+        let trustee_image = get_env("TRUSTEE_IMAGE")?;
+        let approved_image = get_env("APPROVED_IMAGE")?;
 
         let manifest_gen_output = Command::new(&trusted_cluster_gen_path)
             .args([
@@ -320,13 +325,13 @@ impl TestContext {
                 "-pcrs-compute-image",
                 &format!("{repo}/compute-pcrs:{tag}"),
                 "-trustee-image",
-                "quay.io/trusted-execution-clusters/key-broker-service:20260106",
+                &trustee_image,
                 "-register-server-image",
                 &format!("{repo}/registration-server:{tag}"),
                 "-attestation-key-register-image",
                 &format!("{repo}/attestation-key-register:{tag}"),
                 "-approved-image",
-                "quay.io/trusted-execution-clusters/fedora-coreos@sha256:79a0657399e6c67c7c95b8a09193d18e5675b5aa3cfb4d75ea5c8d4d53b2af74"
+                &approved_image,
             ])
             .output()
             .await?;

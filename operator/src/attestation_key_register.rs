@@ -26,10 +26,10 @@ use kube::{
 use log::info;
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
-use trusted_cluster_operator_lib::{
-    AttestationKey, AttestationKeyStatus, Machine, conditions::ATTESTATION_KEY_MACHINE_APPROVE,
-    update_status,
-};
+
+use trusted_cluster_operator_lib::conditions::ATTESTATION_KEY_MACHINE_APPROVE;
+use trusted_cluster_operator_lib::endpoints::*;
+use trusted_cluster_operator_lib::{AttestationKey, AttestationKeyStatus, Machine, update_status};
 
 use crate::conditions::attestation_key_approved_condition;
 use crate::trustee;
@@ -44,13 +44,12 @@ pub async fn create_attestation_key_register_deployment(
     owner_reference: OwnerReference,
     image: &str,
 ) -> Result<()> {
-    let name = "attestation-key-register";
     let app_label = "attestation-key-register";
     let labels = BTreeMap::from([("app".to_string(), app_label.to_string())]);
 
     let deployment = Deployment {
         metadata: ObjectMeta {
-            name: Some(name.to_string()),
+            name: Some(ATTESTATION_KEY_REGISTER_DEPLOYMENT.to_string()),
             owner_references: Some(vec![owner_reference]),
             ..Default::default()
         },
@@ -68,15 +67,15 @@ pub async fn create_attestation_key_register_deployment(
                 spec: Some(PodSpec {
                     service_account_name: Some("trusted-cluster-operator".to_string()),
                     containers: vec![Container {
-                        name: name.to_string(),
+                        name: ATTESTATION_KEY_REGISTER_DEPLOYMENT.to_string(),
                         image: Some(image.to_string()),
                         ports: Some(vec![ContainerPort {
-                            container_port: INTERNAL_ATTESTATION_KEY_REGISTER_PORT,
+                            container_port: ATTESTATION_KEY_REGISTER_PORT,
                             ..Default::default()
                         }]),
                         args: Some(vec![
                             "--port".to_string(),
-                            INTERNAL_ATTESTATION_KEY_REGISTER_PORT.to_string(),
+                            ATTESTATION_KEY_REGISTER_PORT.to_string(),
                         ]),
                         ..Default::default()
                     }],
@@ -98,13 +97,12 @@ pub async fn create_attestation_key_register_service(
     owner_reference: OwnerReference,
     attestation_key_register_port: Option<i32>,
 ) -> Result<()> {
-    let name = "attestation-key-register";
     let app_label = "attestation-key-register";
     let labels = BTreeMap::from([("app".to_string(), app_label.to_string())]);
 
     let service = Service {
         metadata: ObjectMeta {
-            name: Some(name.to_string()),
+            name: Some(ATTESTATION_KEY_REGISTER_SERVICE.to_string()),
             labels: Some(labels.clone()),
             owner_references: Some(vec![owner_reference]),
             ..Default::default()

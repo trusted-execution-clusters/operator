@@ -11,7 +11,7 @@ use trusted_cluster_operator_lib::{
     virtualmachineinstances::VirtualMachineInstance, virtualmachines::*,
 };
 
-use super::{VmBackend, VmConfig, ssh_exec, generate_ignition, get_root_key};
+use super::{VmBackend, VmConfig, generate_ignition, get_root_key, ssh_exec};
 use crate::{Poller, ensure_command};
 
 pub struct KubevirtBackend(pub VmConfig);
@@ -19,7 +19,7 @@ pub struct KubevirtBackend(pub VmConfig);
 #[async_trait::async_trait]
 impl VmBackend for KubevirtBackend {
     async fn create_vm(&self) -> Result<()> {
-        let ignition_json = generate_ignition(&self.0);
+        let ignition_json = generate_ignition(&self.0).await?;
         let vm = VirtualMachine {
             metadata: ObjectMeta {
                 name: Some(self.0.vm_name.clone()),

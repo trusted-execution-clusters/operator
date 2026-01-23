@@ -15,6 +15,8 @@ virtualization = []
 anyhow.workspace = true
 async-trait = "0.1"
 auto_impl = "1"
+azure_core = "0.31.0"
+azure_identity = "0.31.0"
 clevis-pin-trustee-lib.workspace = true
 compute-pcrs-lib.workspace = true
 env_logger.workspace = true
@@ -24,6 +26,7 @@ k8s-openapi.workspace = true
 kube = { workspace = true }
 log.workspace = true
 rand_core = "0.6"
+reqwest = { version = "0.13.1", features = ["json"] }
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true

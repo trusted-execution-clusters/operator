@@ -27,7 +27,7 @@ oci-spec = "0.8.4"
 openssl = "0.10.75"
 serde.workspace = true
 serde_json.workspace = true
-thiserror = "2.0.17"
+thiserror = "2.0.18"
 tokio.workspace = true
 
 [dev-dependencies]

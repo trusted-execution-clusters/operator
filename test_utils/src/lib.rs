@@ -565,7 +565,8 @@ async fn setup_test_client() -> anyhow::Result<Client> {
 }
 
 fn test_namespace_name() -> String {
-    format!("test-{}", &uuid::Uuid::new_v4().to_string()[..8])
+    let namespace_prefix = std::env::var("TEST_NAMESPACE_PREFIX").unwrap_or_default();
+    format!("{namespace_prefix}test-{}", &uuid::Uuid::new_v4().to_string()[..8])
 }
 
 pub async fn wait_for_resource_deleted<K>(

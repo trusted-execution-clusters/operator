@@ -143,21 +143,6 @@ async fn register_handler(remote_addr: Option<SocketAddr>) -> Result<impl warp::
 }
 
 async fn create_machine(client: Client, uuid: &str, client_ip: &str) -> anyhow::Result<()> {
-    let machines: Api<Machine> = Api::default_namespaced(client);
-
-    // Check for existing machines with the same IP
-    let machine_list = machines.list(&Default::default()).await?;
-
-    for existing_machine in machine_list.items {
-        if existing_machine.spec.registration_address == client_ip {
-            if let Some(name) = &existing_machine.metadata.name {
-                info!("Found existing machine {name} with IP {client_ip}, deleting...");
-                machines.delete(name, &Default::default()).await?;
-                info!("Deleted existing machine: {name}");
-            }
-        }
-    }
-
     let machine_name = format!("machine-{uuid}");
     let machine = Machine {
         metadata: ObjectMeta {
@@ -171,6 +156,7 @@ async fn create_machine(client: Client, uuid: &str, client_ip: &str) -> anyhow::
         status: None,
     };
 
+    let machines: Api<Machine> = Api::default_namespaced(client);
     machines.create(&Default::default(), &machine).await?;
     info!("Created Machine: {machine_name} with IP: {client_ip}");
     Ok(())

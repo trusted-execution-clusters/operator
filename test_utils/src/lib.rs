@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+use glob::glob;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{ConfigMap, Namespace};
 use kube::api::DeleteParams;
@@ -11,6 +12,7 @@ use std::path::Path;
 use std::sync::Once;
 use std::time::Duration;
 use tokio::process::Command;
+use trusted_cluster_operator_lib::reference_values::ImagePcrs;
 
 pub mod timer;
 pub use timer::Poller;
@@ -20,6 +22,8 @@ pub mod mock_client;
 pub mod virt;
 
 use compute_pcrs_lib::Pcr;
+
+pub const DEFAULT_TEST_FCOS_IMAGE: &str = "quay.io/trusted-execution-clusters/fedora-coreos@sha256:79a0657399e6c67c7c95b8a09193d18e5675b5aa3cfb4d75ea5c8d4d53b2af74";
 
 pub fn compare_pcrs(actual: &[Pcr], expected: &[Pcr]) -> bool {
     if actual.len() != expected.len() {
@@ -82,7 +86,7 @@ pub struct TestContext {
 }
 
 impl TestContext {
-    pub async fn new(test_name: &str) -> anyhow::Result<Self> {
+    pub async fn new(test_name: &str, approved_images: &[&str]) -> anyhow::Result<Self> {
         INIT.call_once(|| {
             let _ = env_logger::builder().is_test(true).try_init();
         });
@@ -102,7 +106,7 @@ impl TestContext {
         ctx.manifests_dir = manifests_dir;
 
         ctx.create_namespace().await?;
-        ctx.apply_operator_manifests().await?;
+        ctx.apply_operator_manifests(approved_images).await?;
 
         test_info!(
             &ctx.test_name,
@@ -225,13 +229,12 @@ impl TestContext {
                 async move {
                     let deployment = api.get(&name).await?;
 
-                    if let Some(status) = &deployment.status {
-                        if let Some(available_replicas) = status.available_replicas {
-                            if available_replicas == 1 {
-                                test_info!(&tn, "{} deployment has 1 available replica", name);
-                                return Ok(());
-                            }
-                        }
+                    if let Some(status) = &deployment.status
+                        && let Some(available_replicas) = status.available_replicas
+                        && available_replicas == 1
+                    {
+                        test_info!(&tn, "{} deployment has 1 available replica", name);
+                        return Ok(());
                     }
 
                     Err(anyhow::anyhow!(
@@ -242,7 +245,7 @@ impl TestContext {
             .await
     }
 
-    async fn apply_operator_manifests(&self) -> anyhow::Result<()> {
+    async fn apply_operator_manifests(&self, approved_images: &[&str]) -> anyhow::Result<()> {
         test_info!(
             &self.test_name,
             "Generating manifests in {}",
@@ -301,25 +304,31 @@ impl TestContext {
             ));
         }
 
+        let mut trusted_cluster_gen_args = vec![
+            "-namespace",
+            &ns,
+            "-output-dir",
+            &self.manifests_dir,
+            "-image",
+            "localhost:5000/trusted-execution-clusters/trusted-cluster-operator:latest",
+            "-pcrs-compute-image",
+            "localhost:5000/trusted-execution-clusters/compute-pcrs:latest",
+            "-trustee-image",
+            "quay.io/trusted-execution-clusters/key-broker-service:20260106",
+            "-register-server-image",
+            "localhost:5000/trusted-execution-clusters/registration-server:latest",
+            "-attestation-key-register-image",
+            "localhost:5000/trusted-execution-clusters/attestation-key-register:latest",
+        ];
+
+        trusted_cluster_gen_args.extend(
+            approved_images
+                .iter()
+                .flat_map(|&i| vec!["-approved-image", i]),
+        );
+
         let manifest_gen_output = Command::new(&trusted_cluster_gen_path)
-            .args([
-                "-namespace",
-                &ns,
-                "-output-dir",
-                &self.manifests_dir,
-                "-image",
-                "localhost:5000/trusted-execution-clusters/trusted-cluster-operator:latest",
-                "-pcrs-compute-image",
-                "localhost:5000/trusted-execution-clusters/compute-pcrs:latest",
-                "-trustee-image",
-                "quay.io/trusted-execution-clusters/key-broker-service:20260106",
-                "-register-server-image",
-                "localhost:5000/trusted-execution-clusters/registration-server:latest",
-                "-attestation-key-register-image",
-                "localhost:5000/trusted-execution-clusters/attestation-key-register:latest",
-                "-approved-image",
-                "quay.io/trusted-execution-clusters/fedora-coreos@sha256:79a0657399e6c67c7c95b8a09193d18e5675b5aa3cfb4d75ea5c8d4d53b2af74"
-            ])
+            .args(trusted_cluster_gen_args)
             .output()
             .await?;
 
@@ -357,14 +366,14 @@ impl TestContext {
 
         let sa_src = workspace_root.join("config/rbac/service_account.yaml");
         let sa_content = std::fs::read_to_string(&sa_src)?
-            .replace("namespace: system", &format!("namespace: {}", ns));
+            .replace("namespace: system", &format!("namespace: {ns}"));
         let sa_dst = rbac_temp_dir.join("service_account.yaml");
         std::fs::write(&sa_dst, sa_content)?;
 
         let role_path = rbac_temp_dir.join("role.yaml");
         let role_content = std::fs::read_to_string(&role_path)?.replace(
             "name: trusted-cluster-operator-role",
-            &format!("name: {}-trusted-cluster-operator-role", ns),
+            &format!("name: {ns}-trusted-cluster-operator-role"),
         );
         std::fs::write(&role_path, role_content)?;
 
@@ -372,25 +381,25 @@ impl TestContext {
         let rb_content = std::fs::read_to_string(&rb_src)?
             .replace(
                 "name: manager-rolebinding",
-                &format!("name: {}-manager-rolebinding", ns),
+                &format!("name: {ns}-manager-rolebinding"),
             )
             .replace(
                 "name: trusted-cluster-operator-role",
-                &format!("name: {}-trusted-cluster-operator-role", ns),
+                &format!("name: {ns}-trusted-cluster-operator-role"),
             )
-            .replace("namespace: system", &format!("namespace: {}", ns));
+            .replace("namespace: system", &format!("namespace: {ns}"));
         let rb_dst = rbac_temp_dir.join("role_binding.yaml");
         std::fs::write(&rb_dst, rb_content)?;
 
         let le_role_src = workspace_root.join("config/rbac/leader_election_role.yaml");
         let le_role_content = std::fs::read_to_string(&le_role_src)?
-            .replace("namespace: system", &format!("namespace: {}", ns));
+            .replace("namespace: system", &format!("namespace: {ns}"));
         let le_role_dst = rbac_temp_dir.join("leader_election_role.yaml");
         std::fs::write(&le_role_dst, le_role_content)?;
 
         let le_rb_src = workspace_root.join("config/rbac/leader_election_role_binding.yaml");
         let le_rb_content = std::fs::read_to_string(&le_rb_src)?
-            .replace("namespace: system", &format!("namespace: {}", ns));
+            .replace("namespace: system", &format!("namespace: {ns}"));
         let le_rb_dst = rbac_temp_dir.join("leader_election_role_binding.yaml");
         std::fs::write(&le_rb_dst, le_rb_content)?;
 
@@ -399,7 +408,7 @@ impl TestContext {
             r#"# SPDX-FileCopyrightText: Generated for testing
 # SPDX-License-Identifier: CC0-1.0
 
-namespace: {}
+namespace: {ns}
 
 resources:
   - service_account.yaml
@@ -407,8 +416,7 @@ resources:
   - role_binding.yaml
   - leader_election_role.yaml
   - leader_election_role_binding.yaml
-"#,
-            ns
+"#
         );
 
         let temp_kustomization_path = rbac_temp_dir.join("kustomization.yaml");
@@ -436,19 +444,19 @@ resources:
             &self.test_name,
             "Updating CR manifest with publicTrusteeAddr"
         );
-        let trustee_addr = format!("kbs-service.{}.svc.cluster.local:8080", ns);
+        let trustee_addr = format!("kbs-service.{ns}.svc.cluster.local:8080");
         let cr_manifest_path = manifests_path.join("trusted_execution_cluster_cr.yaml");
 
         let cr_content = std::fs::read_to_string(&cr_manifest_path)?;
         let mut cr_value: serde_yaml::Value = serde_yaml::from_str(&cr_content)?;
 
-        if let Some(spec) = cr_value.get_mut("spec") {
-            if let Some(spec_map) = spec.as_mapping_mut() {
-                spec_map.insert(
-                    serde_yaml::Value::String("publicTrusteeAddr".to_string()),
-                    serde_yaml::Value::String(trustee_addr.clone()),
-                );
-            }
+        if let Some(spec) = cr_value.get_mut("spec")
+            && let Some(spec_map) = spec.as_mapping_mut()
+        {
+            spec_map.insert(
+                serde_yaml::Value::String("publicTrusteeAddr".to_string()),
+                serde_yaml::Value::String(trustee_addr.clone()),
+            );
         }
 
         let updated_content = serde_yaml::to_string(&cr_value)?;
@@ -465,15 +473,22 @@ resources:
             .ok_or_else(|| anyhow::anyhow!("Invalid CR manifest path"))?;
         kube_apply!(cr_manifest_str, &self.test_name, "Applying CR manifest");
 
-        let approved_image_path = manifests_path.join("approved_image_cr.yaml");
-        let approved_image_str = approved_image_path
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("Invalid ApprovedImage manifest path"))?;
-        kube_apply!(
-            approved_image_str,
-            &self.test_name,
-            "Applying ApprovedImage manifest"
-        );
+        let approved_image_paths = glob(
+            manifests_path
+                .join("approved_image_cr_*.yaml")
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Invalid ApprovedImage manifest path"))?,
+        )?;
+        for approved_image_path in approved_image_paths.filter_map(Result::ok) {
+            let approved_image_str = approved_image_path
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Invalid ApprovedImage manifest path"))?;
+            kube_apply!(
+                approved_image_str,
+                &self.test_name,
+                "Applying ApprovedImage manifest"
+            );
+        }
 
         let deployments_api: Api<Deployment> = Api::namespaced(self.client.clone(), &ns);
 
@@ -494,8 +509,7 @@ resources:
             .with_timeout(Duration::from_secs(60))
             .with_interval(Duration::from_secs(5))
             .with_error_message(format!(
-                "image-pcrs ConfigMap in the namespace {} not found",
-                ns
+                "image-pcrs ConfigMap in the namespace {ns} not found"
             ));
 
         let test_name_owned = self.test_name.clone();
@@ -512,6 +526,95 @@ resources:
                 }
             })
             .await?;
+
+        Ok(())
+    }
+
+    pub async fn verify_expected_pcrs(&self, expected_pcrs: &[&[Pcr]]) -> anyhow::Result<()> {
+        let client = self.client();
+        let namespace = self.namespace();
+
+        let configmap_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+
+        let poller = Poller::new()
+            .with_timeout(Duration::from_secs(180))
+            .with_interval(Duration::from_secs(5))
+            .with_error_message("image-pcrs ConfigMap not populated with data".to_string());
+
+        poller
+            .poll_async(|| {
+                let api = configmap_api.clone();
+                async move {
+                    let cm = api.get("image-pcrs").await?;
+
+                    if let Some(data) = &cm.data
+                        && let Some(image_pcrs_json) = data.get("image-pcrs.json")
+                        && let Ok(image_pcrs) = serde_json::from_str::<ImagePcrs>(image_pcrs_json)
+                        && image_pcrs.0.len() == expected_pcrs.len()
+                    {
+                        return Ok(());
+                    }
+
+                    Err(anyhow::anyhow!(
+                        "image-pcrs ConfigMap not yet populated with image-pcrs.json data"
+                    ))
+                }
+            })
+            .await?;
+
+        let image_pcrs_cm = configmap_api.get("image-pcrs").await?;
+        assert_eq!(image_pcrs_cm.metadata.name.as_deref(), Some("image-pcrs"));
+
+        let data = image_pcrs_cm
+            .data
+            .as_ref()
+            .expect("image-pcrs ConfigMap should have data field");
+
+        assert!(!data.is_empty(), "image-pcrs ConfigMap should have data");
+
+        let image_pcrs_json = data
+            .get("image-pcrs.json")
+            .expect("image-pcrs ConfigMap should have image-pcrs.json key");
+
+        assert!(
+            !image_pcrs_json.is_empty(),
+            "image-pcrs.json should not be empty"
+        );
+
+        // Parse the image-pcrs.json using the ImagePcrs structure
+        let image_pcrs: ImagePcrs = serde_json::from_str(image_pcrs_json)
+            .expect("image-pcrs.json should be valid ImagePcrs JSON");
+
+        assert!(
+            !image_pcrs.0.is_empty(),
+            "image-pcrs.json should contain at least one image entry"
+        );
+
+        test_info!(
+            &self.test_name,
+            "Checking into {} image results:",
+            image_pcrs.0.len()
+        );
+        let mut found_expected_pcrs = false;
+
+        assert_eq!(
+            image_pcrs.0.len(),
+            expected_pcrs.len(),
+            "image-pcrs.json should contain {} image entries",
+            expected_pcrs.len()
+        );
+
+        for (i, (_image_ref, image_data)) in image_pcrs.0.iter().enumerate() {
+            if compare_pcrs(&image_data.pcrs, expected_pcrs[i]) {
+                found_expected_pcrs = true;
+                break;
+            }
+        }
+
+        assert!(
+            found_expected_pcrs,
+            "At least one image should have the expected PCR values"
+        );
 
         Ok(())
     }
@@ -543,7 +646,9 @@ macro_rules! virt_test {
 
 #[macro_export]
 macro_rules! setup {
-    () => {{ $crate::TestContext::new(TEST_NAME) }};
+    () => {{ $crate::TestContext::new(TEST_NAME, &[DEFAULT_TEST_FCOS_IMAGE]) }};
+
+    ($images:expr) => {{ $crate::TestContext::new(TEST_NAME, &$images) }};
 }
 
 async fn setup_test_client() -> anyhow::Result<Client> {

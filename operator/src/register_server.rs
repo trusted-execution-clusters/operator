@@ -28,9 +28,8 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use crate::trustee;
 use operator::*;
-use trusted_cluster_operator_lib::Machine;
+use trusted_cluster_operator_lib::{Machine, endpoints::*};
 
-const INTERNAL_REGISTER_SERVER_PORT: i32 = 8000;
 /// Finalizer name to discard decryption keys when a machine is deleted
 const MACHINE_FINALIZER: &str = "finalizer.machine.trusted-execution-clusters.io";
 
@@ -39,13 +38,12 @@ pub async fn create_register_server_deployment(
     owner_reference: OwnerReference,
     image: &str,
 ) -> Result<()> {
-    let name = "register-server";
     let app_label = "register-server";
     let labels = BTreeMap::from([("app".to_string(), app_label.to_string())]);
 
     let deployment = Deployment {
         metadata: ObjectMeta {
-            name: Some(name.to_string()),
+            name: Some(REGISTER_SERVER_DEPLOYMENT.to_string()),
             owner_references: Some(vec![owner_reference]),
             ..Default::default()
         },
@@ -63,16 +61,13 @@ pub async fn create_register_server_deployment(
                 spec: Some(PodSpec {
                     service_account_name: Some("trusted-cluster-operator".to_string()),
                     containers: vec![Container {
-                        name: name.to_string(),
+                        name: REGISTER_SERVER_DEPLOYMENT.to_string(),
                         image: Some(image.to_string()),
                         ports: Some(vec![ContainerPort {
-                            container_port: INTERNAL_REGISTER_SERVER_PORT,
+                            container_port: REGISTER_SERVER_PORT,
                             ..Default::default()
                         }]),
-                        args: Some(vec![
-                            "--port".to_string(),
-                            INTERNAL_REGISTER_SERVER_PORT.to_string(),
-                        ]),
+                        args: Some(vec!["--port".to_string(), REGISTER_SERVER_PORT.to_string()]),
                         ..Default::default()
                     }],
                     ..Default::default()
@@ -93,13 +88,12 @@ pub async fn create_register_server_service(
     owner_reference: OwnerReference,
     register_server_port: Option<i32>,
 ) -> Result<()> {
-    let name = "register-server";
     let app_label = "register-server";
     let labels = BTreeMap::from([("app".to_string(), app_label.to_string())]);
 
     let service = Service {
         metadata: ObjectMeta {
-            name: Some(name.to_string()),
+            name: Some(REGISTER_SERVER_SERVICE.to_string()),
             labels: Some(labels.clone()),
             owner_references: Some(vec![owner_reference]),
             ..Default::default()
@@ -108,8 +102,8 @@ pub async fn create_register_server_service(
             selector: Some(labels),
             ports: Some(vec![ServicePort {
                 name: Some("http".to_string()),
-                port: register_server_port.unwrap_or(INTERNAL_REGISTER_SERVER_PORT),
-                target_port: Some(IntOrString::Int(INTERNAL_REGISTER_SERVER_PORT)),
+                port: register_server_port.unwrap_or(REGISTER_SERVER_PORT),
+                target_port: Some(IntOrString::Int(REGISTER_SERVER_PORT)),
                 protocol: Some("TCP".to_string()),
                 ..Default::default()
             }]),

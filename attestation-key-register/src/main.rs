@@ -10,9 +10,11 @@ use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use trusted_cluster_operator_lib::{AttestationKey, AttestationKeySpec};
 use uuid::Uuid;
 use warp::{http::StatusCode, reply, Filter};
+
+use trusted_cluster_operator_lib::endpoints::ATTESTATION_KEY_REGISTER_RESOURCE;
+use trusted_cluster_operator_lib::{AttestationKey, AttestationKeySpec};
 
 #[derive(Parser)]
 #[command(name = "attestation-key-register")]
@@ -138,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
         .context("Failed to create Kubernetes client")?;
 
     let register = warp::put()
-        .and(warp::path("register-ak"))
+        .and(warp::path(ATTESTATION_KEY_REGISTER_RESOURCE))
         .and(warp::body::json())
         .and(with_client(client))
         .and(warp::addr::remote())

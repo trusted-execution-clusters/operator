@@ -27,6 +27,8 @@ use operator::{RvContextData, create_or_info_if_exists};
 use serde::{Serialize, Serializer};
 use serde_json::{Value::String as JsonString, json};
 use std::collections::BTreeMap;
+
+use trusted_cluster_operator_lib::endpoints::*;
 use trusted_cluster_operator_lib::reference_values::*;
 
 const TRUSTEE_DATA_DIR: &str = "/opt/trustee";
@@ -36,8 +38,6 @@ pub(crate) const REFERENCE_VALUES_FILE: &str = "reference-values.json";
 
 pub(crate) const TRUSTEE_DATA_MAP: &str = "trustee-data";
 const ATT_POLICY_MAP: &str = "attestation-policy";
-const DEPLOYMENT_NAME: &str = "trustee-deployment";
-const INTERNAL_KBS_PORT: i32 = 8080;
 const TRUSTED_AK_KEYS_VOLUME: &str = "trusted-ak-keys";
 const TRUSTED_AK_KEYS_DIR: &str = "/etc/tpm/trusted_ak_keys";
 
@@ -140,24 +140,24 @@ fn generate_secret_volume(id: &str) -> (Volume, VolumeMount) {
 
 pub async fn mount_secret(client: Client, id: &str) -> Result<()> {
     let result = do_mount_secret(client, id, true).await;
-    info!("Mounted secret {id} to {DEPLOYMENT_NAME}");
+    info!("Mounted secret {id} to {TRUSTEE_DEPLOYMENT}");
     result
 }
 
 pub async fn unmount_secret(client: Client, id: &str) -> Result<()> {
     let result = do_mount_secret(client, id, false).await;
-    info!("Unmounted secret {id} from {DEPLOYMENT_NAME}");
+    info!("Unmounted secret {id} from {TRUSTEE_DEPLOYMENT}");
     result
 }
 
 pub async fn do_mount_secret(client: Client, id: &str, add: bool) -> Result<()> {
     let deployments: Api<Deployment> = Api::default_namespaced(client);
-    let mut deployment = deployments.get(DEPLOYMENT_NAME).await?;
-    let err = format!("Deployment {DEPLOYMENT_NAME} existed, but had no spec");
+    let mut deployment = deployments.get(TRUSTEE_DEPLOYMENT).await?;
+    let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no spec");
     let depl_spec = deployment.spec.as_mut().context(err)?;
-    let err = format!("Deployment {DEPLOYMENT_NAME} existed, but had no pod spec");
+    let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no pod spec");
     let pod_spec = depl_spec.template.spec.as_mut().context(err)?;
-    let err = format!("Deployment {DEPLOYMENT_NAME} existed, but had no containers");
+    let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no containers");
     let container = pod_spec.containers.get_mut(0).context(err)?;
     let vol_mounts = container.volume_mounts.get_or_insert_default();
 
@@ -183,7 +183,7 @@ pub async fn do_mount_secret(client: Client, id: &str, add: bool) -> Result<()> 
     }
 
     deployments
-        .replace(DEPLOYMENT_NAME, &Default::default(), &deployment)
+        .replace(TRUSTEE_DEPLOYMENT, &Default::default(), &deployment)
         .await?;
     Ok(())
 }
@@ -212,10 +212,10 @@ pub async fn update_attestation_keys(client: Client) -> Result<()> {
         .collect();
 
     let deployments: Api<Deployment> = Api::default_namespaced(client);
-    let deployment = deployments.get(DEPLOYMENT_NAME).await?;
-    let err = format!("Deployment {DEPLOYMENT_NAME} existed, but had no spec");
+    let deployment = deployments.get(TRUSTEE_DEPLOYMENT).await?;
+    let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no spec");
     let depl_spec = deployment.spec.as_ref().context(err)?;
-    let err = format!("Deployment {DEPLOYMENT_NAME} existed, but had no pod spec");
+    let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no pod spec");
     let pod_spec = depl_spec.template.spec.as_ref().context(err)?;
 
     // Get existing volumes and volumeMounts, filtering out the attestation key volume
@@ -230,7 +230,7 @@ pub async fn update_attestation_keys(client: Client) -> Result<()> {
         })
         .unwrap_or_default();
 
-    let err = format!("Deployment {DEPLOYMENT_NAME} existed, but had no containers");
+    let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no containers");
     let container = pod_spec.containers.first().context(err)?;
     let mut vol_mounts: Vec<VolumeMount> = container
         .volume_mounts
@@ -244,7 +244,9 @@ pub async fn update_attestation_keys(client: Client) -> Result<()> {
         .unwrap_or_default();
 
     if ak_secrets.is_empty() {
-        info!("No AttestationKey secrets found, removing projected volume from {DEPLOYMENT_NAME}");
+        info!(
+            "No AttestationKey secrets found, removing projected volume from {TRUSTEE_DEPLOYMENT}"
+        );
     } else {
         // Build the projected volume with all AttestationKey secrets
         let projections: Vec<VolumeProjection> = ak_secrets
@@ -291,7 +293,7 @@ pub async fn update_attestation_keys(client: Client) -> Result<()> {
             "apiVersion": "apps/v1",
             "kind": "Deployment",
             "metadata": {
-                "name": DEPLOYMENT_NAME
+                "name": TRUSTEE_DEPLOYMENT
             },
             "spec": {
                 "template": {
@@ -308,12 +310,12 @@ pub async fn update_attestation_keys(client: Client) -> Result<()> {
 
         deployments
             .patch(
-                DEPLOYMENT_NAME,
+                TRUSTEE_DEPLOYMENT,
                 &PatchParams::apply("trusted-cluster-operator").force(),
                 &Patch::Apply(&patch),
             )
             .await?;
-        info!("Successfully patched {DEPLOYMENT_NAME} with attestation key volumes");
+        info!("Successfully patched {TRUSTEE_DEPLOYMENT} with attestation key volumes");
     } else {
         info!("No changes to attestation key volumes, skipping deployment update");
     }
@@ -394,12 +396,11 @@ pub async fn generate_kbs_service(
     owner_reference: OwnerReference,
     kbs_port: Option<i32>,
 ) -> Result<()> {
-    let svc_name = "kbs-service";
     let selector = Some(BTreeMap::from([("app".to_string(), "kbs".to_string())]));
 
     let service = Service {
         metadata: ObjectMeta {
-            name: Some(svc_name.to_string()),
+            name: Some(TRUSTEE_SERVICE.to_string()),
             owner_references: Some(vec![owner_reference.clone()]),
             ..Default::default()
         },
@@ -407,8 +408,8 @@ pub async fn generate_kbs_service(
             selector: selector.clone(),
             ports: Some(vec![ServicePort {
                 name: Some("kbs-port".to_string()),
-                port: kbs_port.unwrap_or(INTERNAL_KBS_PORT),
-                target_port: Some(IntOrString::Int(INTERNAL_KBS_PORT)),
+                port: kbs_port.unwrap_or(TRUSTEE_PORT),
+                target_port: Some(IntOrString::Int(TRUSTEE_PORT)),
                 ..Default::default()
             }]),
             ..Default::default()
@@ -474,7 +475,7 @@ fn generate_kbs_pod_spec(image: &str) -> PodSpec {
             image: Some(image.to_string()),
             name: "kbs".to_string(),
             ports: Some(vec![ContainerPort {
-                container_port: INTERNAL_KBS_PORT,
+                container_port: TRUSTEE_PORT,
                 ..Default::default()
             }]),
             volume_mounts: Some(
@@ -514,7 +515,7 @@ pub async fn generate_kbs_deployment(
     // Inspired by trustee-operator
     let deployment = Deployment {
         metadata: ObjectMeta {
-            name: Some(DEPLOYMENT_NAME.to_string()),
+            name: Some(TRUSTEE_DEPLOYMENT.to_string()),
             owner_references: Some(vec![owner_reference]),
             ..Default::default()
         },

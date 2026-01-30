@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: CC0-1.0
 
 ARG build_type
-FROM ghcr.io/trusted-execution-clusters/buildroot AS builder
+FROM ghcr.io/trusted-execution-clusters/buildroot:fedora AS builder
 ARG build_type
 WORKDIR /build
 
@@ -27,7 +27,7 @@ RUN sed -i 's/members =.*/members = ["lib", "register-server"]/' Cargo.toml && \
 COPY register-server/src register-server/src
 RUN cargo build -p register-server $(if [ "$build_type" = release ]; then echo --release; fi)
 
-FROM quay.io/fedora/fedora:42
+FROM quay.io/fedora/fedora:43
 ARG build_type
 COPY --from=builder "/build/target/$build_type/register-server" /usr/bin
 EXPOSE 3030

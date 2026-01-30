@@ -16,6 +16,8 @@ nodes:
     hostPort: 8080
   - containerPort: 31001
     hostPort: 8000
+  - containerPort: 31002
+    hostPort: 8001
 featureGates:
   "ImageVolume": true
 networking:

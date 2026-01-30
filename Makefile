@@ -153,6 +153,7 @@ endif
 	@if [ "$(PLATFORM)" = "openshift" ]; then \
 		sed 's/<NAMESPACE>/$(NAMESPACE)/g' config/openshift/scc.yaml | $(KUBECTL) apply -f -; \
 	else \
+		sed 's/<NAMESPACE>/$(NAMESPACE)/g' kind/ak-register-forward.yaml | $(KUBECTL) apply -f -; \
 		sed 's/<NAMESPACE>/$(NAMESPACE)/g' kind/register-forward.yaml | $(KUBECTL) apply -f -; \
 		sed 's/<NAMESPACE>/$(NAMESPACE)/g' kind/kbs-forward.yaml | $(KUBECTL) apply -f -; \
 	fi

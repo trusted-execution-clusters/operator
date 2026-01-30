@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 use compute_pcrs_lib::Pcr;
-use k8s_openapi::{api::core::v1::ConfigMap, chrono::Utc};
+use k8s_openapi::{api::core::v1::ConfigMap, jiff::Timestamp};
 use kube::Client;
 use operator::RvContextData;
 use std::collections::BTreeMap;
@@ -15,7 +15,7 @@ pub fn dummy_pcrs() -> ImagePcrs {
     ImagePcrs(BTreeMap::from([(
         "cos".to_string(),
         ImagePcr {
-            first_seen: Utc::now(),
+            first_seen: Timestamp::now(),
             pcrs: vec![
                 Pcr {
                     id: 0,

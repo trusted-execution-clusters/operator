@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
-use k8s_openapi::chrono::Utc;
+use k8s_openapi::jiff::Timestamp;
 use trusted_cluster_operator_lib::{condition_status, conditions::*};
 
 pub fn known_trustee_address_condition(known: bool, generation: Option<i64>) -> Condition {
@@ -18,7 +18,7 @@ pub fn known_trustee_address_condition(known: bool, generation: Option<i64>) -> 
         status: condition_status(known),
         reason: reason.to_string(),
         message: message.to_string(),
-        last_transition_time: Time(Utc::now()),
+        last_transition_time: Time(Timestamp::now()),
         observed_generation: generation,
     }
 }
@@ -38,7 +38,7 @@ pub fn installed_condition(reason: &str, generation: Option<i64>) -> Condition {
             _ => "",
         }
         .to_string(),
-        last_transition_time: Time(Utc::now()),
+        last_transition_time: Time(Timestamp::now()),
         observed_generation: generation,
     }
 }
@@ -55,7 +55,7 @@ pub fn attestation_key_approved_condition(reason: &str, generation: Option<i64>)
             _ => "",
         }
         .to_string(),
-        last_transition_time: Time(Utc::now()),
+        last_transition_time: Time(Timestamp::now()),
         observed_generation: generation,
     }
 }

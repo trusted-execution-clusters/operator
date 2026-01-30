@@ -261,7 +261,7 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use http::{Method, Request, StatusCode};
-    use k8s_openapi::{apimachinery::pkg::apis::meta::v1::Time, chrono::Utc};
+    use k8s_openapi::{apimachinery::pkg::apis::meta::v1::Time, jiff::Timestamp};
     use kube::api::ObjectList;
     use kube::client::Body;
 
@@ -320,7 +320,7 @@ mod tests {
         };
         count_check!(1, clos, |client| {
             let mut cluster = dummy_cluster();
-            cluster.metadata.deletion_timestamp = Some(Time(Utc::now()));
+            cluster.metadata.deletion_timestamp = Some(Time(Timestamp::now()));
             let result = reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client))).await;
             assert_eq!(result.unwrap(), Action::await_change());
         });

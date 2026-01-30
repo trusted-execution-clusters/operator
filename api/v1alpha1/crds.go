@@ -25,7 +25,7 @@ var (
 	AddToScheme = SchemeBuilder.AddToScheme
 )
 
-// +kubebuilder:rbac:groups="",resources=configmaps;services;secrets,verbs=create;get;list;watch
+// +kubebuilder:rbac:groups="",resources=configmaps;services;secrets,verbs=create;get;list;patch;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=trustedexecutionclusters;machines;approvedimages;attestationkeys,verbs=create;delete;get;list;patch;update;watch

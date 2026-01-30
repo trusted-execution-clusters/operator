@@ -5,7 +5,7 @@
 
 ARG build_type
 # Dependency build stage
-FROM ghcr.io/trusted-execution-clusters/buildroot AS builder
+FROM ghcr.io/trusted-execution-clusters/buildroot:fedora AS builder
 ARG build_type
 WORKDIR /build
 

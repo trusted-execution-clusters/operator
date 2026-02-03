@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: CC0-1.0
 
 ARG build_type
-FROM ghcr.io/trusted-execution-clusters/buildroot AS builder
+FROM ghcr.io/trusted-execution-clusters/buildroot:fedora AS builder
 ARG build_type
 WORKDIR /build
 

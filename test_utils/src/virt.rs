@@ -49,10 +49,7 @@ pub fn generate_ssh_key_pair() -> anyhow::Result<(String, String, std::path::Pat
         let stderr = String::from_utf8_lossy(&ssh_add_output.stderr);
         // Clean up the key file if ssh-add fails
         let _ = fs::remove_file(&key_path);
-        return Err(anyhow::anyhow!(
-            "Failed to add SSH key to agent: {}",
-            stderr
-        ));
+        return Err(anyhow::anyhow!("Failed to add SSH key to agent: {stderr}"));
     }
 
     Ok((private_key_str, public_key_str, key_path))
@@ -138,10 +135,8 @@ pub fn generate_ignition_config(
         serde_json::to_value(&config).expect("Failed to serialize ignition config");
 
     // Add attestation key registration field
-    let attestation_url = format!(
-        "http://attestation-key-register.{}.svc.cluster.local:8001/register-ak",
-        namespace
-    );
+    let attestation_url =
+        format!("http://attestation-key-register.{namespace}.svc.cluster.local:8001/register-ak");
 
     if let Some(obj) = ignition_json.as_object_mut() {
         obj.insert(
@@ -303,8 +298,7 @@ pub async fn wait_for_vm_running(
         .with_timeout(Duration::from_secs(timeout_secs))
         .with_interval(Duration::from_secs(5))
         .with_error_message(format!(
-            "VirtualMachine {} did not reach Running phase after {} seconds",
-            vm_name, timeout_secs
+            "VirtualMachine {vm_name} did not reach Running phase after {timeout_secs} seconds"
         ));
 
     poller
@@ -315,17 +309,15 @@ pub async fn wait_for_vm_running(
                 let vm = api.get(&name).await?;
 
                 // Check VM status phase
-                if let Some(status) = vm.status {
-                    if let Some(phase) = status.printable_status {
-                        if phase.as_str() == "Running" {
-                            return Ok(());
-                        }
-                    }
+                if let Some(status) = vm.status
+                    && let Some(phase) = status.printable_status
+                    && phase.as_str() == "Running"
+                {
+                    return Ok(());
                 }
 
                 Err(anyhow::anyhow!(
-                    "VirtualMachine {} is not in Running phase yet",
-                    name
+                    "VirtualMachine {name} is not in Running phase yet"
                 ))
             }
         })
@@ -344,7 +336,7 @@ pub async fn virtctl_ssh_exec(
         ));
     }
 
-    let _vm_target = format!("core@vmi/{}/{}", vm_name, namespace);
+    let _vm_target = format!("core@vmi/{vm_name}/{namespace}");
     let full_cmd = format!(
         "virtctl ssh -i {} core@vmi/{}/{} -t '-o IdentitiesOnly=yes' -t '-o StrictHostKeyChecking=no' --known-hosts /dev/null -c '{}'",
         key_path.display(),
@@ -356,7 +348,7 @@ pub async fn virtctl_ssh_exec(
     let output = Command::new("sh").arg("-c").arg(full_cmd).output().await?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow::anyhow!("virtctl ssh command failed: {}", stderr));
+        return Err(anyhow::anyhow!("virtctl ssh command failed: {stderr}"));
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -392,8 +384,7 @@ async fn wait_for_vm_ssh(
         .with_timeout(Duration::from_secs(timeout_secs))
         .with_interval(Duration::from_secs(10))
         .with_error_message(format!(
-            "SSH access to VM {}/{} did not become {}available after {} seconds",
-            namespace, vm_name, avail_prefix, timeout_secs
+            "SSH access to VM {namespace}/{vm_name} did not become {avail_prefix}available after {timeout_secs} seconds",
         ));
 
     poller

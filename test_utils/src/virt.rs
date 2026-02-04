@@ -168,6 +168,12 @@ pub async fn create_kubevirt_vm(
     register_server_url: &str,
     image: &str,
 ) -> anyhow::Result<()> {
+    // Fail fast if virtctl is not available
+    if which::which("virtctl").is_err() {
+        return Err(anyhow::anyhow!(
+            "virtctl command not found. Please install virtctl first."
+        ));
+    }
     use k8s_openapi::api::core::v1::Secret;
     use kube::Api;
 
@@ -338,12 +344,6 @@ pub async fn virtctl_ssh_exec(
     key_path: &Path,
     command: &str,
 ) -> anyhow::Result<String> {
-    if which::which("virtctl").is_err() {
-        return Err(anyhow::anyhow!(
-            "virtctl command not found. Please install virtctl first."
-        ));
-    }
-
     let _vm_target = format!("core@vmi/{}/{}", vm_name, namespace);
     let full_cmd = format!(
         "virtctl ssh -i {} core@vmi/{}/{} -t '-o IdentitiesOnly=yes' -t '-o StrictHostKeyChecking=no' --known-hosts /dev/null -c '{}'",

@@ -4,25 +4,15 @@
 #
 # SPDX-License-Identifier: CC0-1.0
 
-KV_VERSION=v1.7.0
+# Pre-pull images that are used by integration tests to speed up test execution.
+
 IMAGES=(
-	"quay.io/kubevirt/virt-launcher:${KV_VERSION}"
-	"quay.io/kubevirt/virt-handler:${KV_VERSION}"
-	"quay.io/kubevirt/virt-api:${KV_VERSION}"
-	"quay.io/kubevirt/virt-controller:${KV_VERSION}"
-	"quay.io/kubevirt/virt-operator:${KV_VERSION}"
 	"$TRUSTEE_IMAGE"
-	"quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:2026-14-01"
+	"$APPROVED_IMAGE"
 )
 
 for IMAGE in "${IMAGES[@]}"; do
     echo "Pulling: $IMAGE"
-    docker pull "$IMAGE"
-    if [ $? -eq 0 ]; then
-        echo "Successfully pulled $IMAGE"
-    else
-        echo "Error: Failed to pull $IMAGE"
-    fi
-	 kind load docker-image $IMAGE
+    docker pull "$IMAGE" && kind load docker-image "$IMAGE" || echo "Error: Failed to pull $IMAGE"
     echo "-------------------------------"
 done

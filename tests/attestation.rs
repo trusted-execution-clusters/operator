@@ -68,7 +68,7 @@ impl SingleAttestationContext {
         .await?;
 
         test_ctx.info(format!("Waiting for VM {} to reach Running state", vm_name));
-        virt::wait_for_vm_running(client, namespace, vm_name, 300).await?;
+        virt::wait_for_vm_running(client, namespace, vm_name, 900).await?;
         test_ctx.info(format!("VM {} is Running", vm_name));
 
         test_ctx.info(format!("Waiting for SSH access to VM {}", vm_name));

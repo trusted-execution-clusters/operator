@@ -13,8 +13,9 @@ virtualization = []
 
 [dependencies]
 anyhow.workspace = true
+async-trait = "0.1"
+auto_impl = "1"
 clevis-pin-trustee-lib.workspace = true
-trusted-cluster-operator-lib = { path = "../lib" }
 compute-pcrs-lib.workspace = true
 env_logger.workspace = true
 http.workspace = true
@@ -29,5 +30,7 @@ serde_yaml.workspace = true
 ssh-key = { version = "0.6", features = ["rsa", "std"] }
 tokio = { workspace = true, features = ["process"] }
 tower = { version = "0.5.2", features = ["full"] }
+trusted-cluster-operator-lib = { path = "../lib" }
 uuid.workspace = true
 which = "8.0"
+fs_extra = "1.3.0"

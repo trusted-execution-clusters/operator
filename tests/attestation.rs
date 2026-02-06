@@ -1,90 +1,65 @@
 // SPDX-FileCopyrightText: Alice Frosi <afrosi@redhat.com>
+// SPDX-FileCopyrightText: Jakob Naucke <jnaucke@redhat.com>
 //
 // SPDX-License-Identifier: MIT
 
-use k8s_openapi::api::{apps::v1::Deployment, core::v1::Secret};
-use kube::Api;
-use trusted_cluster_operator_lib::{Machine, virtualmachineinstances::VirtualMachineInstance};
 use trusted_cluster_operator_test_utils::*;
 
-#[cfg(feature = "virtualization")]
-use trusted_cluster_operator_test_utils::virt;
+cfg_if::cfg_if! {
+if #[cfg(feature = "virtualization")] {
+use anyhow::Result;
+use k8s_openapi::api::apps::v1::Deployment;
+use kube::Api;
+use trusted_cluster_operator_lib::Machine;
+use trusted_cluster_operator_test_utils::virt::{self, VmBackend};
 
-#[cfg(feature = "virtualization")]
+const ENCRYPTED_ROOT_ASSERT: &str = "should have an encrypted root device (attestation failed)";
+const ENCRYPTED_ROOT_WARN: &str = "Backend reports that Machine IDs cannot be correlated to IP \
+                                   addresses with this VIRT_PROVIDER (e.g. because of NAT). Disk \
+                                   encryption test will only verify that the disk is encrypted, \
+                                   not that it is encrypted with the expected key.";
+
 struct SingleAttestationContext {
-    key_path: std::path::PathBuf,
-    root_key: Vec<u8>,
+    root_key: Option<Vec<u8>>,
+    backend: Box<dyn VmBackend>,
 }
 
-#[cfg(feature = "virtualization")]
-async fn get_root_key(vm_name: &str, test_ctx: &TestContext) -> anyhow::Result<Vec<u8>> {
-    let client = test_ctx.client();
-    let namespace = test_ctx.namespace();
-
-    let vmis: Api<VirtualMachineInstance> = Api::namespaced(client.clone(), namespace);
-    let vmi = vmis.get(vm_name).await?;
-    let interfaces = vmi.status.unwrap().interfaces.unwrap();
-    let ip = interfaces.first().unwrap().ip_address.clone().unwrap();
-
-    let machines: Api<Machine> = Api::namespaced(client.clone(), namespace);
-    let list = machines.list(&Default::default()).await?;
-    let retrieval = |m: &&Machine| m.spec.registration_address == ip;
-    let machine = list.items.iter().find(retrieval).unwrap();
-    let machine_name = machine.metadata.name.clone().unwrap();
-    let secret_name = machine_name.strip_prefix("machine-").unwrap();
-
-    let secrets: Api<Secret> = Api::namespaced(client.clone(), namespace);
-    let secret = secrets.get(secret_name).await?;
-    Ok(secret.data.unwrap().get("root").unwrap().0.clone())
-}
-
-#[cfg(feature = "virtualization")]
 impl SingleAttestationContext {
-    async fn new(vm_name: &str, test_ctx: &TestContext) -> anyhow::Result<Self> {
+    async fn verify_encrypted_root(&self) -> Result<bool> {
+        self.backend.verify_encrypted_root(self.root_key.as_deref()).await
+    }
+
+    async fn cleanup(self) -> Result<()> {
+        self.backend.cleanup().await
+    }
+}
+
+impl SingleAttestationContext {
+    async fn new(vm_name: &str, test_ctx: &TestContext) -> Result<Self> {
         let client = test_ctx.client();
         let namespace = test_ctx.namespace();
-
-        let (_private_key, public_key, key_path) = virt::generate_ssh_key_pair()?;
-        test_ctx.info(format!(
-            "Generated SSH key pair and added to ssh-agent: {:?}",
-            key_path
-        ));
-
-        let register_server_url = format!(
-            "http://register-server.{}.svc.cluster.local:8000/ignition-clevis-pin-trustee",
-            namespace
-        );
-        let image = "quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:20260129";
+        let backend = virt::create_backend(client.clone(), namespace, vm_name)?;
 
         test_ctx.info(format!("Creating VM: {}", vm_name));
-        virt::create_kubevirt_vm(
-            client,
-            namespace,
-            vm_name,
-            &public_key,
-            &register_server_url,
-            image,
-        )
-        .await?;
+        backend.create_vm().await?;
 
         test_ctx.info(format!("Waiting for VM {} to reach Running state", vm_name));
-        virt::wait_for_vm_running(client, namespace, vm_name, 300).await?;
+        backend.wait_for_running(600).await?;
         test_ctx.info(format!("VM {} is Running", vm_name));
 
         test_ctx.info(format!("Waiting for SSH access to VM {}", vm_name));
-        virt::wait_for_vm_ssh_ready(namespace, vm_name, &key_path, 600).await?;
+        backend.wait_for_vm_ssh_ready(600).await?;
         test_ctx.info("SSH access is ready");
 
-        let root_key = get_root_key(vm_name, test_ctx).await?;
-        Ok(Self { key_path, root_key })
+        let root_key = backend.get_root_key().await?;
+        if root_key.is_none() {
+            test_ctx.warn(ENCRYPTED_ROOT_WARN);
+        }
+        Ok(Self { root_key, backend })
     }
 }
 
-#[cfg(feature = "virtualization")]
-impl Drop for SingleAttestationContext {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.key_path);
-    }
+}
 }
 
 virt_test! {
@@ -94,18 +69,12 @@ async fn test_attestation() -> anyhow::Result<()> {
     let att_ctx = SingleAttestationContext::new(vm_name, &test_ctx).await?;
 
     test_ctx.info("Verifying encrypted root device");
-    let namespace = test_ctx.namespace();
-    let has_encrypted_root =
-        virt::verify_encrypted_root(namespace, vm_name, &att_ctx.key_path, &att_ctx.root_key).await?;
+    let has_encrypted_root = att_ctx.verify_encrypted_root().await?;
 
-    assert!(
-        has_encrypted_root,
-        "VM should have an encrypted root device (attestation failed)"
-    );
+    assert!(has_encrypted_root, "VM {ENCRYPTED_ROOT_ASSERT}");
     test_ctx.info("Attestation successful: encrypted root device verified");
-
+    att_ctx.cleanup().await?;
     test_ctx.cleanup().await?;
-
     Ok(())
 }
 }
@@ -115,44 +84,16 @@ async fn test_parallel_vm_attestation() -> anyhow::Result<()> {
     let test_ctx = setup!().await?;
     let client = test_ctx.client();
     let namespace = test_ctx.namespace();
-
     test_ctx.info("Testing parallel VM attestation - launching 2 VMs simultaneously");
-
-    // Generate SSH keys for both VMs
-    let (_private_key1, public_key1, key_path1) = virt::generate_ssh_key_pair()?;
-    let (_private_key2, public_key2, key_path2) = virt::generate_ssh_key_pair()?;
-    test_ctx.info("Generated SSH key pairs for both VMs");
-
-    let register_server_url = format!(
-        "http://register-server.{}.svc.cluster.local:8000/ignition-clevis-pin-trustee",
-        namespace
-    );
-    let image = "quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:20260129";
 
     // Launch both VMs in parallel
     let vm1_name = "test-coreos-vm1";
     let vm2_name = "test-coreos-vm2";
+    let backend1 = virt::create_backend(client.clone(), namespace, vm1_name)?;
+    let backend2 = virt::create_backend(client.clone(), namespace, vm2_name)?;
 
     test_ctx.info("Creating VM1 and VM2 in parallel");
-    let (vm1_result, vm2_result) = tokio::join!(
-        virt::create_kubevirt_vm(
-            client,
-            namespace,
-            vm1_name,
-            &public_key1,
-            &register_server_url,
-            image,
-        ),
-        virt::create_kubevirt_vm(
-            client,
-            namespace,
-            vm2_name,
-            &public_key2,
-            &register_server_url,
-            image,
-        )
-    );
-
+    let (vm1_result, vm2_result) = tokio::join!(backend1.create_vm(), backend2.create_vm());
     vm1_result?;
     vm2_result?;
     test_ctx.info("Both VMs created successfully");
@@ -160,8 +101,8 @@ async fn test_parallel_vm_attestation() -> anyhow::Result<()> {
     // Wait for both VMs to reach Running state in parallel
     test_ctx.info("Waiting for both VMs to reach Running state");
     let (vm1_running, vm2_running) = tokio::join!(
-        virt::wait_for_vm_running(client, namespace, vm1_name, 300),
-        virt::wait_for_vm_running(client, namespace, vm2_name, 300)
+        backend1.wait_for_running(600),
+        backend2.wait_for_running(600)
     );
 
     vm1_running?;
@@ -171,44 +112,34 @@ async fn test_parallel_vm_attestation() -> anyhow::Result<()> {
     // Wait for SSH access on both VMs in parallel
     test_ctx.info("Waiting for SSH access on both VMs");
     let (ssh1_ready, ssh2_ready) = tokio::join!(
-        virt::wait_for_vm_ssh_ready(namespace, vm1_name, &key_path1, 900),
-        virt::wait_for_vm_ssh_ready(namespace, vm2_name, &key_path2, 900)
+        backend1.wait_for_vm_ssh_ready(900),
+        backend2.wait_for_vm_ssh_ready(900)
     );
-
     ssh1_ready?;
     ssh2_ready?;
     test_ctx.info("SSH access ready on both VMs");
 
-    let root_key1 = get_root_key(vm1_name, &test_ctx).await?;
-    let root_key2 = get_root_key(vm2_name, &test_ctx).await?;
-
     // Verify attestation on both VMs in parallel
+    let root_key1 = backend1.get_root_key().await?;
+    let root_key2 = backend2.get_root_key().await?;
+    if root_key1.is_none() || root_key2.is_none() {
+        test_ctx.warn(ENCRYPTED_ROOT_WARN);
+    }
     test_ctx.info("Verifying encrypted root on both VMs");
     let (vm1_encrypted, vm2_encrypted) = tokio::join!(
-        virt::verify_encrypted_root(namespace, vm1_name, &key_path1, &root_key1),
-        virt::verify_encrypted_root(namespace, vm2_name, &key_path2, &root_key2)
+        backend1.verify_encrypted_root(root_key1.as_deref()),
+        backend2.verify_encrypted_root(root_key2.as_deref())
     );
-
     let vm1_has_encrypted_root = vm1_encrypted?;
     let vm2_has_encrypted_root = vm2_encrypted?;
 
-    // Clean up SSH keys
-    let _ = std::fs::remove_file(&key_path1);
-    let _ = std::fs::remove_file(&key_path2);
-
-    assert!(
-        vm1_has_encrypted_root,
-        "VM1 should have an encrypted root device (attestation failed)"
-    );
-    assert!(
-        vm2_has_encrypted_root,
-        "VM2 should have an encrypted root device (attestation failed)"
-    );
+    assert!(vm1_has_encrypted_root, "VM1 {ENCRYPTED_ROOT_ASSERT}");
+    assert!(vm2_has_encrypted_root, "VM2 {ENCRYPTED_ROOT_ASSERT}");
 
     test_ctx.info("Both VMs successfully attested with encrypted root devices");
-
+    backend1.cleanup().await?;
+    backend2.cleanup().await?;
     test_ctx.cleanup().await?;
-
     Ok(())
 }
 }
@@ -219,11 +150,9 @@ async fn test_vm_reboot_attestation() -> anyhow::Result<()> {
     test_ctx.info("Testing VM reboot - VM should successfully boot after multiple reboots");
     let vm_name = "test-coreos-reboot";
     let att_ctx = SingleAttestationContext::new(vm_name, &test_ctx).await?;
-    let namespace = test_ctx.namespace();
 
     test_ctx.info("Verifying initial encrypted root device");
-    let has_encrypted_root =
-        virt::verify_encrypted_root(namespace, vm_name, &att_ctx.key_path, &att_ctx.root_key).await?;
+    let has_encrypted_root = att_ctx.verify_encrypted_root().await?;
     assert!(
         has_encrypted_root,
         "VM should have encrypted root device on initial boot"
@@ -236,47 +165,35 @@ async fn test_vm_reboot_attestation() -> anyhow::Result<()> {
         test_ctx.info(format!("Performing reboot {} of {}", i, num_reboots));
 
         // Reboot the VM via SSH
-        let _reboot_result = virt::virtctl_ssh_exec(
-            namespace,
-            vm_name,
-            &att_ctx.key_path,
-            "sudo systemctl reboot",
-        )
-        .await;
+        let _reboot_result = att_ctx.backend.ssh_exec("sudo systemctl reboot").await;
 
         test_ctx.info(format!("Waiting for lack of SSH access after reboot {}", i));
-        virt::wait_for_vm_ssh_unavail(namespace, vm_name, &att_ctx.key_path, 30).await?;
+        att_ctx.backend.wait_for_vm_ssh_unavail(30).await?;
 
         test_ctx.info(format!("Waiting for SSH access after reboot {}", i));
-        virt::wait_for_vm_ssh_ready(namespace, vm_name, &att_ctx.key_path, 300).await?;
+        att_ctx.backend.wait_for_vm_ssh_ready(300).await?;
 
         // Verify encrypted root is still present after reboot
         test_ctx.info(format!("Verifying encrypted root after reboot {}", i));
-        let has_encrypted_root =
-            virt::verify_encrypted_root(namespace, vm_name, &att_ctx.key_path, &att_ctx.root_key).await?;
+        let has_encrypted_root = att_ctx.verify_encrypted_root().await?;
         assert!(
             has_encrypted_root,
-            "VM should have encrypted root device after reboot {}",
-            i
+            "VM should have encrypted root device after reboot {i}"
         );
         test_ctx.info(format!("Reboot {}: attestation successful", i));
     }
 
     test_ctx.info(format!(
-        "VM successfully rebooted {} times with encrypted root device maintained",
-        num_reboots
+        "VM successfully rebooted {num_reboots} times with encrypted root device maintained",
     ));
-
+    att_ctx.cleanup().await?;
     test_ctx.cleanup().await?;
-
     Ok(())
 }
 }
 
 virt_test! {
 async fn test_vm_reboot_delete_machine() -> anyhow::Result<()> {
-    use trusted_cluster_operator_lib::Machine;
-
     let test_ctx = setup!().await?;
     test_ctx.info("Testing Machine deletion - VM should no longer boot successfully when its Machine CRD was removed");
     let vm_name = "test-coreos-delete";
@@ -289,27 +206,16 @@ async fn test_vm_reboot_delete_machine() -> anyhow::Result<()> {
     wait_for_resource_deleted(&machines, name, 120, 5).await?;
 
     test_ctx.info("Performing reboot, expecting missing resource");
-    let _reboot_result = virt::virtctl_ssh_exec(
-        test_ctx.namespace(),
-        vm_name,
-        &att_ctx.key_path,
-        "sudo systemctl reboot",
-    )
-    .await;
+    let _reboot_result = att_ctx.backend.ssh_exec("sudo systemctl reboot").await;
 
     test_ctx.info("Waiting for lack of SSH access after reboot");
-    virt::wait_for_vm_ssh_unavail(test_ctx.namespace(), vm_name, &att_ctx.key_path, 30).await?;
+    att_ctx.backend.wait_for_vm_ssh_unavail(30).await?;
 
     test_ctx.info("Waiting for SSH access after machine removal");
-    let wait = virt::wait_for_vm_ssh_ready(
-        test_ctx.namespace(),
-        vm_name,
-        &att_ctx.key_path,
-        300,
-    )
-    .await;
+    let wait = att_ctx.backend.wait_for_vm_ssh_ready(300).await;
     assert!(wait.is_err());
 
+    att_ctx.cleanup().await?;
     test_ctx.cleanup().await?;
     Ok(())
 }
@@ -326,22 +232,16 @@ async fn test_vm_restart_operator_existing() -> anyhow::Result<()> {
         Api::namespaced(test_ctx.client().clone(), test_ctx.namespace());
     deployments.restart("trusted-cluster-operator").await?;
 
-    let _reboot_result = virt::virtctl_ssh_exec(
-        test_ctx.namespace(),
-        vm_name,
-        &att_ctx.key_path,
-        "sudo systemctl reboot",
-    )
-    .await;
+    let _reboot_result = att_ctx.backend.ssh_exec("sudo systemctl reboot").await;
 
     test_ctx.info("Waiting for lack of SSH access after reboot");
-    virt::wait_for_vm_ssh_unavail(test_ctx.namespace(), vm_name, &att_ctx.key_path, 30).await?;
+    att_ctx.backend.wait_for_vm_ssh_unavail(30).await?;
 
     test_ctx.info("Waiting for SSH access after operator restart & reboot");
-    let wait =
-        virt::wait_for_vm_ssh_ready(test_ctx.namespace(), vm_name, &att_ctx.key_path, 300).await;
+    let wait = att_ctx.backend.wait_for_vm_ssh_ready(300).await;
     assert!(wait.is_ok());
 
+    att_ctx.cleanup().await?;
     test_ctx.cleanup().await?;
     Ok(())
 }
@@ -358,7 +258,8 @@ async fn test_vm_restart_operator_new() -> anyhow::Result<()> {
     deployments.restart("trusted-cluster-operator").await?;
     test_ctx.info("Restarted operator deployment");
 
-    let _ = SingleAttestationContext::new(vm_name, &test_ctx).await?;
+    let att_ctx = SingleAttestationContext::new(vm_name, &test_ctx).await?;
+    att_ctx.cleanup().await?;
     test_ctx.cleanup().await?;
     Ok(())
 }

@@ -12,7 +12,8 @@ IMAGES=(
 	"quay.io/kubevirt/virt-controller:${KV_VERSION}"
 	"quay.io/kubevirt/virt-operator:${KV_VERSION}"
 	"$TRUSTEE_IMAGE"
-	"quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:2026-14-01"
+	"$APPROVED_IMAGE"
+	"$TEST_IMAGE"
 )
 
 for IMAGE in "${IMAGES[@]}"; do

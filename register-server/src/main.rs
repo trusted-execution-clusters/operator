@@ -18,6 +18,7 @@ use std::net::SocketAddr;
 use uuid::Uuid;
 use warp::{http::StatusCode, reply, Filter};
 
+use trusted_cluster_operator_lib::endpoints::REGISTER_SERVER_RESOURCE;
 use trusted_cluster_operator_lib::{Machine, MachineSpec, TrustedExecutionCluster};
 
 #[derive(Parser)]
@@ -168,7 +169,7 @@ async fn main() {
 
     let args = Args::parse();
 
-    let register_route = warp::path("ignition-clevis-pin-trustee")
+    let register_route = warp::path(REGISTER_SERVER_RESOURCE)
         .and(warp::get())
         .and(warp::addr::remote())
         .and_then(register_handler);

@@ -51,12 +51,12 @@ impl Poller {
         loop {
             match check_fn().await {
                 Ok(result) => return Ok(result),
-                Err(_) => {
+                Err(e) => {
                     if start_time.elapsed() >= self.timeout {
                         let error_msg = self.error_message.as_ref().cloned().unwrap_or_else(|| {
                             format!("Polling timed out after {:?}", self.timeout)
                         });
-                        return Err(anyhow::anyhow!(error_msg));
+                        return Err(anyhow::anyhow!("{error_msg}, last error was: {e:?}"));
                     }
                     tokio::time::sleep(self.interval).await;
                 }

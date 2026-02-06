@@ -12,8 +12,8 @@ executables := 3 if {
 }
 # Azure SNP vTPM validation
 executables := 3 if {
-  lower(input.azsnpvtpm.tpm.pcr04) in query_reference_value("tpm_pcr4")
-  lower(input.azsnpvtpm.tpm.pcr14) in query_reference_value("tpm_pcr14")
+  input["az-snp-vtpm"].tpm.pcr04 in query_reference_value("tpm_pcr4")
+  input["az-snp-vtpm"].tpm.pcr14 in query_reference_value("tpm_pcr14")
 }
 
 default configuration := 0

@@ -42,7 +42,7 @@ async fn handle_registration(
     client: Client,
     addr: Option<SocketAddr>,
 ) -> Result<impl warp::Reply, Infallible> {
-    info!("Received registration request: {:?}", registration);
+    info!("Received registration request: {registration:?}");
 
     let api: Api<AttestationKey> = Api::default_namespaced(client);
 
@@ -52,8 +52,7 @@ async fn handle_registration(
                 if key.spec.public_key == registration.public_key {
                     let existing_name = key.metadata.name.unwrap_or_default();
                     error!(
-                        "Duplicate public key detected: already exists in AttestationKey '{}'",
-                        existing_name
+                        "Duplicate public key detected: already exists in AttestationKey '{existing_name}'"
                     );
                     return Ok(reply::with_status(
                         reply::json(&serde_json::json!({
@@ -66,11 +65,11 @@ async fn handle_registration(
             }
         }
         Err(e) => {
-            error!("Failed to list AttestationKeys: {}", e);
+            error!("Failed to list AttestationKeys: {e}");
             return Ok(reply::with_status(
                 reply::json(&serde_json::json!({
                     "status": "error",
-                    "message": format!("Failed to check for existing keys: {}", e),
+                    "message": format!("Failed to check for existing keys: {e}"),
                 })),
                 StatusCode::INTERNAL_SERVER_ERROR,
             ));
@@ -108,11 +107,11 @@ async fn handle_registration(
             ))
         }
         Err(e) => {
-            error!("Failed to create AttestationKey: {}", e);
+            error!("Failed to create AttestationKey: {e}");
             Ok(reply::with_status(
                 reply::json(&serde_json::json!({
                     "status": "error",
-                    "message": format!("Failed to create AttestationKey: {}", e),
+                    "message": format!("Failed to create AttestationKey: {e}"),
                 })),
                 StatusCode::INTERNAL_SERVER_ERROR,
             ))
@@ -147,7 +146,7 @@ async fn main() -> anyhow::Result<()> {
         .and_then(handle_registration);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
-    info!("Listening on {}", addr);
+    info!("Listening on {addr}");
 
     warp::serve(register).run(addr).await;
 

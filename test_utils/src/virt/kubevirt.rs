@@ -156,12 +156,9 @@ impl VmBackend for KubevirtBackend {
             let api = api.clone();
             async move {
                 let vm = api.get(&self.0.vm_name).await?;
-                if let Some(status) = vm.status {
-                    if let Some(phase) = status.printable_status {
-                        if phase.as_str() == "Running" {
-                            return Ok(());
-                        }
-                    }
+                let status = vm.status.and_then(|p| p.printable_status);
+                if status.map(|s| s == "Running").unwrap_or(false) {
+                    return Ok(());
                 }
                 let vm_name = &self.0.vm_name;
                 let err = anyhow!("VirtualMachine {vm_name} is not in Running phase yet");

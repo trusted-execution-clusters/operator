@@ -28,7 +28,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use crate::trustee;
 use operator::*;
-use trusted_cluster_operator_lib::{Machine, endpoints::*};
+use trusted_cluster_operator_lib::{Machine, TrustedExecutionCluster, endpoints::*};
 
 /// Finalizer name to discard decryption keys when a machine is deleted
 const MACHINE_FINALIZER: &str = "finalizer.machine.trusted-execution-clusters.io";
@@ -122,7 +122,8 @@ async fn keygen_reconcile(
     machine: Arc<Machine>,
     client: Arc<Client>,
 ) -> Result<Action, ControllerError> {
-    let machines: Api<Machine> = Api::default_namespaced(Arc::unwrap_or_clone(client.clone()));
+    let kube_client_clone = Arc::unwrap_or_clone(client.clone());
+    let machines: Api<Machine> = Api::default_namespaced(kube_client_clone.clone());
     finalizer(&machines, MACHINE_FINALIZER, machine, |ev| async move {
         match ev {
             Event::Apply(machine) => {
@@ -140,6 +141,43 @@ async fn keygen_reconcile(
             Event::Cleanup(machine) => {
                 let kube_client = Arc::unwrap_or_clone(client);
                 let id = &machine.spec.id;
+
+                // Check if the TrustedExecutionCluster is being deleted
+                // If so, skip unmounting the secret as everything will be cleaned up
+                if let Some(owner_refs) = &machine.metadata.owner_references
+                    && let Some(tec_owner) = owner_refs
+                        .iter()
+                        .find(|owner| owner.kind == "TrustedExecutionCluster")
+                {
+                    let tec_name = &tec_owner.name;
+                    let tecs: Api<TrustedExecutionCluster> =
+                        Api::default_namespaced(kube_client.clone());
+
+                    match tecs.get(tec_name).await {
+                        Ok(tec) if tec.metadata.deletion_timestamp.is_some() => {
+                            // TEC is being deleted, skip unmount_secret
+                            info!(
+                                "TrustedExecutionCluster {tec_name} is being deleted, \
+                                     skipping unmount_secret for Machine {}",
+                                machine.metadata.name.as_deref().unwrap_or("unknown")
+                            );
+                            return Ok(Action::await_change());
+                        }
+                        Err(kube::Error::Api(ae)) if ae.code == 404 => {
+                            // TEC already deleted, skip unmount_secret
+                            info!(
+                                "TrustedExecutionCluster {tec_name} not found, \
+                                     skipping unmount_secret for Machine {}",
+                                machine.metadata.name.as_deref().unwrap_or("unknown")
+                            );
+                            return Ok(Action::await_change());
+                        }
+                        _ => {
+                            // TEC exists and is not being deleted, proceed with unmount_secret
+                        }
+                    }
+                }
+
                 trustee::unmount_secret(kube_client, id)
                     .await
                     .map(|_| Action::await_change())

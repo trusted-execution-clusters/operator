@@ -3848,6 +3848,7 @@ dependencies = [
  "tokio",
  "trusted-cluster-operator-lib",
  "trusted-cluster-operator-test-utils",
+ "uuid",
 ]
 
 [[package]]

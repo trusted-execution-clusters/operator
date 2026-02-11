@@ -38,6 +38,7 @@ const ANSI_RESET: &str = "\x1b[0m";
 
 const ROOT_SECRET: &str = "root-secret";
 const REG_SECRET: &str = "reg-srv-secret";
+const TRUSTEE_SECRET: &str = "trustee-secret";
 
 pub fn compare_pcrs(actual: &[Pcr], expected: &[Pcr]) -> bool {
     if actual.len() != expected.len() {
@@ -540,9 +541,12 @@ impl TestContext {
         let svc = REGISTER_SERVER_SERVICE;
         self.create_certificate(svc, "reg-srv-cert", REG_SECRET, issuer_name)
             .await?;
+        self.create_certificate(TRUSTEE_SERVICE, "trustee-cert", TRUSTEE_SECRET, issuer_name)
+            .await?;
 
         let secrets: Api<Secret> = Api::namespaced(self.client.clone(), &self.test_namespace);
         wait_for_resource_created(&secrets, REG_SECRET, 15, 1).await?;
+        wait_for_resource_created(&secrets, TRUSTEE_SECRET, 15, 1).await?;
         Ok(())
     }
 
@@ -739,6 +743,10 @@ impl TestContext {
             serde_yaml::Value::String(trustee_addr.clone()),
         );
 
+        spec_map.insert(
+            serde_yaml::Value::String("trusteeSecret".to_string()),
+            serde_yaml::Value::String(TRUSTEE_SECRET.to_string()),
+        );
         spec_map.insert(
             serde_yaml::Value::String("registerServerSecret".to_string()),
             serde_yaml::Value::String(REG_SECRET.to_string()),

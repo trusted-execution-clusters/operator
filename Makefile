@@ -165,7 +165,10 @@ install-kubevirt:
 	scripts/install-kubevirt.sh
 
 pre-pull-images:
-	APPROVED_IMAGE=$(APPROVED_IMAGE) TRUSTEE_IMAGE=$(TRUSTEE_IMAGE) scripts/pre-pull-images.sh
+	APPROVED_IMAGE=$(APPROVED_IMAGE) \
+	TRUSTEE_IMAGE=$(TRUSTEE_IMAGE) \
+	TEST_IMAGE=$(TEST_IMAGE) \
+		scripts/pre-pull-images.sh
 
 clean:
 	cargo clean

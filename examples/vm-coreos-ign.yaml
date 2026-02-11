@@ -32,7 +32,7 @@ spec:
       - name: containerdisk
         containerDisk:
           image: "quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:20260129"
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
       - name: cloudinitdisk
         cloudInitConfigDrive:
           secretRef:

@@ -146,6 +146,7 @@ func generateTrustedExecutionClusterCR(args *Args) error {
 			AttestationKeyRegisterImage:      &args.attestationKeyRegisterImage,
 			PublicAttestationKeyRegisterAddr: nil,
 			PublicTrusteeAddr:                nil,
+			TrusteeSecret:                    nil,
 			RegisterServerSecret:             nil,
 			TrusteeKbsPort:                   0,
 			RegisterServerPort:               0,

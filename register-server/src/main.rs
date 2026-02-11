@@ -15,6 +15,7 @@ use env_logger::Env;
 use ignition_config::v3_5::{
     Clevis, ClevisCustom, Config as IgnitionConfig, Filesystem, Luks, Storage,
 };
+use k8s_openapi::api::core::v1::Secret;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use kube::{Api, Client};
 use log::{error, info};
@@ -44,8 +45,20 @@ struct Args {
 struct EndpointInfo {
     /// The public address of the Trustee server
     trustee_addr: String,
+    /// The Trustee CA certificate (PEM-encoded) if TLS is enabled, None otherwise
+    trustee_ca_cert: Option<String>,
     /// The public address of the AK registration server
     ak_registration_addr: Option<String>,
+}
+
+async fn get_ca(client: Client, secret_name: &str) -> anyhow::Result<String> {
+    let secrets: Api<Secret> = Api::default_namespaced(client);
+    let secret = secrets.get(secret_name).await?;
+    let err = format!("Secret {secret_name} does not contain ca.crt");
+    let ca_data = secret.data.as_ref();
+    let ca_bytes = ca_data.and_then(|data| data.get("ca.crt")).expect(&err);
+    let ca_pem = String::from_utf8(ca_bytes.0.clone())?;
+    Ok(ca_pem)
 }
 
 impl EndpointInfo {
@@ -57,8 +70,14 @@ impl EndpointInfo {
              Add an address and re-register the node."
         ))?;
 
+        let trustee_ca_cert = match &cluster.spec.trustee_secret {
+            Some(name) => Some(get_ca(client.clone(), name).await?),
+            None => None,
+        };
+
         Ok(EndpointInfo {
             trustee_addr,
+            trustee_ca_cert,
             ak_registration_addr: cluster.spec.public_attestation_key_register_addr,
         })
     }
@@ -74,10 +93,15 @@ fn generate_ignition(id: &str, endpoint_info: &EndpointInfo) -> IgnitionConfig {
         },
     });
 
+    let (trustee_scheme, trustee_cert) = match &endpoint_info.trustee_ca_cert {
+        Some(ca_cert) => ("https", ca_cert.clone()),
+        None => ("http", String::new()),
+    };
+
     let clevis_conf = ClevisConfig {
         servers: vec![ClevisServer {
-            url: format!("http://{}", endpoint_info.trustee_addr),
-            cert: "".to_string(),
+            url: format!("{trustee_scheme}://{}", endpoint_info.trustee_addr),
+            cert: trustee_cert,
         }],
         path: format!("default/{id}/root"),
         num_retries: None,
@@ -249,7 +273,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_public_trustee_addr_none() {
+    async fn test_get_trustee_info_no_cluster() {
         let clos = async |_, _| {
             let mut clusters = dummy_clusters();
             clusters.items.clear();
@@ -262,7 +286,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_public_trustee_addr_multiple() {
+    async fn test_get_trustee_info_multiple() {
         let clos = async |_, _| {
             let mut clusters = dummy_clusters();
             clusters.items.push(clusters.items[0].clone());
@@ -275,7 +299,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_public_trustee_no_addr() {
+    async fn test_get_trustee_info_no_addr() {
         let clos = async |_, _| {
             let mut clusters = dummy_clusters();
             clusters.items[0].spec.public_trustee_addr = None;

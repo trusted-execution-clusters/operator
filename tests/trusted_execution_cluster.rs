@@ -35,6 +35,9 @@ named_test!(
         wait_for_resource_deleted(&deployments_api, "register-server", 120, 1).await?;
         wait_for_resource_deleted(&configmap_api, "image-pcrs", 120, 1).await?;
 
+        let images_api: Api<ApprovedImage> = Api::namespaced(client.clone(), namespace);
+        wait_for_resource_deleted(&images_api, "coreos", 120, 1).await?;
+
         test_ctx.cleanup().await?;
 
         Ok(())

@@ -10,8 +10,8 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-axum = "0.8.8"
-axum-server = "0.8.0"
+axum.workspace = true
+axum-server.workspace = true
 clap.workspace = true
 clevis-pin-trustee-lib.workspace = true
 trusted-cluster-operator-lib = { path = "../lib" }

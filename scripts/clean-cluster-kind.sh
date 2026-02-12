@@ -9,5 +9,5 @@ set -x
 
 . scripts/common.sh
 
-kubectl delete deploy trusted-cluster-operator -n trusted-execution-clusters || true
 kubectl delete trustedexecutionclusters trusted-execution-cluster -n trusted-execution-clusters || true
+kubectl delete deploy trusted-cluster-operator -n trusted-execution-clusters || true

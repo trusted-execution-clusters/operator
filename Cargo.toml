@@ -13,6 +13,8 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 anyhow = "1.0.102"
+axum = "0.8.8"
+axum-server = "0.8.0"
 chrono = "0.4.44"
 clap = { version = "4.5.60", features = ["derive"] }
 clevis-pin-trustee-lib = { git = "https://github.com/latchset/clevis-pin-trustee" }

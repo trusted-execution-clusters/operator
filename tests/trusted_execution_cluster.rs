@@ -280,3 +280,161 @@ async fn test_image_disallow() -> anyhow::Result<()> {
     Ok(())
 }
 }
+
+named_test! {
+async fn test_attestation_key_lifecycle() -> anyhow::Result<()> {
+    let test_ctx = setup!().await?;
+    let client = test_ctx.client();
+    let namespace = test_ctx.namespace();
+    let tec_name = "trusted-execution-cluster";
+
+    let tec_api: Api<TrustedExecutionCluster> = Api::namespaced(client.clone(), namespace);
+    let tec = tec_api.get(tec_name).await?;
+    let owner_reference = generate_owner_reference(&tec)?;
+
+    let machine_ip = "1.2.3.4";
+    let machine_uuid = uuid::Uuid::new_v4().to_string();
+
+    let ak_name = format!("test-ak-{}", &machine_uuid[..8]);
+    let random_public_key = uuid::Uuid::new_v4().to_string();
+
+    let attestation_keys: Api<AttestationKey> = Api::namespaced(client.clone(), namespace);
+    let attestation_key = AttestationKey {
+        metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+            name: Some(ak_name.clone()),
+            namespace: Some(namespace.to_string()),
+            owner_references: Some(vec![owner_reference.clone()]),
+            ..Default::default()
+        },
+        spec: trusted_cluster_operator_lib::AttestationKeySpec {
+            address: Some(machine_ip.to_string()),
+            public_key: random_public_key,
+        },
+        status: None,
+    };
+
+    attestation_keys
+        .create(&Default::default(), &attestation_key)
+        .await?;
+    test_ctx.info(format!(
+        "Created test AttestationKey: {ak_name} with IP: {machine_ip}",
+    ));
+
+    let machine_name = format!("test-machine-{}", &machine_uuid[..8]);
+    let machines: Api<Machine> = Api::namespaced(client.clone(), namespace);
+    let machine = Machine {
+        metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+            name: Some(machine_name.clone()),
+            namespace: Some(namespace.to_string()),
+            owner_references: Some(vec![owner_reference.clone()]),
+            ..Default::default()
+        },
+        spec: trusted_cluster_operator_lib::MachineSpec {
+            id: machine_uuid.clone(),
+            registration_address: machine_ip.to_string(),
+        },
+        status: None,
+    };
+
+    machines.create(&Default::default(), &machine).await?;
+    test_ctx.info(format!(
+        "Created test Machine: {machine_name} with IP: {machine_ip}",
+    ));
+
+    // Poll for the AttestationKey to be approved, have owner reference, and have a Secret created
+    let secrets_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
+    let poller = Poller::new()
+        .with_timeout(Duration::from_secs(30))
+        .with_interval(Duration::from_millis(500))
+        .with_error_message("AttestationKey was not approved with owner reference and secret".to_string());
+
+    poller
+        .poll_async(|| {
+            let ak_api = attestation_keys.clone();
+            let secrets = secrets_api.clone();
+            let ak_name_clone = ak_name.clone();
+            let machine_name_clone = machine_name.clone();
+            async move {
+                let ak = ak_api.get(&ak_name_clone).await?;
+
+                // Check for Approved condition
+                let has_approved_condition = ak
+                    .status
+                    .as_ref()
+                    .and_then(|s| s.conditions.as_ref())
+                    .map(|conditions| {
+                        conditions
+                            .iter()
+                            .any(|c| c.type_ == "Approved" && c.status == "True")
+                    })
+                    .unwrap_or(false);
+
+                if !has_approved_condition {
+                    return Err(anyhow::anyhow!(
+                        "AttestationKey does not have Approved condition yet"
+                    ));
+                }
+
+                // Check for owner reference to the Machine
+                let has_machine_owner_ref = ak
+                    .metadata
+                    .owner_references
+                    .as_ref()
+                    .map(|owner_refs| {
+                        owner_refs.iter().any(|owner_ref| {
+                            owner_ref.kind == "Machine" && owner_ref.name == machine_name_clone
+                        })
+                    })
+                    .unwrap_or(false);
+
+                if !has_machine_owner_ref {
+                    return Err(anyhow::anyhow!(
+                        "AttestationKey does not have owner reference to Machine yet"
+                    ));
+                }
+
+                // Check that a Secret with the same name exists and has the AttestationKey as owner
+                let secret = secrets.get(&ak_name_clone).await?;
+                let has_ak_owner_ref = secret
+                    .metadata
+                    .owner_references
+                    .as_ref()
+                    .map(|owner_refs| {
+                        owner_refs.iter().any(|owner_ref| {
+                            owner_ref.kind == "AttestationKey" && owner_ref.name == ak_name_clone
+                        })
+                    })
+                    .unwrap_or(false);
+
+                if !has_ak_owner_ref {
+                    return Err(anyhow::anyhow!(
+                        "Secret does not have owner reference to AttestationKey yet"
+                    ));
+                }
+
+                Ok(())
+            }
+        })
+        .await?;
+
+    test_ctx.info(format!(
+        "AttestationKey successfully approved with owner reference to Machine: {machine_name} and Secret created"
+    ));
+
+    // Delete the Machine
+    let dp = DeleteParams::default();
+    machines.delete(&machine_name, &dp).await?;
+    test_ctx.info(format!("Deleted Machine: {machine_name}"));
+
+    wait_for_resource_deleted(&machines, &machine_name, 120, 1).await?;
+    test_ctx.info("Machine successfully deleted");
+    wait_for_resource_deleted(&attestation_keys, &ak_name, 120, 1).await?;
+    test_ctx.info("AttestationKey successfully deleted");
+    wait_for_resource_deleted(&secrets_api, &ak_name, 120, 1).await?;
+    test_ctx.info("Secret successfully deleted");
+
+    test_ctx.cleanup().await?;
+
+    Ok(())
+}
+}

@@ -23,6 +23,7 @@ serde_json.workspace = true
 tokio = { workspace = true }
 trusted-cluster-operator-lib = { path = "../lib" }
 trusted-cluster-operator-test-utils = { path = "../test_utils" }
+uuid.workspace = true
 
 [[test]]
 name = "trusted_execution_cluster"

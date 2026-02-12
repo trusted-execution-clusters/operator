@@ -243,15 +243,52 @@ async fn image_reconcile(
     let err = "ApprovedImage had no name";
     let name = image.metadata.name.clone().expect(err);
 
-    let images: Api<ApprovedImage> = Api::default_namespaced(kube_client);
+    let images: Api<ApprovedImage> = Api::default_namespaced(kube_client.clone());
     let finalizer_ctx = Arc::unwrap_or_clone(ctx);
     finalizer(&images, APPROVED_IMAGE_FINALIZER, image, |ev| async {
         match ev {
             Event::Apply(image) => image_add_reconcile(finalizer_ctx, &image).await,
-            Event::Cleanup(_) => disallow_image(finalizer_ctx, &name)
-                .await
-                .map(|_| Action::await_change())
-                .map_err(|e| finalizer::Error::<ControllerError>::CleanupFailed(e.into())),
+            Event::Cleanup(_) => {
+                // Check if the TrustedExecutionCluster is being deleted
+                // If so, skip updating reference values as everything will be cleaned up
+                let tec_name = finalizer_ctx.owner_reference.name.clone();
+                let tecs: Api<TrustedExecutionCluster> =
+                    Api::default_namespaced(kube_client.clone());
+
+                match tecs.get(&tec_name).await {
+                    Ok(tec) if tec.metadata.deletion_timestamp.is_some() => {
+                        // TEC is being deleted, skip disallow_image
+                        info!(
+                            "TrustedExecutionCluster {tec_name} is being deleted, \
+                             skipping disallow_image for {name}"
+                        );
+                        Ok(Action::await_change())
+                    }
+                    Err(kube::Error::Api(ae)) if ae.code == 404 => {
+                        // TEC already deleted, skip disallow_image
+                        info!(
+                            "TrustedExecutionCluster {tec_name} not found, \
+                             skipping disallow_image for {name}"
+                        );
+                        Ok(Action::await_change())
+                    }
+                    Ok(_) => {
+                        // TEC exists and is not being deleted, proceed with disallow_image
+                        disallow_image(finalizer_ctx, &name)
+                            .await
+                            .map(|_| Action::await_change())
+                            .map_err(|e| {
+                                finalizer::Error::<ControllerError>::CleanupFailed(e.into())
+                            })
+                    }
+                    Err(e) => {
+                        // Some other error occurred
+                        Err(finalizer::Error::<ControllerError>::CleanupFailed(
+                            anyhow::Error::from(e).into(),
+                        ))
+                    }
+                }
+            }
         }
     })
     .await
@@ -264,6 +301,41 @@ async fn image_add_reconcile(
 ) -> Result<Action, finalizer::Error<ControllerError>> {
     let kube_client = ctx.client.clone();
     let name = image.metadata.name.as_ref().unwrap();
+
+    // Adopt the image by adding TEC as owner reference if not already owned
+    let tec_uid = &ctx.owner_reference.uid;
+    let already_owned = image
+        .metadata
+        .owner_references
+        .as_ref()
+        .map(|owners| {
+            owners
+                .iter()
+                .any(|owner| owner.kind == "TrustedExecutionCluster" && owner.uid == *tec_uid)
+        })
+        .unwrap_or(false);
+
+    if !already_owned {
+        use kube::api::{Patch, PatchParams};
+        use serde_json::json;
+
+        info!("Adding owner reference from ApprovedImage {name} to TrustedExecutionCluster");
+
+        let patch = json!({
+            "metadata": {
+                "ownerReferences": [ctx.owner_reference]
+            }
+        });
+
+        let images: Api<ApprovedImage> = Api::default_namespaced(kube_client.clone());
+        images
+            .patch(name, &PatchParams::default(), &Patch::Merge(&patch))
+            .await
+            .map_err(|e| {
+                finalizer::Error::<ControllerError>::ApplyFailed(anyhow::Error::from(e).into())
+            })?;
+    }
+
     let (action, reason) = match handle_new_image(ctx, name, &image.spec.image).await {
         Ok(reason) => (Action::await_change(), reason),
         Err(e) => {

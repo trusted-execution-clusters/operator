@@ -92,6 +92,7 @@ fn recompute_reference_values(image_pcrs: ImagePcrs) -> Vec<ReferenceValue> {
 
 pub async fn update_reference_values(ctx: RvContextData) -> Result<()> {
     let config_maps: Api<ConfigMap> = Api::default_namespaced(ctx.client);
+
     let image_pcrs_map = config_maps.get(PCR_CONFIG_MAP).await?;
     let reference_values = recompute_reference_values(get_image_pcrs(image_pcrs_map)?);
     let rv_json = serde_json::to_string(&reference_values)?;
@@ -153,6 +154,7 @@ pub async fn unmount_secret(client: Client, id: &str) -> Result<()> {
 pub async fn do_mount_secret(client: Client, id: &str, add: bool) -> Result<()> {
     let deployments: Api<Deployment> = Api::default_namespaced(client);
     let mut deployment = deployments.get(TRUSTEE_DEPLOYMENT).await?;
+
     let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no spec");
     let depl_spec = deployment.spec.as_mut().context(err)?;
     let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no pod spec");

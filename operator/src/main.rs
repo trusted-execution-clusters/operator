@@ -102,7 +102,8 @@ async fn reconcile(
         return Ok(Action::await_change());
     }
 
-    let _ = launch_rv_watchers(cluster.clone(), ctx, name).await?;
+    let _ = launch_rv_watchers(cluster.clone(), ctx.clone(), name).await?;
+
     if is_installed(cluster.status.clone()) {
         return Ok(Action::await_change());
     }

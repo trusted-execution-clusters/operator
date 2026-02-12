@@ -8,12 +8,14 @@
 //
 // Use in other crates is not an intended purpose.
 
-use anyhow::Context;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
-use kube::{Client, Resource, runtime::controller::Action};
+use kube::{Client, runtime::controller::Action};
 use log::info;
 use std::fmt::{Debug, Display};
 use std::{sync::Arc, time::Duration};
+
+// Re-export common functions from the lib
+pub use trusted_cluster_operator_lib::generate_owner_reference;
 
 #[derive(Clone)]
 pub struct RvContextData {
@@ -53,20 +55,4 @@ macro_rules! create_or_info_if_exists {
             Err(e) => return Err(e.into()),
         }
     };
-}
-
-pub fn generate_owner_reference<T: Resource<DynamicType = ()>>(
-    object: &T,
-) -> anyhow::Result<OwnerReference> {
-    let name = object.meta().name.clone();
-    let uid = object.meta().uid.clone();
-    let kind = T::kind(&()).to_string();
-    Ok(OwnerReference {
-        api_version: T::api_version(&()).to_string(),
-        block_owner_deletion: Some(true),
-        controller: Some(true),
-        name: name.context(format!("{} had no name", kind.clone()))?,
-        uid: uid.context(format!("{} had no UID", kind.clone()))?,
-        kind,
-    })
 }

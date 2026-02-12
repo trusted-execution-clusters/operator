@@ -3797,6 +3797,7 @@ dependencies = [
 name = "trusted-cluster-operator-lib"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "compute-pcrs-lib",
  "k8s-openapi",
  "kube",
@@ -3847,6 +3848,7 @@ dependencies = [
  "tokio",
  "trusted-cluster-operator-lib",
  "trusted-cluster-operator-test-utils",
+ "uuid",
 ]
 
 [[package]]

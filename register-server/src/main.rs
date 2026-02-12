@@ -3,14 +3,14 @@
 //
 // SPDX-License-Identifier: MIT
 
-use anyhow::{anyhow, Context};
+use anyhow::Context;
 use clap::Parser;
 use clevis_pin_trustee_lib::{Config as ClevisConfig, Server as ClevisServer};
 use env_logger::Env;
 use ignition_config::v3_5::{
     Clevis, ClevisCustom, Config as IgnitionConfig, Filesystem, Luks, Storage,
 };
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use kube::{Api, Client};
 use log::{error, info};
 use std::convert::Infallible;
@@ -19,7 +19,9 @@ use uuid::Uuid;
 use warp::{http::StatusCode, reply, Filter};
 
 use trusted_cluster_operator_lib::endpoints::REGISTER_SERVER_RESOURCE;
-use trusted_cluster_operator_lib::{Machine, MachineSpec, TrustedExecutionCluster};
+use trusted_cluster_operator_lib::{
+    generate_owner_reference, get_trusted_execution_cluster, Machine, MachineSpec,
+};
 
 #[derive(Parser)]
 #[command(name = "register-server")]
@@ -81,25 +83,7 @@ fn generate_ignition(id: &str, public_addr: &str) -> IgnitionConfig {
 }
 
 async fn get_public_trustee_addr(client: Client) -> anyhow::Result<String> {
-    let namespace = client.default_namespace().to_string();
-    let clusters: Api<TrustedExecutionCluster> = Api::default_namespaced(client);
-    let params = Default::default();
-    let mut list = clusters.list(&params).await?;
-    if list.items.is_empty() {
-        return Err(anyhow!(
-            "No TrustedExecutionCluster found in namespace {namespace}. \
-             Ensure that this register-server is in the same namespace \
-             as the TrustedExecutionCluster you're targeting.
-             Cancelling Ignition Clevis PIN request.",
-        ));
-    } else if list.items.len() > 1 {
-        return Err(anyhow!(
-            "More than one TrustedExecutionCluster found in namespace {namespace}. \
-             trusted-cluster-operator does not support more than one TrustedExecutionCluster. \
-             Cancelling Ignition Clevis PIN request.",
-        ));
-    }
-    let cluster = list.items.pop().unwrap();
+    let cluster = get_trusted_execution_cluster(client).await?;
     let name = cluster.metadata.name.as_deref().unwrap_or("<no name>");
     cluster.spec.public_trustee_addr.context(format!(
         "TrustedExecutionCluster {name} did not specify a public Trustee address. \
@@ -129,7 +113,19 @@ async fn register_handler(remote_addr: Option<SocketAddr>) -> Result<impl warp::
         Ok(c) => c,
         Err(e) => return internal_error(e.into()),
     };
-    match create_machine(kube_client.clone(), &id, &client_ip).await {
+
+    // Get the TrustedExecutionCluster to use as owner reference for the Machine
+    let cluster = match get_trusted_execution_cluster(kube_client.clone()).await {
+        Ok(c) => c,
+        Err(e) => return internal_error(e.context("Failed to get TrustedExecutionCluster")),
+    };
+
+    let owner_reference = match generate_owner_reference(&cluster) {
+        Ok(o) => o,
+        Err(e) => return internal_error(e.context("Failed to generate owner reference")),
+    };
+
+    match create_machine(kube_client.clone(), &id, &client_ip, owner_reference).await {
         Ok(_) => info!("Machine created successfully: machine-{id}"),
         Err(e) => return internal_error(e.context("Failed to create machine")),
     }
@@ -144,11 +140,17 @@ async fn register_handler(remote_addr: Option<SocketAddr>) -> Result<impl warp::
     ))
 }
 
-async fn create_machine(client: Client, uuid: &str, client_ip: &str) -> anyhow::Result<()> {
+async fn create_machine(
+    client: Client,
+    uuid: &str,
+    client_ip: &str,
+    owner_reference: OwnerReference,
+) -> anyhow::Result<()> {
     let machine_name = format!("machine-{uuid}");
     let machine = Machine {
         metadata: ObjectMeta {
             name: Some(machine_name.clone()),
+            owner_references: Some(vec![owner_reference]),
             ..Default::default()
         },
         spec: MachineSpec {
@@ -185,6 +187,7 @@ async fn main() {
 mod tests {
     use super::*;
     use kube::api::ObjectList;
+    use trusted_cluster_operator_lib::TrustedExecutionCluster;
     use trusted_cluster_operator_test_utils::mock_client::*;
 
     const TEST_IP: &str = "12.34.56.78";
@@ -265,16 +268,36 @@ mod tests {
         }
     }
 
+    fn dummy_owner_reference() -> OwnerReference {
+        OwnerReference {
+            api_version: "trusted-execution-clusters.io/v1alpha1".to_string(),
+            kind: "TrustedExecutionCluster".to_string(),
+            name: "test-cluster".to_string(),
+            uid: "test-uid".to_string(),
+            controller: Some(true),
+            block_owner_deletion: Some(true),
+        }
+    }
+
     #[tokio::test]
     async fn test_create_machine() {
         let clos = async |_, _| Ok(serde_json::to_string(&dummy_machine()).unwrap());
         count_check!(1, clos, |client| {
-            assert!(create_machine(client, "test", "::").await.is_ok());
+            assert!(
+                create_machine(client, "test", "::", dummy_owner_reference())
+                    .await
+                    .is_ok()
+            );
         });
     }
 
     #[tokio::test]
     async fn test_create_machine_error() {
-        test_create_error(async |c| create_machine(c, "test", TEST_IP).await.map(|_| ())).await;
+        test_create_error(async |c| {
+            create_machine(c, "test", TEST_IP, dummy_owner_reference())
+                .await
+                .map(|_| ())
+        })
+        .await;
     }
 }

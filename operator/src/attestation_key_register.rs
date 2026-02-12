@@ -240,14 +240,8 @@ async fn approve_ak(ak: &AttestationKey, machine: &Machine, client: Client) -> R
         .unwrap_or(false);
 
     if !has_machine_owner {
-        let machine_owner_reference = OwnerReference {
-            api_version: Machine::api_version(&()).to_string(),
-            kind: Machine::kind(&()).to_string(),
-            name: machine_name,
-            uid: machine.metadata.uid.clone().unwrap_or_default(),
-            controller: Some(true),
-            block_owner_deletion: Some(true),
-        };
+        let machine_owner_reference =
+            trusted_cluster_operator_lib::generate_owner_reference(machine)?;
 
         let patch = json!({
             "metadata": {
@@ -268,14 +262,7 @@ async fn approve_ak(ak: &AttestationKey, machine: &Machine, client: Client) -> R
         let public_key_data = ByteString(ak.spec.public_key.as_bytes().to_vec());
         let data = BTreeMap::from([("public_key".to_string(), public_key_data)]);
 
-        let owner_reference = OwnerReference {
-            api_version: AttestationKey::api_version(&()).to_string(),
-            kind: AttestationKey::kind(&()).to_string(),
-            name: name.clone(),
-            uid: ak.metadata.uid.clone().unwrap_or_default(),
-            controller: Some(true),
-            block_owner_deletion: Some(true),
-        };
+        let owner_reference = trusted_cluster_operator_lib::generate_owner_reference(ak)?;
 
         let secret = Secret {
             metadata: ObjectMeta {
@@ -336,15 +323,19 @@ async fn secret_reconcile(
                 );
                 let client = Arc::unwrap_or_clone(client);
                 // Update trustee deployment - secrets with deletion_timestamp will be filtered out
-                trustee::update_attestation_keys(client)
-                    .await
-                    .map(|_| Action::await_change())
-                    .map_err(|e| {
+                match trustee::update_attestation_keys(client).await {
+                    Ok(_) => Ok(Action::await_change()),
+                    Err(e) if e.to_string().contains("not found") => {
+                        info!("Trustee deployment not found during secret cleanup (likely already deleted)");
+                        Ok(Action::await_change())
+                    }
+                    Err(e) => {
                         eprintln!(
                             "Error updating attestation key volumes during secret deletion: {e}"
                         );
-                        finalizer::Error::<ControllerError>::CleanupFailed(e.into())
-                    })
+                        Err(finalizer::Error::<ControllerError>::CleanupFailed(e.into()))
+                    }
+                }
             }
         }
     })

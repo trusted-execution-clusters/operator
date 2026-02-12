@@ -4,11 +4,13 @@
 
 use compute_pcrs_lib::{Part, Pcr};
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::ConfigMap;
+use k8s_openapi::api::core::v1::{ConfigMap, Secret};
 use kube::{Api, api::DeleteParams};
 use std::time::Duration;
 use trusted_cluster_operator_lib::reference_values::ImagePcrs;
-use trusted_cluster_operator_lib::{ApprovedImage, TrustedExecutionCluster};
+use trusted_cluster_operator_lib::{
+    ApprovedImage, AttestationKey, Machine, TrustedExecutionCluster, generate_owner_reference,
+};
 use trusted_cluster_operator_test_utils::*;
 
 const EXPECTED_PCR4: &str = "ff2b357be4a4bc66be796d4e7b2f1f27077dc89b96220aae60b443bcf4672525";
@@ -22,6 +24,98 @@ named_test!(
 
         let configmap_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
 
+        let tec_api: Api<TrustedExecutionCluster> = Api::namespaced(client.clone(), namespace);
+        let tec = tec_api.get(name).await?;
+
+        let owner_reference = generate_owner_reference(&tec)?;
+
+        // Create a test Machine with TEC as owner reference. We need to set the owner reference
+        // manually since the machine is not created directly by the operator.
+        let machine_uuid = uuid::Uuid::new_v4().to_string();
+        let machine_ip = "192.168.100.50";
+        let machine_name = format!("test-machine-{}", &machine_uuid[..8]);
+
+        let machines: Api<Machine> = Api::namespaced(client.clone(), namespace);
+        let machine = Machine {
+            metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+                name: Some(machine_name.clone()),
+                namespace: Some(namespace.to_string()),
+                owner_references: Some(vec![owner_reference.clone()]),
+                ..Default::default()
+            },
+            spec: trusted_cluster_operator_lib::MachineSpec {
+                id: machine_uuid.clone(),
+                registration_address: machine_ip.to_string(),
+            },
+            status: None,
+        };
+
+        machines.create(&Default::default(), &machine).await?;
+        test_ctx.info(format!("Created test Machine: {machine_name}"));
+
+        // Create an AttestationKey with the same IP as the Machine
+        let ak_name = format!("test-ak-{}", &machine_uuid[..8]);
+        let public_key = "test-public-key-data";
+
+        let attestation_keys: Api<AttestationKey> = Api::namespaced(client.clone(), namespace);
+        let attestation_key = AttestationKey {
+            metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+                name: Some(ak_name.clone()),
+                namespace: Some(namespace.to_string()),
+                ..Default::default()
+            },
+            spec: trusted_cluster_operator_lib::AttestationKeySpec {
+                address: Some(machine_ip.to_string()),
+                public_key: public_key.to_string(),
+            },
+            status: None,
+        };
+
+        attestation_keys
+            .create(&Default::default(), &attestation_key)
+            .await?;
+        test_ctx.info(format!(
+            "Created test AttestationKey: {ak_name} with IP: {machine_ip}",
+        ));
+
+        // Wait for the AttestationKey to be approved (operator should match Machine IP and approve it)
+        let poller = Poller::new()
+            .with_timeout(Duration::from_secs(30))
+            .with_interval(Duration::from_millis(500))
+            .with_error_message("AttestationKey was not approved".to_string());
+
+        poller
+            .poll_async(|| {
+                let ak_api = attestation_keys.clone();
+                let ak_name_clone = ak_name.clone();
+                async move {
+                    let ak = ak_api.get(&ak_name_clone).await?;
+
+                    // Check for Approved condition
+                    let has_approved_condition = ak
+                        .status
+                        .as_ref()
+                        .and_then(|s| s.conditions.as_ref())
+                        .map(|conditions| {
+                            conditions
+                                .iter()
+                                .any(|c| c.type_ == "Approved" && c.status == "True")
+                        })
+                        .unwrap_or(false);
+
+                    if !has_approved_condition {
+                        return Err(anyhow::anyhow!(
+                            "AttestationKey does not have Approved condition yet"
+                        ));
+                    }
+
+                    Ok(())
+                }
+            })
+            .await?;
+
+        test_ctx.info("AttestationKey successfully approved");
+
         // Delete the cluster cr
         let api: Api<TrustedExecutionCluster> = Api::namespaced(client.clone(), namespace);
         let dp = DeleteParams::default();
@@ -34,6 +128,14 @@ named_test!(
         wait_for_resource_deleted(&deployments_api, "trustee-deployment", 120, 1).await?;
         wait_for_resource_deleted(&deployments_api, "register-server", 120, 1).await?;
         wait_for_resource_deleted(&configmap_api, "image-pcrs", 120, 1).await?;
+
+        let images_api: Api<ApprovedImage> = Api::namespaced(client.clone(), namespace);
+        wait_for_resource_deleted(&images_api, "coreos", 120, 1).await?;
+
+        wait_for_resource_deleted(&machines, &machine_name, 120, 1).await?;
+        wait_for_resource_deleted(&attestation_keys, &ak_name, 120, 1).await?;
+        let secrets_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
+        wait_for_resource_deleted(&secrets_api, &ak_name, 120, 1).await?;
 
         test_ctx.cleanup().await?;
 

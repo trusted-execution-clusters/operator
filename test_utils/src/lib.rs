@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::{collections::BTreeMap, env, sync::Once, time::Duration};
 use tokio::process::Command;
 
+use trusted_cluster_operator_lib::TrustedExecutionCluster;
 use trusted_cluster_operator_lib::endpoints::*;
 use trusted_cluster_operator_lib::openshift_ingresses::Ingress;
 use trusted_cluster_operator_lib::routes::Route;
@@ -275,6 +276,7 @@ impl TestContext {
     }
 
     pub async fn cleanup(&self) -> Result<()> {
+        self.delete_trusted_execution_cluster().await?;
         self.cleanup_namespace().await?;
         self.cleanup_manifests_dir()?;
         Ok(())
@@ -299,6 +301,35 @@ impl TestContext {
         namespace_api
             .create(&Default::default(), &namespace)
             .await?;
+        Ok(())
+    }
+
+    async fn delete_trusted_execution_cluster(&self) -> Result<()> {
+        let tec_api: Api<TrustedExecutionCluster> =
+            Api::namespaced(self.client.clone(), &self.test_namespace);
+        let dp = DeleteParams::default();
+
+        let tec_list = tec_api.list(&Default::default()).await?;
+
+        for tec in &tec_list.items {
+            if let Some(name) = &tec.metadata.name {
+                test_info!(
+                    &self.test_name,
+                    "Deleting TrustedExecutionCluster: {}",
+                    name
+                );
+                tec_api.delete(name, &dp).await?;
+
+                // Wait for the resource to be deleted
+                wait_for_resource_deleted(&tec_api, name, 120, 5).await?;
+                test_info!(
+                    &self.test_name,
+                    "TrustedExecutionCluster {} has been deleted",
+                    name
+                );
+            }
+        }
+
         Ok(())
     }
 

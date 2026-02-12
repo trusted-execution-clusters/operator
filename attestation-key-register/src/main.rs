@@ -14,7 +14,9 @@ use uuid::Uuid;
 use warp::{http::StatusCode, reply, Filter};
 
 use trusted_cluster_operator_lib::endpoints::ATTESTATION_KEY_REGISTER_RESOURCE;
-use trusted_cluster_operator_lib::{AttestationKey, AttestationKeySpec};
+use trusted_cluster_operator_lib::{
+    generate_owner_reference, get_trusted_execution_cluster, AttestationKey, AttestationKeySpec,
+};
 
 #[derive(Parser)]
 #[command(name = "attestation-key-register")]
@@ -44,7 +46,36 @@ async fn handle_registration(
 ) -> Result<impl warp::Reply, Infallible> {
     info!("Received registration request: {registration:?}");
 
-    let api: Api<AttestationKey> = Api::default_namespaced(client);
+    let api: Api<AttestationKey> = Api::default_namespaced(client.clone());
+
+    // Get the TrustedExecutionCluster to use as owner reference
+    let cluster = match get_trusted_execution_cluster(client.clone()).await {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to get TrustedExecutionCluster: {e}");
+            return Ok(reply::with_status(
+                reply::json(&serde_json::json!({
+                    "status": "error",
+                    "message": format!("Failed to get TrustedExecutionCluster: {e}"),
+                })),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ));
+        }
+    };
+
+    let owner_reference = match generate_owner_reference(&cluster) {
+        Ok(o) => o,
+        Err(e) => {
+            error!("Failed to generate owner reference: {e}");
+            return Ok(reply::with_status(
+                reply::json(&serde_json::json!({
+                    "status": "error",
+                    "message": format!("Failed to generate owner reference: {e}"),
+                })),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ));
+        }
+    };
 
     match api.list(&Default::default()).await {
         Ok(existing_keys) => {
@@ -84,6 +115,7 @@ async fn handle_registration(
     let attestation_key = AttestationKey {
         metadata: ObjectMeta {
             name: Some(name.clone()),
+            owner_references: Some(vec![owner_reference]),
             ..Default::default()
         },
         spec: AttestationKeySpec {

@@ -32,10 +32,6 @@ updates:
         patterns:
           - "*"
     ignore:
-      - dependency-name: "warp"
-        # Block newer versions of Warp so we can continue logging the client address,
-        # cf. https://github.com/seanmonstar/warp/issues/1127
-        versions: [">=0.4"]
       - dependency-name: "rand_core"
         # Block newer versions of rand_core, incompatible
         versions: [">=0.7"]

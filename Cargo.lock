@@ -439,7 +439,7 @@ checksum = "a1d728cc89cf3aee9ff92b05e62b19ee65a02b5702cff7d5a377e32c6ae29d8d"
 [[package]]
 name = "clevis-pin-trustee-lib"
 version = "0.1.0"
-source = "git+https://github.com/latchset/clevis-pin-trustee#a605f02d98fa009d8c90e93846947455794c1210"
+source = "git+https://github.com/latchset/clevis-pin-trustee#ea95afd215ae7bd85fa2b0834298949ffce5a7f7"
 dependencies = [
  "serde",
 ]

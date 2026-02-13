@@ -28,6 +28,8 @@ type Args struct {
 	trusteeImage                string
 	pcrsComputeImage            string
 	registerServerImage         string
+	registerServerSecret        string
+	trusteeSecret               string
 	attestationKeyRegisterImage string
 	approvedImage               string
 }
@@ -40,6 +42,8 @@ func main() {
 	flag.StringVar(&args.trusteeImage, "trustee-image", "operators", "Container image with all-in-one Trustee")
 	flag.StringVar(&args.pcrsComputeImage, "pcrs-compute-image", "quay.io/trusted-execution-clusters/compute-pcrs:latest", "Container image with the Trusted Execution Clusters compute-pcrs binary")
 	flag.StringVar(&args.registerServerImage, "register-server-image", "quay.io/trusted-execution-clusters/register-server:latest", "Register server image to use in the deployment")
+	flag.StringVar(&args.registerServerSecret, "register-server-secret", "", "When set, k8s secret for register server including tls.{crt,key}.")
+	flag.StringVar(&args.trusteeSecret, "trustee-secret", "", "When set, k8s secret for Trustee including tls.{crt,key}.")
 	flag.StringVar(&args.attestationKeyRegisterImage, "attestation-key-register-image", "quay.io/trusted-execution-clusters/attestation-key-register:latest", "Attestation key register image to use in the deployment")
 	flag.StringVar(&args.approvedImage, "approved-image", "", "When set, defines an initial approved image. Must be a bootable container image with SHA reference.")
 	flag.Parse()
@@ -144,6 +148,8 @@ func generateTrustedExecutionClusterCR(args *Args) error {
 			PcrsComputeImage:            args.pcrsComputeImage,
 			RegisterServerImage:         args.registerServerImage,
 			AttestationKeyRegisterImage: &args.attestationKeyRegisterImage,
+			RegisterServerSecret:        &args.registerServerSecret,
+			TrusteeSecret:               &args.trusteeSecret,
 			PublicTrusteeAddr:           nil,
 			TrusteeKbsPort:              0,
 			RegisterServerPort:          0,

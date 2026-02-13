@@ -2,8 +2,7 @@
 sockets = ["0.0.0.0:8080"]
 
 [admin]
-insecure_api = true
-type = "InsecureAllowAll"
+type = "DenyAll"
 
 [attestation_token]
 insecure_key = true

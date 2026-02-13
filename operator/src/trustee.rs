@@ -8,6 +8,8 @@ use anyhow::{Context, Result};
 use base64::{Engine as _, engine::general_purpose};
 use chrono::{DateTime, Utc};
 use clevis_pin_trustee_lib::Key as ClevisKey;
+use compute_pcrs_lib::tpmevents::TPMEvent;
+use compute_pcrs_lib::tpmevents::combine::combine_images;
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
     ConfigMap, ConfigMapVolumeSource, Container, ContainerPort, EmptyDirVolumeSource, EnvVar,
@@ -26,7 +28,7 @@ use log::info;
 use operator::{RvContextData, create_or_info_if_exists};
 use serde::{Serialize, Serializer};
 use serde_json::{Value::String as JsonString, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use trusted_cluster_operator_lib::endpoints::*;
 use trusted_cluster_operator_lib::reference_values::*;
@@ -70,14 +72,20 @@ pub fn get_image_pcrs(image_pcrs_map: ConfigMap) -> Result<ImagePcrs> {
 }
 
 fn recompute_reference_values(image_pcrs: ImagePcrs) -> Vec<ReferenceValue> {
-    // TODO many grub+shim:many OS image recompute once supported
     let mut reference_values_in =
-        BTreeMap::from([("svn".to_string(), vec![JsonString("1".to_string())])]);
-    for pcr in image_pcrs.0.values().flat_map(|v| &v.pcrs) {
+        BTreeMap::from([("svn".to_string(), BTreeSet::from(["1".to_string()]))]);
+    let tpm_events: Vec<Vec<TPMEvent>> = image_pcrs
+        .0
+        .values()
+        .map(|v| v.pcrs.iter().flat_map(|p| p.events.clone()).collect())
+        .collect();
+
+    let pcr_combinations = combine_images(&tpm_events);
+    for pcr in pcr_combinations.iter().flatten() {
         reference_values_in
             .entry(format!("pcr{}", pcr.id))
             .or_default()
-            .push(JsonString(pcr.value.clone()));
+            .insert(hex::encode(pcr.value.clone()));
     }
     reference_values_in
         .iter()
@@ -85,7 +93,7 @@ fn recompute_reference_values(image_pcrs: ImagePcrs) -> Vec<ReferenceValue> {
             version: "0.1.0".to_string(),
             name: format!("tpm_{name}"),
             expiration: Utc::now() + chrono::Duration::days(365),
-            value: serde_json::Value::Array(values.to_vec()),
+            value: serde_json::Value::Array(values.iter().map(|v| JsonString(v.clone())).collect()),
         })
         .collect()
 }
@@ -546,16 +554,36 @@ pub async fn generate_kbs_deployment(
 mod tests {
     use super::*;
     use crate::test_utils::*;
+    use compute_pcrs_lib::Pcr;
+    use compute_pcrs_lib::tpmevents::TPMEventID;
     use http::{Method, Request, StatusCode};
+    use k8s_openapi::jiff::Timestamp;
     use kube::client::Body;
     use trusted_cluster_operator_test_utils::mock_client::*;
+    use trusted_cluster_operator_test_utils::*;
+
+    fn reference_values_from(reference_values: &[ReferenceValue], rv_name: &str) -> Vec<String> {
+        let rv = reference_values
+            .iter()
+            .find(|rv| rv.name == rv_name)
+            .unwrap();
+        let val_arr = rv.value.as_array().unwrap();
+        val_arr.iter().map(|v| v.as_str().unwrap().into()).collect()
+    }
 
     #[test]
     fn test_get_image_pcrs_success() {
         let config_map = dummy_pcrs_map();
         let image_pcrs = get_image_pcrs(config_map).unwrap();
         assert_eq!(image_pcrs.0["cos"].pcrs.len(), 2);
-        assert_eq!(image_pcrs.0["cos"].pcrs[0].value, "pcr0_val");
+        assert_eq!(
+            hex::encode(image_pcrs.0["cos"].pcrs[0].value.clone()),
+            DUMMY_PCR_4_VALUE
+        );
+        assert_eq!(
+            hex::encode(image_pcrs.0["cos"].pcrs[1].value.clone()),
+            "e58ada1ba75f2e4722b539824598ad5e10c55f2e4aeab2033f3b0a8ee3f3eca6"
+        );
     }
 
     #[test]
@@ -589,10 +617,10 @@ mod tests {
     fn test_recompute_reference_values() {
         let result = recompute_reference_values(dummy_pcrs());
         assert_eq!(result.len(), 3);
-        let rv = result.iter().find(|rv| rv.name == "tpm_pcr0").unwrap();
-        let val_arr = rv.value.as_array().unwrap();
-        let vals: Vec<_> = val_arr.iter().map(|v| v.as_str().unwrap()).collect();
-        assert_eq!(vals, vec!["pcr0_val".to_string()]);
+        let vals = reference_values_from(&result, "tpm_pcr4");
+        assert_eq!(vals, vec![DUMMY_PCR_4_VALUE,]);
+        let vals = reference_values_from(&result, "tpm_pcr7");
+        assert_eq!(vals, vec![DUMMY_PCR_7_VALUE,]);
     }
 
     #[tokio::test]
@@ -852,5 +880,72 @@ mod tests {
     async fn test_generate_kbs_depl_error() {
         let clos = |client| generate_kbs_deployment(client, Default::default(), "image");
         test_create_error(clos).await;
+    }
+
+    #[test]
+    fn test_recompute_reference_values_pcr4() {
+        let cos2_pcr4_hash = "c7fc63ec604348d8258993a9e344ba72041afd1473ad291a3171199b551aedbd";
+        let image_pcrs = ImagePcrs(BTreeMap::from([
+            (
+                "cos1".to_string(),
+                ImagePcr {
+                    first_seen: Timestamp::now(),
+                    pcrs: vec![expected_pcr4!(), expected_pcr7!()],
+                    reference: "".to_string(),
+                },
+            ),
+            (
+                "cos2".to_string(),
+                ImagePcr {
+                    first_seen: Timestamp::now(),
+                    pcrs: vec![Pcr {
+                        id: 4,
+                        value: hex::decode(cos2_pcr4_hash).unwrap(),
+                        events: vec![
+                            pcr4_ev_efi_action_event!(),
+                            pcr_separator_event!(4, TPMEventID::Pcr4Separator),
+                            TPMEvent {
+                                name: "EV_EFI_BOOT_SERVICES_APPLICATION".into(),
+                                pcr: 4,
+                                hash: hex::decode("1fed6fad5ca735adc80615d2a7e795e2f17f84e407b07979498c9edb1e04383f")
+                                    .unwrap(),
+                                id: TPMEventID::Pcr4Shim,
+                            },
+                            TPMEvent {
+                                name: "EV_EFI_BOOT_SERVICES_APPLICATION".into(),
+                                pcr: 4,
+                                hash: hex::decode("8f3adc6b42da2defa6d5ef3202badc39a5a22ceec068f106760592163a505a0e")
+                                    .unwrap(),
+                                id: TPMEventID::Pcr4Grub,
+                            },
+                            TPMEvent {
+                                name: "EV_EFI_BOOT_SERVICES_APPLICATION".into(),
+                                pcr: 4,
+                                hash: hex::decode("772c3a90820e4a76944d3715e6f700bc41e846b0049b7817f9feb3289a56d3f8")
+                                    .unwrap(),
+                                id: TPMEventID::Pcr4Vmlinuz,
+                            },
+                        ],
+                    },
+                    expected_pcr7!()],
+                    reference: "".to_string(),
+                },
+            ),
+        ]));
+
+        let result = recompute_reference_values(image_pcrs);
+        assert_eq!(result.len(), 3);
+        let vals_pcr4 = reference_values_from(&result, "tpm_pcr4");
+        assert_eq!(
+            vals_pcr4,
+            vec![
+                "514259b499f88d74cce9ff4763bb95d5c4e9a6703df48467a99dbcae02c3d974",
+                cos2_pcr4_hash,
+                "c9c3add791efc98f59977c89e673a34ad0b357872e9eb2c43d14607488e5d9e2",
+                expected_pcr4_hash!()
+            ]
+        );
+        let vals_pcr7 = reference_values_from(&result, "tpm_pcr7");
+        assert_eq!(vals_pcr7, vec![expected_pcr7_hash!()]);
     }
 }

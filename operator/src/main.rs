@@ -249,6 +249,7 @@ async fn install_attestation_key_register(
         client.clone(),
         owner_reference.clone(),
         &attestation_key_register_image,
+        &cluster.spec.attestation_key_register_secret,
     )
     .await
     {

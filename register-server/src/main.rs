@@ -49,6 +49,8 @@ struct EndpointInfo {
     trustee_ca_cert: Option<String>,
     /// The public address of the AK registration server
     ak_registration_addr: Option<String>,
+    /// AK registration CA certificate, identical to Trustee's if signed by the same root CA
+    ak_registration_ca_cert: Option<String>,
 }
 
 async fn get_ca(client: Client, secret_name: &str) -> anyhow::Result<String> {
@@ -75,22 +77,34 @@ impl EndpointInfo {
             None => None,
         };
 
+        let ak_registration_ca_cert = match &cluster.spec.attestation_key_register_secret {
+            Some(name) => Some(get_ca(client.clone(), name).await?),
+            None => None,
+        };
+
         Ok(EndpointInfo {
             trustee_addr,
             trustee_ca_cert,
             ak_registration_addr: cluster.spec.public_attestation_key_register_addr,
+            ak_registration_ca_cert,
         })
     }
 }
 
 fn generate_ignition(id: &str, endpoint_info: &EndpointInfo) -> IgnitionConfig {
     let ak_addr = endpoint_info.ak_registration_addr.as_deref();
-    let attestation_key = ak_addr.map(|url| AttestationKey {
-        registration: Registration {
-            url: format!("http://{url}/{ATTESTATION_KEY_REGISTER_RESOURCE}"),
-            uuid: id.to_string(),
-            cert: "".to_string(),
-        },
+    let attestation_key = ak_addr.map(|url| {
+        let (ak_reg_scheme, ak_reg_cert) = match &endpoint_info.ak_registration_ca_cert {
+            Some(ca_cert) => ("https", ca_cert.clone()),
+            None => ("http", String::new()),
+        };
+        AttestationKey {
+            registration: Registration {
+                url: format!("{ak_reg_scheme}://{url}/{ATTESTATION_KEY_REGISTER_RESOURCE}"),
+                uuid: id.to_string(),
+                cert: ak_reg_cert,
+            },
+        }
     });
 
     let (trustee_scheme, trustee_cert) = match &endpoint_info.trustee_ca_cert {

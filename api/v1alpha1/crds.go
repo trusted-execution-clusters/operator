@@ -58,6 +58,11 @@ type TrustedExecutionClusterSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Value is immutable"
 	PublicAttestationKeyRegisterAddr *string `json:"publicAttestationKeyRegisterAddr,omitempty"`
 
+	// Secret with tls.{crt,key}, ca.crt for attestation-key-register
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Value is immutable"
+	AttestationKeyRegisterSecret *string `json:"attestationKeyRegisterSecret"`
+
 	// Secret with tls.{crt,key} for register-server
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Value is immutable"

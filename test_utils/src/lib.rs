@@ -419,7 +419,10 @@ impl TestContext {
 
     async fn generate_manifests(&self, workspace_root: &PathBuf) -> Result<(PathBuf, PathBuf)> {
         let ns = self.test_namespace.clone();
-        let controller_gen_path = workspace_root.join("bin/controller-gen-v0.19.0");
+        let controller_gen_pattern = workspace_root.join("bin/controller-gen-*");
+        let pattern = controller_gen_pattern.to_str().unwrap();
+        let err = anyhow!("No controller-gen found in bin/, run `make build-tools` first");
+        let controller_gen_path = glob::glob(pattern)?.next().ok_or(err)??;
 
         test_info!(
             &self.test_name,

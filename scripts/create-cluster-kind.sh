@@ -52,6 +52,7 @@ EOF
 
 # Mirror calico image from quay to avoid to hit the pull rate limit from Docker Hub
 CALICO_FILE=/tmp/calico.yaml
-curl -Lo $CALICO_FILE https://raw.githubusercontent.com/projectcalico/calico/v3.29.1/manifests/calico.yaml
+CALICO_VERSION=$(git ls-remote --tags https://github.com/projectcalico/api | grep "$(go list -m -json github.com/projectcalico/api | jq -r '.Version | split("-") | .[-1]')" | sed 's|.*refs/tags/||')
+curl -Lo $CALICO_FILE "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/calico.yaml"
 sed -i 's|docker.io/calico|quay.io/calico|g' $CALICO_FILE
 kubectl apply -f $CALICO_FILE

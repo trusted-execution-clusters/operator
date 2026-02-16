@@ -8,22 +8,19 @@ FROM ghcr.io/trusted-execution-clusters/buildroot:fedora AS builder
 ARG build_type
 WORKDIR /build
 
-COPY Makefile .
-RUN make build-tools
-
-COPY Cargo.toml Cargo.lock go.mod go.sum .
+COPY Makefile Cargo.toml Cargo.lock go.mod go.sum .
 COPY api api
 COPY lib lib
-RUN make crds-rs
-
 COPY compute-pcrs/Cargo.toml compute-pcrs/
 COPY compute-pcrs/src/lib.rs compute-pcrs/src/
 
 # Set only required crates as members to minimize rebuilds upon changes.
-# Build dependencies in lower layer to make use of caching.
 RUN sed -i 's/members =.*/members = ["compute-pcrs", "lib"]/' Cargo.toml && \
     git clone --depth 1 https://github.com/trusted-execution-clusters/reference-values && \
-    cargo build -p compute-pcrs --lib $(if [ "$build_type" = release ]; then echo --release; fi)
+    make crds-rs
+
+# Build dependencies in lower layer to make use of caching.
+RUN if [ "$build_type" = debug ]; then cargo build -p compute-pcrs; fi
 
 COPY compute-pcrs/src compute-pcrs/src
 RUN cargo build -p compute-pcrs $(if [ "$build_type" = release ]; then echo --release; fi)

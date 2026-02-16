@@ -17,3 +17,7 @@ k8s-openapi.workspace = true
 kube.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+# Only a generate dependency, not a Rust dependency. Included here for auto-updates.
+kopium = "0.22.5"

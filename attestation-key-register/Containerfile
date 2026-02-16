@@ -7,21 +7,18 @@ FROM ghcr.io/trusted-execution-clusters/buildroot:fedora AS builder
 ARG build_type
 WORKDIR /build
 
-COPY Makefile .
-RUN make build-tools
-
-COPY Cargo.toml Cargo.lock go.mod go.sum .
+COPY Makefile Cargo.toml Cargo.lock go.mod go.sum .
 COPY api api
 COPY lib lib
-RUN make crds-rs
-
 COPY attestation-key-register/Cargo.toml attestation-key-register/
 COPY attestation-key-register/src/lib.rs attestation-key-register/src/
 
 # Set only required crates as members to minimize rebuilds upon changes.
-# In debug builds, build dependencies to avoid full rebuild.
 RUN sed -i 's/members =.*/members = ["lib", "attestation-key-register"]/' Cargo.toml && \
-    if [ "$build_type" = debug ]; then cargo build -p attestation-key-register; fi
+    make crds-rs
+
+# In debug builds, build dependencies to avoid full rebuild.
+RUN if [ "$build_type" = debug ]; then cargo build -p attestation-key-register; fi
 
 COPY attestation-key-register/src attestation-key-register/src
 RUN cargo build -p attestation-key-register $(if [ "$build_type" = release ]; then echo --release; fi)

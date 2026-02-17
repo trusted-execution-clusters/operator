@@ -16,7 +16,7 @@ clevis-pin-trustee-lib.workspace = true
 trusted-cluster-operator-lib = { path = "../lib" }
 compute-pcrs-lib.workspace = true
 env_logger.workspace = true
-futures-util = "0.3.31"
+futures-util = "0.3.32"
 hex = "0.4.3"
 json-patch = "4.1.0"
 jsonptr = "0.7.1"

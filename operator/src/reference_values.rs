@@ -340,8 +340,19 @@ pub async fn handle_new_image(
         );
         return Ok(NOT_COMMITTED_REASON_NO_DIGEST);
     }
-    let label = fetch_pcr_label(&image_ref).await?;
-    if label.is_none() {
+    let label = fetch_pcr_label(&image_ref).await;
+    let compute_pcrs = match label {
+        Err(ref e) => {
+            warn!("Fetching PCR label for {image_ref} failed: {e}. Falling back to computation.");
+            true
+        }
+        Ok(None) => {
+            info!("No {PCR_LABEL} label present for {image_ref}. Computing.");
+            true
+        }
+        _ => false,
+    };
+    if compute_pcrs {
         return compute_fresh_pcrs(ctx, resource_name, boot_image)
             .await
             .map(|_| NOT_COMMITTED_REASON_COMPUTING);
@@ -349,7 +360,7 @@ pub async fn handle_new_image(
 
     let image_pcr = ImagePcr {
         first_seen: Timestamp::now(),
-        pcrs: label.unwrap(),
+        pcrs: label.unwrap().unwrap(),
         reference: boot_image.to_string(),
     };
     image_pcrs.0.insert(resource_name.to_string(), image_pcr);

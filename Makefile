@@ -144,8 +144,13 @@ install: $(YQ)
 ifndef TRUSTEE_ADDR
 	$(error TRUSTEE_ADDR is undefined)
 endif
+ifndef AK_REGISTRATION_ADDR
+	$(error AK_REGISTRATION_ADDR is undefined)
+endif
 	scripts/clean-cluster-kind.sh $(OPERATOR_IMAGE) $(COMPUTE_PCRS_IMAGE) $(REG_SERVER_IMAGE) $(ATTESTATION_KEY_REGISTER_IMAGE)
 	$(YQ) '.spec.publicTrusteeAddr = "$(TRUSTEE_ADDR):8080"' \
+		-i $(DEPLOY_PATH)/trusted_execution_cluster_cr.yaml
+	$(YQ) '.spec.publicAttestationKeyRegisterAddr = "http://$(AK_REGISTRATION_ADDR):8001/register-ak"' \
 		-i $(DEPLOY_PATH)/trusted_execution_cluster_cr.yaml
 	sed "s/NAMESPACE/$(NAMESPACE)/g" config/rbac/kustomization.yaml.in > config/rbac/kustomization.yaml
 	$(KUBECTL) apply -f $(DEPLOY_PATH)/operator.yaml

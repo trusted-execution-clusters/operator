@@ -34,6 +34,7 @@ var (
 // +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=trustedexecutionclusters/status;machines/status;approvedimages/status;attestationkeys/status,verbs=get;patch;update
 
 // TrustedExecutionClusterSpec defines the desired state of TrustedExecutionCluster
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.publicAttestationKeyRegisterAddr) || has(self.publicAttestationKeyRegisterAddr)", message="Value is required once set"
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.publicTrusteeAddr) || has(self.publicTrusteeAddr)", message="Value is required once set"
 type TrustedExecutionClusterSpec struct {
 	// Image reference to Trustee all-in-one image
@@ -51,6 +52,11 @@ type TrustedExecutionClusterSpec struct {
 	// Image reference to trusted-cluster-operator's attestation-key-register image
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Value is immutable"
 	AttestationKeyRegisterImage *string `json:"attestationKeyRegisterImage"`
+
+	// Address where attester can connect to Attestation Key Register
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Value is immutable"
+	PublicAttestationKeyRegisterAddr *string `json:"publicAttestationKeyRegisterAddr,omitempty"`
 
 	// Address where attester can connect to Trustee
 	// +optional

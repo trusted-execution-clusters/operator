@@ -5,7 +5,9 @@
 
 use anyhow::Context;
 use clap::Parser;
-use clevis_pin_trustee_lib::{Config as ClevisConfig, Server as ClevisServer};
+use clevis_pin_trustee_lib::{
+    AttestationKey, Config as ClevisConfig, Registration, Server as ClevisServer,
+};
 use env_logger::Env;
 use ignition_config::v3_5::{
     Clevis, ClevisCustom, Config as IgnitionConfig, Filesystem, Luks, Storage,
@@ -14,7 +16,6 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference}
 use kube::{Api, Client};
 use log::{error, info};
 use std::convert::Infallible;
-use std::net::SocketAddr;
 use uuid::Uuid;
 use warp::{http::StatusCode, reply, Filter};
 
@@ -29,9 +30,15 @@ use trusted_cluster_operator_lib::{
 struct Args {
     #[arg(short, long, default_value = "8000")]
     port: u16,
+
+    #[arg(
+        long,
+        default_value = "http://attestation-key-register:8001/register-ak"
+    )]
+    attestation_key_registration_url: Option<String>,
 }
 
-fn generate_ignition(id: &str, public_addr: &str) -> IgnitionConfig {
+fn generate_ignition(id: &str, public_addr: &str, ak_registration_url: &str) -> IgnitionConfig {
     let clevis_conf = ClevisConfig {
         servers: vec![ClevisServer {
             url: format!("http://{public_addr}"),
@@ -49,7 +56,13 @@ fn generate_ignition(id: &str, public_addr: &str) -> IgnitionConfig {
         //     uuid: id.to_string(),
         // };
         // ... initdata: serde_json::to_string(&initdata)?,
-        // depending on ultimate design decision
+        attestation_key: Some(AttestationKey {
+            registration: Registration {
+                url: ak_registration_url.to_string(),
+                uuid: id.to_string(),
+                cert: "".to_string(),
+            },
+        }),
     };
 
     let luks_root = "root";
@@ -91,14 +104,10 @@ async fn get_public_trustee_addr(client: Client) -> anyhow::Result<String> {
     ))
 }
 
-async fn register_handler(remote_addr: Option<SocketAddr>) -> Result<impl warp::Reply, Infallible> {
+async fn register_handler(
+    ak_registration_url: Option<String>,
+) -> Result<impl warp::Reply, Infallible> {
     let id = Uuid::new_v4().to_string();
-    let client_ip = remote_addr
-        .map(|addr| addr.ip().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-
-    info!("Registration request from IP: {client_ip}");
-
     let internal_error = |e: anyhow::Error| {
         let code = StatusCode::INTERNAL_SERVER_ERROR;
         error!("{e:?}");
@@ -125,7 +134,7 @@ async fn register_handler(remote_addr: Option<SocketAddr>) -> Result<impl warp::
         Err(e) => return internal_error(e.context("Failed to generate owner reference")),
     };
 
-    match create_machine(kube_client.clone(), &id, &client_ip, owner_reference).await {
+    match create_machine(kube_client.clone(), &id, owner_reference).await {
         Ok(_) => info!("Machine created successfully: machine-{id}"),
         Err(e) => return internal_error(e.context("Failed to create machine")),
     }
@@ -134,8 +143,25 @@ async fn register_handler(remote_addr: Option<SocketAddr>) -> Result<impl warp::
         Err(e) => return internal_error(e.context("Failed to get Trustee address")),
     };
 
+    let ak_reg_url = ak_registration_url
+        .as_deref()
+        .unwrap_or("http://attestation-key-register:8001/register-ak");
+    let ignition_config = generate_ignition(&id, &public_addr, ak_reg_url);
+    let mut ignition_json = match serde_json::to_value(&ignition_config) {
+        Ok(json) => json,
+        Err(e) => return internal_error(e.into()),
+    };
+
+    // Overwrite ignition version to 3.6-experimental
+    if let Some(obj) = ignition_json.as_object_mut() {
+        obj.insert(
+            "ignition".to_string(),
+            serde_json::json!({"version": "3.6.0-experimental"}),
+        );
+    }
+
     Ok(reply::with_status(
-        reply::json(&generate_ignition(&id, &public_addr)),
+        reply::json(&ignition_json),
         StatusCode::OK,
     ))
 }
@@ -143,7 +169,6 @@ async fn register_handler(remote_addr: Option<SocketAddr>) -> Result<impl warp::
 async fn create_machine(
     client: Client,
     uuid: &str,
-    client_ip: &str,
     owner_reference: OwnerReference,
 ) -> anyhow::Result<()> {
     let machine_name = format!("machine-{uuid}");
@@ -155,15 +180,20 @@ async fn create_machine(
         },
         spec: MachineSpec {
             id: uuid.to_string(),
-            registration_address: client_ip.to_string(),
         },
         status: None,
     };
 
     let machines: Api<Machine> = Api::default_namespaced(client);
     machines.create(&Default::default(), &machine).await?;
-    info!("Created Machine: {machine_name} with IP: {client_ip}");
+    info!("Created Machine: {machine_name} with UUID: {uuid}");
     Ok(())
+}
+
+fn with_ak_registration_url(
+    url: Option<String>,
+) -> impl Filter<Extract = (Option<String>,), Error = Infallible> + Clone {
+    warp::any().map(move || url.clone())
 }
 
 #[tokio::main]
@@ -174,7 +204,9 @@ async fn main() {
 
     let register_route = warp::path(REGISTER_SERVER_RESOURCE)
         .and(warp::get())
-        .and(warp::addr::remote())
+        .and(with_ak_registration_url(
+            args.attestation_key_registration_url.clone(),
+        ))
         .and_then(register_handler);
 
     let routes = register_route;
@@ -189,8 +221,6 @@ mod tests {
     use kube::api::ObjectList;
     use trusted_cluster_operator_lib::TrustedExecutionCluster;
     use trusted_cluster_operator_test_utils::mock_client::*;
-
-    const TEST_IP: &str = "12.34.56.78";
 
     fn dummy_clusters() -> ObjectList<TrustedExecutionCluster> {
         ObjectList {
@@ -262,7 +292,6 @@ mod tests {
             },
             spec: MachineSpec {
                 id: "test".to_string(),
-                registration_address: TEST_IP.to_string(),
             },
             status: None,
         }
@@ -283,18 +312,16 @@ mod tests {
     async fn test_create_machine() {
         let clos = async |_, _| Ok(serde_json::to_string(&dummy_machine()).unwrap());
         count_check!(1, clos, |client| {
-            assert!(
-                create_machine(client, "test", "::", dummy_owner_reference())
-                    .await
-                    .is_ok()
-            );
+            assert!(create_machine(client, "test", dummy_owner_reference())
+                .await
+                .is_ok());
         });
     }
 
     #[tokio::test]
     async fn test_create_machine_error() {
         test_create_error(async |c| {
-            create_machine(c, "test", TEST_IP, dummy_owner_reference())
+            create_machine(c, "test", dummy_owner_reference())
                 .await
                 .map(|_| ())
         })

@@ -121,8 +121,6 @@ type MachineSpec struct {
 	// Machine ID, typically a UUID
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Value is immutable"
 	Id string `json:"id"`
-	// Machine IP address at registration time
-	RegistrationAddress *string `json:"registrationAddress"`
 }
 
 // MachineStatus defines the observed state of Machine.
@@ -214,9 +212,9 @@ type AttestationKeySpec struct {
 	// +required
 	PublicKey string `json:"publicKey"`
 
-	// Address defines the address of the machine associated to the attestation key.
-	// +optional
-	Address *string `json:"address,omitempty"`
+	// Uuid define the identifier to which the registration key is registered with. It needs
+	// to match with the id of the machine for the key to be approved.
+	Uuid *string `json:"uuid,omitempty"`
 }
 
 // AttestationKeyStatus defines the observed state of AttestationKey.

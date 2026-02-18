@@ -10,8 +10,7 @@ use k8s_openapi::{
     api::{
         batch::v1::{Job, JobSpec},
         core::v1::{
-            ConfigMap, ConfigMapVolumeSource, Container, ImageVolumeSource, KeyToPath, PodSpec,
-            PodTemplateSpec, Volume, VolumeMount,
+            ConfigMap, Container, ImageVolumeSource, PodSpec, PodTemplateSpec, Volume, VolumeMount,
         },
     },
     apimachinery::pkg::apis::meta::v1::OwnerReference,
@@ -30,7 +29,7 @@ use oci_client::secrets::RegistryAuth;
 use oci_spec::image::ImageConfiguration;
 use openssl::hash::{MessageDigest, hash};
 use serde::Deserialize;
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use crate::trustee::{self, get_image_pcrs};
 use operator::{
@@ -89,74 +88,30 @@ fn build_compute_pcrs_pod_spec(
     pcrs_compute_image: &str,
 ) -> PodSpec {
     let image_volume_name = "image";
-    let image_mountpoint = PathBuf::from(format!("/{image_volume_name}"));
-    let pcrs_volume_name = "pcrs";
-    let pcrs_mountpoint = PathBuf::from(format!("/{pcrs_volume_name}"));
-
-    let mut cmd = vec![PCR_COMMAND_NAME.to_string()];
-    let mut add_flag = |flag: &str, value: &str| {
-        cmd.push(format!("--{flag}"));
-        cmd.push(value.to_string());
-    };
-    for (flag, path_suffix) in [
-        ("kernels", "usr/lib/modules"),
-        ("esp", "usr/lib/bootupd/updates"),
-    ] {
-        let full_path = image_mountpoint.clone().join(path_suffix);
-        add_flag(flag, full_path.to_str().unwrap());
-    }
-    for (flag, value) in [
-        ("efivars", "/reference-values/efivars/qemu-ovmf/fedora-42"),
-        ("mokvars", "/reference-values/mok-variables/fedora-42"),
-        ("image", boot_image),
-        ("resource-name", resource_name),
-    ] {
-        add_flag(flag, value);
-    }
+    let mut cmd = vec![PCR_COMMAND_NAME, "--image", boot_image];
+    cmd.extend(&["--resource-name", resource_name]);
 
     PodSpec {
         service_account_name: Some("trusted-cluster-operator".to_string()),
         containers: vec![Container {
             name: PCR_COMMAND_NAME.to_string(),
             image: Some(pcrs_compute_image.to_string()),
-            command: Some(cmd),
-            volume_mounts: Some(vec![
-                VolumeMount {
-                    name: image_volume_name.to_string(),
-                    mount_path: image_mountpoint.to_str().unwrap().to_string(),
-                    ..Default::default()
-                },
-                VolumeMount {
-                    name: pcrs_volume_name.to_string(),
-                    mount_path: pcrs_mountpoint.to_str().unwrap().to_string(),
-                    ..Default::default()
-                },
-            ]),
+            command: Some(cmd.iter().map(|s| s.to_string()).collect()),
+            volume_mounts: Some(vec![VolumeMount {
+                name: image_volume_name.to_string(),
+                mount_path: IMAGE_VOLUME_MOUNTPOINT.to_string(),
+                ..Default::default()
+            }]),
             ..Default::default()
         }],
-        volumes: Some(vec![
-            Volume {
-                name: image_volume_name.to_string(),
-                image: Some(ImageVolumeSource {
-                    reference: Some(boot_image.to_string()),
-                    ..Default::default()
-                }),
+        volumes: Some(vec![Volume {
+            name: image_volume_name.to_string(),
+            image: Some(ImageVolumeSource {
+                reference: Some(boot_image.to_string()),
                 ..Default::default()
-            },
-            Volume {
-                name: pcrs_volume_name.to_string(),
-                config_map: Some(ConfigMapVolumeSource {
-                    name: PCR_CONFIG_MAP.to_string(),
-                    items: Some(vec![KeyToPath {
-                        key: PCR_CONFIG_FILE.to_string(),
-                        path: PCR_CONFIG_FILE.to_string(),
-                        ..Default::default()
-                    }]),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-        ]),
+            }),
+            ..Default::default()
+        }]),
         restart_policy: Some("Never".to_string()),
         ..Default::default()
     }

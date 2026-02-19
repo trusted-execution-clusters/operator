@@ -28,7 +28,7 @@ jobs:
   linting:
     name: "Lints, pinned toolchain"
     runs-on: "ubuntu-24.04"
-    container: "ghcr.io/trusted-execution-clusters/buildroot:latest"
+    container: "ghcr.io/trusted-execution-clusters/buildroot:fedora"
     steps:
       - name: "Check out repository"
         uses: actions/checkout@v6
@@ -55,3 +55,5 @@ jobs:
         run: go vet ./...
       - name: "Ensure Rust & Go conditions definitions use same strings"
         run: cargo test --test equal_conditions
+      - name: "Ensure rustls isn't used"
+        run: "! { cargo tree -e normal | grep rustls | grep -v rustls-pki-types; }"

@@ -12,12 +12,11 @@ KUBECTL=kubectl
 INTEGRATION_TEST_THREADS ?= 1
 
 LOCALBIN ?= $(shell pwd)/bin
-CONTROLLER_TOOLS_VERSION ?= v0.19.0
+CONTROLLER_TOOLS_VERSION ?= $(shell go list -m -f '{{.Version}}' sigs.k8s.io/controller-tools)
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen-$(CONTROLLER_TOOLS_VERSION)
-YQ_VERSION ?= v4.48.1
+YQ_VERSION ?= $(shell go list -m -f '{{.Version}}' github.com/mikefarah/yq/v4)
 YQ ?= $(LOCALBIN)/yq-$(YQ_VERSION)
-# tracking k8s v1.33, sync with Cargo.toml
-KOPIUM_VERSION ?= 0.21.3
+KOPIUM_VERSION ?= $(shell cargo metadata --format-version 1 | jq -r '.resolve.nodes[] | select(.deps[]?.name == "kopium") | .deps[] | select(.name == "kopium") | .pkg | split("@")[1]')
 KOPIUM ?= $(LOCALBIN)/kopium-$(KOPIUM_VERSION)
 
 REGISTRY ?= quay.io/trusted-execution-clusters

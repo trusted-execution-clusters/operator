@@ -12,9 +12,9 @@ edition = "2024"
 rust-version = "1.88"
 
 [workspace.dependencies]
-anyhow = "1.0.101"
-chrono = "0.4.43"
-clap = { version = "4.5.58", features = ["derive"] }
+anyhow = "1.0.102"
+chrono = "0.4.44"
+clap = { version = "4.5.60", features = ["derive"] }
 clevis-pin-trustee-lib = { git = "https://github.com/latchset/clevis-pin-trustee" }
 compute-pcrs-lib = { git = "https://github.com/trusted-execution-clusters/compute-pcrs" }
 env_logger = { version = "0.11.9", default-features = false }

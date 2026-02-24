@@ -151,6 +151,8 @@ endif
 		-i $(DEPLOY_PATH)/trusted_execution_cluster_cr.yaml
 	$(YQ) '.spec.publicAttestationKeyRegisterAddr = "http://$(AK_REGISTRATION_ADDR):8001/register-ak"' \
 		-i $(DEPLOY_PATH)/trusted_execution_cluster_cr.yaml
+	$(YQ) '.spec.attestationKeyRegistration = true' \
+		-i $(DEPLOY_PATH)/trusted_execution_cluster_cr.yaml
 	sed "s/NAMESPACE/$(NAMESPACE)/g" config/rbac/kustomization.yaml.in > config/rbac/kustomization.yaml
 	$(KUBECTL) apply -f $(DEPLOY_PATH)/operator.yaml
 	$(KUBECTL) apply -f config/crd

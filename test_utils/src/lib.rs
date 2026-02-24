@@ -5,6 +5,7 @@
 
 use anyhow::{Result, anyhow};
 use fs_extra::dir;
+use glob::glob;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{ConfigMap, Namespace};
 use kube::api::DeleteParams;
@@ -12,6 +13,7 @@ use kube::{Api, Client};
 use std::path::{Path, PathBuf};
 use std::{collections::BTreeMap, env, sync::Once, time::Duration};
 use tokio::process::Command;
+use trusted_cluster_operator_lib::reference_values::ImagePcrs;
 
 use trusted_cluster_operator_lib::TrustedExecutionCluster;
 use trusted_cluster_operator_lib::endpoints::*;
@@ -20,6 +22,7 @@ use trusted_cluster_operator_lib::routes::Route;
 
 pub mod timer;
 pub use timer::Poller;
+pub mod constants;
 pub mod mock_client;
 
 #[cfg(feature = "virtualization")]
@@ -228,7 +231,7 @@ pub struct TestContext {
 }
 
 impl TestContext {
-    pub async fn new(test_name: &str) -> Result<Self> {
+    pub async fn new(test_name: &str, approved_images: &[&str]) -> Result<Self> {
         INIT.call_once(|| {
             let _ = env_logger::builder().is_test(true).try_init();
         });
@@ -248,7 +251,7 @@ impl TestContext {
         ctx.manifests_dir = manifests_dir;
 
         ctx.create_namespace().await?;
-        ctx.apply_operator_manifests().await?;
+        ctx.apply_operator_manifests(approved_images).await?;
 
         test_info!(
             &ctx.test_name,
@@ -417,7 +420,11 @@ impl TestContext {
             .await
     }
 
-    async fn generate_manifests(&self, workspace_root: &PathBuf) -> Result<(PathBuf, PathBuf)> {
+    async fn generate_manifests(
+        &self,
+        workspace_root: &PathBuf,
+        approved_images: &[&str],
+    ) -> Result<(PathBuf, PathBuf)> {
         let ns = self.test_namespace.clone();
         let controller_gen_path = workspace_root.join("bin/controller-gen-v0.19.0");
 
@@ -476,6 +483,11 @@ impl TestContext {
         args.extend(&["-register-server-image", &reg_srv_img]);
         args.extend(&["-attestation-key-register-image", &att_reg_img]);
         args.extend(&["-approved-image", &approved_image]);
+        args.extend(
+            approved_images
+                .iter()
+                .flat_map(|&i| vec!["-approved-image", i]),
+        );
         let manifest_gen = Command::new(&trusted_cluster_gen_path).args(args).output();
         let manifest_gen_output = manifest_gen.await?;
         if !manifest_gen_output.status.success() {
@@ -485,11 +497,13 @@ impl TestContext {
         Ok((crd_temp_dir, rbac_temp_dir))
     }
 
-    async fn apply_operator_manifests(&self) -> Result<()> {
+    async fn apply_operator_manifests(&self, approved_images: &[&str]) -> Result<()> {
         let manifests_dir = &self.manifests_dir;
         test_info!(&self.test_name, "Generating manifests in {manifests_dir}");
         let workspace_root = env::current_dir()?.join("..");
-        let (crd_temp_dir, rbac_temp_dir) = self.generate_manifests(&workspace_root).await?;
+        let (crd_temp_dir, rbac_temp_dir) = self
+            .generate_manifests(&workspace_root, approved_images)
+            .await?;
         test_info!(&self.test_name, "Manifests generated successfully");
 
         let tec = "trustedexecutionclusters.trusted-execution-clusters.io";
@@ -620,13 +634,20 @@ impl TestContext {
         let cr_manifest_str = cr_manifest_path.to_str().unwrap();
         kube_apply!(cr_manifest_str, &self.test_name, "Applying CR manifest");
 
-        let approved_image_path = manifests_path.join("approved_image_cr.yaml");
-        let approved_image_str = approved_image_path.to_str().unwrap();
-        kube_apply!(
-            approved_image_str,
-            &self.test_name,
-            "Applying ApprovedImage manifest"
-        );
+        let approved_image_paths = glob(
+            manifests_path
+                .join("approved_image_cr_*.yaml")
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Invalid ApprovedImage manifest path"))?,
+        )?;
+        for approved_image_path in approved_image_paths.filter_map(Result::ok) {
+            let approved_image_str = approved_image_path.to_str().unwrap();
+            kube_apply!(
+                approved_image_str,
+                &self.test_name,
+                "Applying ApprovedImage manifest"
+            );
+        }
 
         let deployments_api: Api<Deployment> = Api::namespaced(self.client.clone(), &ns);
 
@@ -672,6 +693,95 @@ impl TestContext {
 
         Ok(())
     }
+
+    pub async fn verify_expected_pcrs(&self, expected_pcrs: &[&[Pcr]]) -> anyhow::Result<()> {
+        let client = self.client();
+        let namespace = self.namespace();
+
+        let configmap_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+
+        let poller = Poller::new()
+            .with_timeout(Duration::from_secs(180))
+            .with_interval(Duration::from_secs(5))
+            .with_error_message("image-pcrs ConfigMap not populated with data".to_string());
+
+        poller
+            .poll_async(|| {
+                let api = configmap_api.clone();
+                async move {
+                    let cm = api.get("image-pcrs").await?;
+
+                    if let Some(data) = &cm.data
+                        && let Some(image_pcrs_json) = data.get("image-pcrs.json")
+                        && let Ok(image_pcrs) = serde_json::from_str::<ImagePcrs>(image_pcrs_json)
+                        && image_pcrs.0.len() == expected_pcrs.len()
+                    {
+                        return Ok(());
+                    }
+
+                    Err(anyhow::anyhow!(
+                        "image-pcrs ConfigMap not yet populated with image-pcrs.json data"
+                    ))
+                }
+            })
+            .await?;
+
+        let image_pcrs_cm = configmap_api.get("image-pcrs").await?;
+        assert_eq!(image_pcrs_cm.metadata.name.as_deref(), Some("image-pcrs"));
+
+        let data = image_pcrs_cm
+            .data
+            .as_ref()
+            .expect("image-pcrs ConfigMap should have data field");
+
+        assert!(!data.is_empty(), "image-pcrs ConfigMap should have data");
+
+        let image_pcrs_json = data
+            .get("image-pcrs.json")
+            .expect("image-pcrs ConfigMap should have image-pcrs.json key");
+
+        assert!(
+            !image_pcrs_json.is_empty(),
+            "image-pcrs.json should not be empty"
+        );
+
+        // Parse the image-pcrs.json using the ImagePcrs structure
+        let image_pcrs: ImagePcrs = serde_json::from_str(image_pcrs_json)
+            .expect("image-pcrs.json should be valid ImagePcrs JSON");
+
+        assert!(
+            !image_pcrs.0.is_empty(),
+            "image-pcrs.json should contain at least one image entry"
+        );
+
+        test_info!(
+            &self.test_name,
+            "Checking into {} image results:",
+            image_pcrs.0.len()
+        );
+        let mut found_expected_pcrs = false;
+
+        assert_eq!(
+            image_pcrs.0.len(),
+            expected_pcrs.len(),
+            "image-pcrs.json should contain {} image entries",
+            expected_pcrs.len()
+        );
+
+        for (i, (_image_ref, image_data)) in image_pcrs.0.iter().enumerate() {
+            if compare_pcrs(&image_data.pcrs, expected_pcrs[i]) {
+                found_expected_pcrs = true;
+                break;
+            }
+        }
+
+        assert!(
+            found_expected_pcrs,
+            "At least one image should have the expected PCR values"
+        );
+
+        Ok(())
+    }
 }
 
 #[macro_export]
@@ -700,7 +810,9 @@ macro_rules! virt_test {
 
 #[macro_export]
 macro_rules! setup {
-    () => {{ $crate::TestContext::new(TEST_NAME) }};
+    () => {{ $crate::TestContext::new(TEST_NAME, &[]) }};
+
+    ($images:expr) => {{ $crate::TestContext::new(TEST_NAME, &$images) }};
 }
 
 async fn setup_test_client() -> Result<Client> {

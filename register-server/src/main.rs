@@ -36,9 +36,29 @@ struct Args {
         default_value = "http://attestation-key-register:8001/register-ak"
     )]
     attestation_key_registration_url: Option<String>,
+
+    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+    attestation_key_registration: bool,
 }
 
-fn generate_ignition(id: &str, public_addr: &str, ak_registration_url: &str) -> IgnitionConfig {
+fn generate_ignition(
+    id: &str,
+    public_addr: &str,
+    ak_registration_url: &str,
+    enable_attestation_key_registration: bool,
+) -> IgnitionConfig {
+    let attestation_key = if enable_attestation_key_registration {
+        Some(AttestationKey {
+            registration: Registration {
+                url: ak_registration_url.to_string(),
+                uuid: id.to_string(),
+                cert: "".to_string(),
+            },
+        })
+    } else {
+        None
+    };
+
     let clevis_conf = ClevisConfig {
         servers: vec![ClevisServer {
             url: format!("http://{public_addr}"),
@@ -56,13 +76,7 @@ fn generate_ignition(id: &str, public_addr: &str, ak_registration_url: &str) -> 
         //     uuid: id.to_string(),
         // };
         // ... initdata: serde_json::to_string(&initdata)?,
-        attestation_key: Some(AttestationKey {
-            registration: Registration {
-                url: ak_registration_url.to_string(),
-                uuid: id.to_string(),
-                cert: "".to_string(),
-            },
-        }),
+        attestation_key,
     };
 
     let luks_root = "root";
@@ -106,6 +120,7 @@ async fn get_public_trustee_addr(client: Client) -> anyhow::Result<String> {
 
 async fn register_handler(
     ak_registration_url: Option<String>,
+    enable_attestation_key_registration: bool,
 ) -> Result<impl warp::Reply, Infallible> {
     let id = Uuid::new_v4().to_string();
     let internal_error = |e: anyhow::Error| {
@@ -146,7 +161,12 @@ async fn register_handler(
     let ak_reg_url = ak_registration_url
         .as_deref()
         .unwrap_or("http://attestation-key-register:8001/register-ak");
-    let ignition_config = generate_ignition(&id, &public_addr, ak_reg_url);
+    let ignition_config = generate_ignition(
+        &id,
+        &public_addr,
+        ak_reg_url,
+        enable_attestation_key_registration,
+    );
     let mut ignition_json = match serde_json::to_value(&ignition_config) {
         Ok(json) => json,
         Err(e) => return internal_error(e.into()),
@@ -196,6 +216,12 @@ fn with_ak_registration_url(
     warp::any().map(move || url.clone())
 }
 
+fn with_enable_attestation_key_registration(
+    enable: bool,
+) -> impl Filter<Extract = (bool,), Error = Infallible> + Clone {
+    warp::any().map(move || enable)
+}
+
 #[tokio::main]
 async fn main() {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
@@ -206,6 +232,9 @@ async fn main() {
         .and(warp::get())
         .and(with_ak_registration_url(
             args.attestation_key_registration_url.clone(),
+        ))
+        .and(with_enable_attestation_key_registration(
+            args.attestation_key_registration,
         ))
         .and_then(register_handler);
 

@@ -77,6 +77,10 @@ type TrustedExecutionClusterSpec struct {
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Value is immutable"
 	AttestationKeyRegisterPort int32 `json:"attestationKeyRegisterPort,omitempty"`
+
+	// Enable or disable attestation key registration
+	// +optional
+	AttestationKeyRegistration *bool `json:"attestationKeyRegistration,omitempty"`
 }
 
 // TrustedExecutionClusterStatus defines the observed state of TrustedExecutionCluster.

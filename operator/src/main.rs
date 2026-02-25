@@ -184,6 +184,7 @@ async fn install_register_server(client: Client, cluster: &TrustedExecutionClust
         owner_reference.clone(),
         &cluster.spec.register_server_image,
         cluster.spec.public_attestation_key_register_addr.as_deref(),
+        cluster.spec.attestation_key_registration.unwrap_or(false),
     )
     .await
     {

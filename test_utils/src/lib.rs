@@ -610,6 +610,17 @@ impl TestContext {
                 serde_yaml::Value::String("publicTrusteeAddr".to_string()),
                 serde_yaml::Value::String(trustee_addr.clone()),
             );
+
+            // Set attestationKeyRegistration if environment variable is set
+            if let Ok(enable_ak_reg) = env::var("ENABLE_ATTESTATION_KEY_REGISTRATION") {
+                let enabled = enable_ak_reg.to_lowercase() == "true"
+                    || enable_ak_reg == "1"
+                    || enable_ak_reg.to_lowercase() == "yes";
+                spec_map.insert(
+                    serde_yaml::Value::String("attestationKeyRegistration".to_string()),
+                    serde_yaml::Value::Bool(enabled),
+                );
+            }
         }
 
         let updated_content = serde_yaml::to_string(&cr_value)?;

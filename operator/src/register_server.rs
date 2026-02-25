@@ -38,6 +38,7 @@ pub async fn create_register_server_deployment(
     owner_reference: OwnerReference,
     image: &str,
     attestation_key_register_addr: Option<&str>,
+    attestation_key_registration: bool,
 ) -> Result<()> {
     let app_label = "register-server";
     let labels = BTreeMap::from([("app".to_string(), app_label.to_string())]);
@@ -75,6 +76,9 @@ pub async fn create_register_server_deployment(
                                 args.push("--attestation-key-registration-url".to_string());
                                 args.push(addr.to_string());
                             }
+                            args.push(format!(
+                                "--attestation-key-registration={attestation_key_registration}",
+                            ));
                             Some(args)
                         },
                         ..Default::default()
@@ -214,15 +218,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_reg_server_depl_success() {
-        let clos =
-            |client| create_register_server_deployment(client, Default::default(), "image", None);
+        let clos = |client| {
+            create_register_server_deployment(client, Default::default(), "image", None, false)
+        };
         test_create_success::<_, _, Deployment>(clos).await;
     }
 
     #[tokio::test]
     async fn test_create_reg_server_depl_error() {
-        let clos =
-            |client| create_register_server_deployment(client, Default::default(), "image", None);
+        let clos = |client| {
+            create_register_server_deployment(client, Default::default(), "image", None, true)
+        };
         test_create_error(clos).await;
     }
 

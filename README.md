@@ -61,7 +61,7 @@ Then run the following commands:
 make cluster-up
 make REGISTRY=localhost:5000 PUSH_FLAGS="--tls-verify=false" push # optional: use BUILD_TYPE=debug
 make REGISTRY=localhost:5000 manifests
-make TRUSTEE_ADDR=$ip install
+make TRUSTEE_ADDR=$ip AK_REGISTRATION_ADDR=$ip install
 ```
 
 The KBS port will be forwarded to `8080` on your machine; the node register server to `8000`, where new Ignition configs are served at `/register`. The attestation-key-register service runs on port `8001` within the cluster for VM attestation key registration.

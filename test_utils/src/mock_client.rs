@@ -194,7 +194,6 @@ pub fn dummy_cluster() -> TrustedExecutionCluster {
             attestation_key_register_image: "".to_string(),
             attestation_key_register_port: None,
             public_attestation_key_register_addr: Some("::".to_string()),
-            attestation_key_registration: None,
         },
     }
 }

@@ -16,10 +16,7 @@ use endpoints::*;
 use trusted_cluster_operator_lib::*;
 
 use super::Poller;
-use crate::{get_cluster_url, get_env};
-
-/// Environment variable name for selecting the VM provider
-pub const VIRT_PROVIDER_ENV: &str = "VIRT_PROVIDER";
+use crate::{VirtProvider, get_cluster_url, get_env, get_virt_provider};
 
 #[derive(Clone)]
 pub struct VmConfig {
@@ -74,7 +71,7 @@ pub fn generate_ssh_key_pair() -> Result<(String, PathBuf)> {
     Ok((public_key_str, key_path))
 }
 
-pub async fn generate_ignition(config: &VmConfig, with_ak: bool) -> Result<serde_json::Value> {
+pub async fn generate_ignition(config: &VmConfig) -> Result<serde_json::Value> {
     use ignition_config::v3_5::*;
     let client = config.client.clone();
     let ns = &config.namespace;
@@ -124,31 +121,8 @@ pub async fn generate_ignition(config: &VmConfig, with_ak: bool) -> Result<serde
         }),
     };
 
-    let mut ignition_json = serde_json::to_value(&ignition_config).unwrap();
-    if with_ak {
-        ignition_json = patch_ak(config.client.clone(), ns, ignition_json).await?;
-    }
+    let ignition_json = serde_json::to_value(&ignition_config)?;
     Ok(ignition_json)
-}
-
-async fn patch_ak(
-    client: Client,
-    namespace: &str,
-    mut ignition: serde_json::Value,
-) -> Result<serde_json::Value> {
-    let svc = ATTESTATION_KEY_REGISTER_SERVICE;
-    let port = ATTESTATION_KEY_REGISTER_PORT;
-    let attestation_url = get_cluster_url(client, namespace, svc, port).await?;
-    let ign_json = serde_json::json!({
-        "attestation_key": {
-            "registration": {
-                "url": format!("http://{attestation_url}/{ATTESTATION_KEY_REGISTER_RESOURCE}"),
-            }
-        }
-    });
-    let obj = ignition.as_object_mut().unwrap();
-    obj.insert("attestation".to_string(), ign_json);
-    Ok(ignition)
 }
 
 pub async fn ssh_exec(command: &str) -> Result<String> {
@@ -159,27 +133,6 @@ pub async fn ssh_exec(command: &str) -> Result<String> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum VirtProvider {
-    #[default]
-    Kubevirt,
-    Azure,
-}
-
-fn get_virt_provider() -> Result<VirtProvider> {
-    match env::var(VIRT_PROVIDER_ENV) {
-        Ok(val) => match val.to_lowercase().as_str() {
-            "kubevirt" => Ok(VirtProvider::Kubevirt),
-            "azure" => Ok(VirtProvider::Azure),
-            v => Err(anyhow!(
-                "Unknown {VIRT_PROVIDER_ENV} '{v}'. Supported providers: kubevirt, azure"
-            )),
-        },
-        Err(env::VarError::NotPresent) => Ok(VirtProvider::default()),
-        Err(e) => Err(anyhow!("{e}")),
-    }
 }
 
 pub fn create_backend(

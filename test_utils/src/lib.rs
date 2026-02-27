@@ -94,6 +94,29 @@ macro_rules! kube_apply {
     }
 }
 
+pub const VIRT_PROVIDER_ENV: &str = "VIRT_PROVIDER";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VirtProvider {
+    #[default]
+    Kubevirt,
+    Azure,
+}
+
+fn get_virt_provider() -> Result<VirtProvider> {
+    match env::var(VIRT_PROVIDER_ENV) {
+        Ok(val) => match val.to_lowercase().as_str() {
+            "kubevirt" => Ok(VirtProvider::Kubevirt),
+            "azure" => Ok(VirtProvider::Azure),
+            v => Err(anyhow!(
+                "Unknown {VIRT_PROVIDER_ENV} '{v}'. Supported providers: kubevirt, azure"
+            )),
+        },
+        Err(env::VarError::NotPresent) => Ok(VirtProvider::default()),
+        Err(e) => Err(anyhow!("{e}")),
+    }
+}
+
 fn get_env(name: &str) -> Result<String> {
     env::var(name).map_err(|e| anyhow!("Environment variable {name} is required: {e}"))
 }
@@ -603,24 +626,21 @@ impl TestContext {
         let cr_content = std::fs::read_to_string(&cr_manifest_path)?;
         let mut cr_value: serde_yaml::Value = serde_yaml::from_str(&cr_content)?;
 
-        if let Some(spec) = cr_value.get_mut("spec")
-            && let Some(spec_map) = spec.as_mapping_mut()
-        {
-            spec_map.insert(
-                serde_yaml::Value::String("publicTrusteeAddr".to_string()),
-                serde_yaml::Value::String(trustee_addr.clone()),
-            );
+        let spec_map = cr_value.get_mut("spec").unwrap().as_mapping_mut().unwrap();
+        spec_map.insert(
+            serde_yaml::Value::String("publicTrusteeAddr".to_string()),
+            serde_yaml::Value::String(trustee_addr.clone()),
+        );
 
-            // Set attestationKeyRegistration if environment variable is set
-            if let Ok(enable_ak_reg) = env::var("ENABLE_ATTESTATION_KEY_REGISTRATION") {
-                let enabled = enable_ak_reg.to_lowercase() == "true"
-                    || enable_ak_reg == "1"
-                    || enable_ak_reg.to_lowercase() == "yes";
-                spec_map.insert(
-                    serde_yaml::Value::String("attestationKeyRegistration".to_string()),
-                    serde_yaml::Value::Bool(enabled),
-                );
-            }
+        if get_virt_provider()? == VirtProvider::Kubevirt {
+            let platform = get_k8s_platform();
+            let svc = ATTESTATION_KEY_REGISTER_SERVICE;
+            let port = ATTESTATION_KEY_REGISTER_PORT;
+            let address = platform.get_cluster_url(self.client.clone(), &ns, svc, port);
+            spec_map.insert(
+                serde_yaml::Value::String("publicAttestationKeyRegisterAddr".to_string()),
+                serde_yaml::Value::String(address.await?),
+            );
         }
 
         let updated_content = serde_yaml::to_string(&cr_value)?;

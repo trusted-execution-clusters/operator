@@ -18,7 +18,7 @@ pub struct KubevirtBackend(pub VmConfig);
 impl VmBackend for KubevirtBackend {
     async fn create_vm(&self) -> Result<()> {
         ensure_command("virtctl")?;
-        let ignition_json = generate_ignition(&self.0, true).await?;
+        let ignition_json = generate_ignition(&self.0).await?;
 
         // Create the secret with the ignition configuration
         let secret_name = format!("{}-ignition-secret", self.0.vm_name);

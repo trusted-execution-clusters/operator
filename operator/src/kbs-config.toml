@@ -1,10 +1,8 @@
 [http_server]
 sockets = ["0.0.0.0:8080"]
-insecure_http = true
 
 [admin]
-insecure_api = true
-type = "InsecureAllowAll"
+type = "DenyAll"
 
 [attestation_token]
 insecure_key = true

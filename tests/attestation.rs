@@ -39,7 +39,7 @@ impl SingleAttestationContext {
         let client = test_ctx.client();
         let namespace = test_ctx.namespace();
 
-        let backend = virt::create_backend(client.clone(), namespace, vm_name)?;
+        let backend = virt::create_backend(client.clone(), namespace, vm_name).await?;
 
         test_ctx.info(format!("Creating VM: {vm_name}"));
         backend.create_vm().await?;
@@ -90,8 +90,8 @@ async fn test_parallel_vm_attestation() -> anyhow::Result<()> {
     // Launch both VMs in parallel
     let vm1_name = "test-coreos-vm1";
     let vm2_name = "test-coreos-vm2";
-    let backend1 = virt::create_backend(client.clone(), namespace, vm1_name)?;
-    let backend2 = virt::create_backend(client.clone(), namespace, vm2_name)?;
+    let backend1 = virt::create_backend(client.clone(), namespace, vm1_name).await?;
+    let backend2 = virt::create_backend(client.clone(), namespace, vm2_name).await?;
 
     test_ctx.info("Creating VM1 and VM2 in parallel");
     let (vm1_result, vm2_result) = tokio::join!(backend1.create_vm(), backend2.create_vm());

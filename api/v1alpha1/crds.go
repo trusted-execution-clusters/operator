@@ -58,6 +58,21 @@ type TrustedExecutionClusterSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Value is immutable"
 	PublicAttestationKeyRegisterAddr *string `json:"publicAttestationKeyRegisterAddr,omitempty"`
 
+	// Secret with tls.{crt,key}, ca.crt for attestation-key-register
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Value is immutable"
+	AttestationKeyRegisterSecret *string `json:"attestationKeyRegisterSecret"`
+
+	// Secret with tls.{crt,key} for register-server
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Value is immutable"
+	RegisterServerSecret *string `json:"registerServerSecret"`
+
+	// Secret with tls.{crt,key}, ca.crt for Trustee
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Value is immutable"
+	TrusteeSecret *string `json:"trusteeSecret"`
+
 	// Address where attester can connect to Trustee
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Value is immutable"
@@ -77,10 +92,6 @@ type TrustedExecutionClusterSpec struct {
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Value is immutable"
 	AttestationKeyRegisterPort int32 `json:"attestationKeyRegisterPort,omitempty"`
-
-	// Enable or disable attestation key registration
-	// +optional
-	AttestationKeyRegistration *bool `json:"attestationKeyRegistration,omitempty"`
 }
 
 // TrustedExecutionClusterStatus defines the observed state of TrustedExecutionCluster.

@@ -55,6 +55,7 @@ generate: $(CONTROLLER_GEN)
 	$(call controller-gen,./...,*)
 	$(call controller-gen,github.com/openshift/api/route/v1,*)
 	$(call controller-gen,github.com/openshift/api/config/v1,*_ingresses.yaml)
+	$(call controller-gen,github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1,*)
 
 RS_LIB_PATH = lib/src
 CRD_RS_PATH = $(RS_LIB_PATH)/kopium
@@ -62,7 +63,8 @@ $(CRD_RS_PATH):
 	mkdir $(CRD_RS_PATH)
 
 $(CRD_RS_PATH)/%.rs: $(CRD_YAML_PATH)/*_%.yaml $(KOPIUM) $(CRD_RS_PATH)
-	$(KOPIUM) -f $< > $@
+	$(KOPIUM) -f $< $$(grep -Eq '(certificates|issuers)' <<< $< && echo --derive Default) > $@
+	sed -i 'N; s/, Default)\]\n\(pub struct CertificateAdditionalOutputFormats\)/)]\n\1/; P; D' $@
 	rustfmt $@
 
 crds-rs: generate $(KOPIUM) $(CRD_RS_PATH)
@@ -149,9 +151,7 @@ endif
 	scripts/clean-cluster-kind.sh $(OPERATOR_IMAGE) $(COMPUTE_PCRS_IMAGE) $(REG_SERVER_IMAGE) $(ATTESTATION_KEY_REGISTER_IMAGE)
 	$(YQ) '.spec.publicTrusteeAddr = "$(TRUSTEE_ADDR):8080"' \
 		-i $(DEPLOY_PATH)/trusted_execution_cluster_cr.yaml
-	$(YQ) '.spec.publicAttestationKeyRegisterAddr = "http://$(AK_REGISTRATION_ADDR):8001/register-ak"' \
-		-i $(DEPLOY_PATH)/trusted_execution_cluster_cr.yaml
-	$(YQ) '.spec.attestationKeyRegistration = true' \
+	$(YQ) '.spec.publicAttestationKeyRegisterAddr = "$(AK_REGISTRATION_ADDR):8001"' \
 		-i $(DEPLOY_PATH)/trusted_execution_cluster_cr.yaml
 	sed "s/NAMESPACE/$(NAMESPACE)/g" config/rbac/kustomization.yaml.in > config/rbac/kustomization.yaml
 	$(KUBECTL) apply -f $(DEPLOY_PATH)/operator.yaml

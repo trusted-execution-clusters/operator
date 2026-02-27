@@ -8,7 +8,9 @@ pub mod kubevirt;
 
 use anyhow::{Result, anyhow};
 use clevis_pin_trustee_lib::Key as ClevisKey;
-use kube::Client;
+use k8s_openapi::api::core::v1::Secret;
+use kube::{Api, Client};
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use std::{env, path::PathBuf, time::Duration};
 use tokio::process::Command;
 
@@ -16,10 +18,7 @@ use endpoints::*;
 use trusted_cluster_operator_lib::*;
 
 use super::Poller;
-use crate::{get_cluster_url, get_env};
-
-/// Environment variable name for selecting the VM provider
-pub const VIRT_PROVIDER_ENV: &str = "VIRT_PROVIDER";
+use crate::{ROOT_SECRET, VirtProvider, get_cluster_url, get_env, get_virt_provider};
 
 #[derive(Clone)]
 pub struct VmConfig {
@@ -29,6 +28,7 @@ pub struct VmConfig {
     pub ssh_public_key: String,
     pub ssh_private_key: PathBuf,
     pub image: String,
+    pub ca_pem: String,
 }
 
 impl VmConfig {
@@ -74,22 +74,31 @@ pub fn generate_ssh_key_pair() -> Result<(String, PathBuf)> {
     Ok((public_key_str, key_path))
 }
 
-pub async fn generate_ignition(config: &VmConfig, with_ak: bool) -> Result<serde_json::Value> {
+pub async fn generate_ignition(config: &VmConfig) -> Result<serde_json::Value> {
     use ignition_config::v3_5::*;
     let client = config.client.clone();
     let ns = &config.namespace;
-    let register_server_url =
-        get_cluster_url(client, ns, REGISTER_SERVER_SERVICE, REGISTER_SERVER_PORT).await?;
+    let port = Some(REGISTER_SERVER_PORT);
+    let register_server_url = get_cluster_url(client, ns, REGISTER_SERVER_SERVICE, port).await?;
+    let root_pem_encoded = utf8_percent_encode(&config.ca_pem, NON_ALPHANUMERIC);
     let ignition = Ignition {
         version: "3.6.0-experimental".to_string(),
         config: Some(IgnitionConfig {
             merge: Some(vec![Resource {
                 source: Some(format!(
-                    "http://{register_server_url}/{REGISTER_SERVER_RESOURCE}"
+                    "https://{register_server_url}/{REGISTER_SERVER_RESOURCE}"
                 )),
                 ..Default::default()
             }]),
             ..Default::default()
+        }),
+        security: Some(Security {
+            tls: Some(SecurityTls {
+                certificate_authorities: Some(vec![Resource {
+                    source: Some(format!("data:,{root_pem_encoded}")),
+                    ..Default::default()
+                }]),
+            }),
         }),
         ..Default::default()
     };
@@ -124,31 +133,8 @@ pub async fn generate_ignition(config: &VmConfig, with_ak: bool) -> Result<serde
         }),
     };
 
-    let mut ignition_json = serde_json::to_value(&ignition_config).unwrap();
-    if with_ak {
-        ignition_json = patch_ak(config.client.clone(), ns, ignition_json).await?;
-    }
+    let ignition_json = serde_json::to_value(&ignition_config)?;
     Ok(ignition_json)
-}
-
-async fn patch_ak(
-    client: Client,
-    namespace: &str,
-    mut ignition: serde_json::Value,
-) -> Result<serde_json::Value> {
-    let svc = ATTESTATION_KEY_REGISTER_SERVICE;
-    let port = ATTESTATION_KEY_REGISTER_PORT;
-    let attestation_url = get_cluster_url(client, namespace, svc, port).await?;
-    let ign_json = serde_json::json!({
-        "attestation_key": {
-            "registration": {
-                "url": format!("http://{attestation_url}/{ATTESTATION_KEY_REGISTER_RESOURCE}"),
-            }
-        }
-    });
-    let obj = ignition.as_object_mut().unwrap();
-    obj.insert("attestation".to_string(), ign_json);
-    Ok(ignition)
 }
 
 pub async fn ssh_exec(command: &str) -> Result<String> {
@@ -161,32 +147,17 @@ pub async fn ssh_exec(command: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum VirtProvider {
-    #[default]
-    Kubevirt,
-    Azure,
-}
-
-fn get_virt_provider() -> Result<VirtProvider> {
-    match env::var(VIRT_PROVIDER_ENV) {
-        Ok(val) => match val.to_lowercase().as_str() {
-            "kubevirt" => Ok(VirtProvider::Kubevirt),
-            "azure" => Ok(VirtProvider::Azure),
-            v => Err(anyhow!(
-                "Unknown {VIRT_PROVIDER_ENV} '{v}'. Supported providers: kubevirt, azure"
-            )),
-        },
-        Err(env::VarError::NotPresent) => Ok(VirtProvider::default()),
-        Err(e) => Err(anyhow!("{e}")),
-    }
-}
-
-pub fn create_backend(
+pub async fn create_backend(
     client: Client,
     namespace: &str,
     vm_name: &str,
 ) -> Result<Box<dyn VmBackend>> {
+    let secrets: Api<Secret> = Api::namespaced(client.clone(), namespace);
+    let root_secret = secrets.get(ROOT_SECRET).await?;
+    let root_secret_data = root_secret.data.unwrap();
+    let ca_pem_bytes = root_secret_data.get("ca.crt").unwrap();
+    let ca_pem = String::from_utf8(ca_pem_bytes.0.clone())?;
+
     let provider = get_virt_provider()?;
     let (public_key, key_path) = generate_ssh_key_pair()?;
     let image = get_env("TEST_IMAGE")?;
@@ -197,6 +168,7 @@ pub fn create_backend(
         ssh_public_key: public_key,
         ssh_private_key: key_path,
         image,
+        ca_pem,
     };
     match provider {
         VirtProvider::Kubevirt => Ok(Box::new(kubevirt::KubevirtBackend(config))),

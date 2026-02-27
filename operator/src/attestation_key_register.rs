@@ -4,19 +4,14 @@
 
 use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
-use k8s_openapi::{
-    ByteString,
-    api::{
-        apps::v1::{Deployment, DeploymentSpec},
-        core::v1::{
-            Container, ContainerPort, PodSpec, PodTemplateSpec, Secret, Service, ServicePort,
-            ServiceSpec,
-        },
-    },
-    apimachinery::pkg::{
-        apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference},
-        util::intstr::IntOrString,
-    },
+use k8s_openapi::ByteString;
+use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
+use k8s_openapi::api::core::v1::{
+    Container, ContainerPort, PodSpec, PodTemplateSpec, Secret, Service, ServicePort, ServiceSpec,
+};
+use k8s_openapi::apimachinery::pkg::{
+    apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference},
+    util::intstr::IntOrString,
 };
 use kube::{
     Api, Client, Resource,
@@ -33,7 +28,9 @@ use trusted_cluster_operator_lib::{AttestationKey, AttestationKeyStatus, Machine
 
 use crate::conditions::attestation_key_approved_condition;
 use crate::trustee;
-use operator::{ControllerError, controller_error_policy, create_or_info_if_exists};
+use operator::{
+    ControllerError, TLS_DIR, controller_error_policy, create_or_info_if_exists, read_certificate,
+};
 
 const INTERNAL_ATTESTATION_KEY_REGISTER_PORT: i32 = 8001;
 const ATTESTATION_KEY_SECRET_FINALIZER: &str =
@@ -43,9 +40,22 @@ pub async fn create_attestation_key_register_deployment(
     client: Client,
     owner_reference: OwnerReference,
     image: &str,
+    secret: &Option<String>,
 ) -> Result<()> {
     let app_label = "attestation-key-register";
     let labels = BTreeMap::from([("app".to_string(), app_label.to_string())]);
+
+    let mut args = vec![
+        "--port".to_string(),
+        ATTESTATION_KEY_REGISTER_PORT.to_string(),
+    ];
+    let volumes = read_certificate(client.clone(), secret).await?;
+    if volumes.is_some() {
+        args.push("--cert-path".to_string());
+        args.push(format!("{TLS_DIR}/tls.crt"));
+        args.push("--key-path".to_string());
+        args.push(format!("{TLS_DIR}/tls.key"));
+    }
 
     let deployment = Deployment {
         metadata: ObjectMeta {
@@ -73,12 +83,11 @@ pub async fn create_attestation_key_register_deployment(
                             container_port: ATTESTATION_KEY_REGISTER_PORT,
                             ..Default::default()
                         }]),
-                        args: Some(vec![
-                            "--port".to_string(),
-                            ATTESTATION_KEY_REGISTER_PORT.to_string(),
-                        ]),
+                        args: Some(args),
+                        volume_mounts: volumes.as_ref().map(|(_, vm)| vec![vm.clone()]),
                         ..Default::default()
                     }],
+                    volumes: volumes.as_ref().map(|(v, _)| vec![v.clone()]),
                     ..Default::default()
                 }),
             },
@@ -386,7 +395,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_ak_register_depl_success() {
         let clos = |client| {
-            create_attestation_key_register_deployment(client, Default::default(), "image")
+            create_attestation_key_register_deployment(client, Default::default(), "image", &None)
         };
         test_create_success::<_, _, Deployment>(clos).await;
     }
@@ -394,7 +403,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_ak_register_depl_error() {
         let clos = |client| {
-            create_attestation_key_register_deployment(client, Default::default(), "image")
+            create_attestation_key_register_deployment(client, Default::default(), "image", &None)
         };
         test_create_error(clos).await;
     }

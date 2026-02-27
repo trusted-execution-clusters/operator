@@ -23,7 +23,7 @@ use kube::{
     api::{ObjectMeta, Patch, PatchParams},
 };
 use log::info;
-use operator::{RvContextData, create_or_info_if_exists};
+use operator::{RvContextData, TLS_DIR, create_or_info_if_exists, read_certificate};
 use serde::{Serialize, Serializer};
 use serde_json::{Value::String as JsonString, json};
 use std::collections::BTreeMap;
@@ -370,12 +370,38 @@ pub async fn generate_attestation_policy(
     Ok(())
 }
 
-pub async fn generate_trustee_data(client: Client, owner_reference: OwnerReference) -> Result<()> {
-    let kbs_config = include_str!("kbs-config.toml");
+fn generate_kbs_config(has_certificate: bool) -> Result<String> {
+    let kbs_config_template = include_str!("kbs-config.toml");
+    let mut config: toml::Table = toml::from_str(kbs_config_template)?;
+
+    let section_err = "kbs-config.toml missing http_server section";
+    let http_section = config.get_mut("http_server").context(section_err)?;
+    let server_err = "http_server is not a table";
+    let http_server = http_section.as_table_mut().context(server_err)?;
+
+    if has_certificate {
+        let tls_key = toml::Value::String(format!("{TLS_DIR}/tls.key"));
+        http_server.insert("private_key".to_string(), tls_key);
+        let tls_cert = toml::Value::String(format!("{TLS_DIR}/tls.crt"));
+        http_server.insert("certificate".to_string(), tls_cert);
+    } else {
+        http_server.insert("insecure_http".to_string(), toml::Value::Boolean(true));
+    }
+
+    Ok(toml::to_string(&config)?)
+}
+
+pub async fn generate_trustee_data(
+    client: Client,
+    owner_reference: OwnerReference,
+    secret: &Option<String>,
+) -> Result<()> {
+    let has_certificate = read_certificate(client.clone(), secret).await?.is_some();
+    let kbs_config = generate_kbs_config(has_certificate)?;
     let policy_rego = include_str!("resource.rego");
 
     let data = BTreeMap::from([
-        ("kbs-config.toml".to_string(), kbs_config.to_string()),
+        ("kbs-config.toml".to_string(), kbs_config),
         ("policy.rego".to_string(), policy_rego.to_string()),
         (REFERENCE_VALUES_FILE.to_string(), "[]".to_string()),
     ]);
@@ -460,8 +486,30 @@ fn generate_kbs_volume_templates() -> [(&'static str, &'static str, Volume); 3] 
     ]
 }
 
-fn generate_kbs_pod_spec(image: &str) -> PodSpec {
-    let volumes = generate_kbs_volume_templates();
+fn generate_kbs_pod_spec(image: &str, tls_volumes: Option<(Volume, VolumeMount)>) -> PodSpec {
+    let volume_templates = generate_kbs_volume_templates();
+    let mut volumes: Vec<Volume> = volume_templates
+        .iter()
+        .map(|(name, _, volume)| {
+            let mut volume = volume.clone();
+            volume.name = name.to_string();
+            volume
+        })
+        .collect();
+    let mut volume_mounts: Vec<VolumeMount> = volume_templates
+        .iter()
+        .map(|(name, mount_path, _)| VolumeMount {
+            name: name.to_string(),
+            mount_path: mount_path.to_string(),
+            ..Default::default()
+        })
+        .collect();
+
+    if let Some((volume, volume_mount)) = tls_volumes {
+        volumes.push(volume);
+        volume_mounts.push(volume_mount);
+    }
+
     PodSpec {
         containers: vec![Container {
             command: Some(vec![
@@ -480,28 +528,10 @@ fn generate_kbs_pod_spec(image: &str) -> PodSpec {
                 container_port: TRUSTEE_PORT,
                 ..Default::default()
             }]),
-            volume_mounts: Some(
-                volumes
-                    .iter()
-                    .map(|(name, mount_path, _)| VolumeMount {
-                        name: name.to_string(),
-                        mount_path: mount_path.to_string(),
-                        ..Default::default()
-                    })
-                    .collect(),
-            ),
+            volume_mounts: Some(volume_mounts),
             ..Default::default()
         }],
-        volumes: Some(
-            volumes
-                .iter()
-                .map(|(name, _, volume)| {
-                    let mut volume = volume.clone();
-                    volume.name = name.to_string();
-                    volume.clone()
-                })
-                .collect(),
-        ),
+        volumes: Some(volumes),
         ..Default::default()
     }
 }
@@ -510,9 +540,11 @@ pub async fn generate_kbs_deployment(
     client: Client,
     owner_reference: OwnerReference,
     image: &str,
+    secret: &Option<String>,
 ) -> Result<()> {
     let selector = Some(BTreeMap::from([("app".to_string(), "kbs".to_string())]));
-    let pod_spec = generate_kbs_pod_spec(image);
+    let tls_volumes = read_certificate(client.clone(), secret).await?;
+    let pod_spec = generate_kbs_pod_spec(image, tls_volumes);
 
     // Inspired by trustee-operator
     let deployment = Deployment {
@@ -814,19 +846,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_generate_trustee_data_success() {
-        let clos = |client| generate_trustee_data(client, Default::default());
+        let clos = |client| generate_trustee_data(client, Default::default(), &None);
         test_create_success::<_, _, ConfigMap>(clos).await;
     }
 
     #[tokio::test]
     async fn test_generate_trustee_data_already_exists() {
-        let clos = |client| generate_trustee_data(client, Default::default());
+        let clos = |client| generate_trustee_data(client, Default::default(), &None);
         test_create_already_exists(clos).await;
     }
 
     #[tokio::test]
     async fn test_generate_trustee_data_error() {
-        let clos = |client| generate_trustee_data(client, Default::default());
+        let clos = |client| generate_trustee_data(client, Default::default(), &None);
         test_create_error(clos).await;
     }
 
@@ -844,13 +876,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_generate_kbs_depl_success() {
-        let clos = |client| generate_kbs_deployment(client, Default::default(), "image");
+        let clos = |client| generate_kbs_deployment(client, Default::default(), "image", &None);
         test_create_success::<_, _, Deployment>(clos).await;
     }
 
     #[tokio::test]
     async fn test_generate_kbs_depl_error() {
-        let clos = |client| generate_kbs_deployment(client, Default::default(), "image");
+        let clos = |client| generate_kbs_deployment(client, Default::default(), "image", &None);
         test_create_error(clos).await;
     }
 }

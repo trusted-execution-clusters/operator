@@ -189,12 +189,14 @@ pub fn dummy_cluster() -> TrustedExecutionCluster {
             pcrs_compute_image: "".to_string(),
             register_server_image: "".to_string(),
             public_trustee_addr: Some("::".to_string()),
+            register_server_secret: None,
+            trustee_secret: None,
+            attestation_key_register_secret: None,
             register_server_port: None,
             trustee_kbs_port: None,
             attestation_key_register_image: "".to_string(),
             attestation_key_register_port: None,
             public_attestation_key_register_addr: Some("::".to_string()),
-            attestation_key_registration: None,
         },
     }
 }

@@ -146,7 +146,10 @@ async fn install_trustee_configuration(
 ) -> Result<()> {
     let owner_reference = generate_owner_reference(cluster)?;
 
-    match trustee::generate_trustee_data(client.clone(), owner_reference.clone()).await {
+    let trustee_secret = &cluster.spec.trustee_secret;
+    match trustee::generate_trustee_data(client.clone(), owner_reference.clone(), trustee_secret)
+        .await
+    {
         Ok(_) => info!("Generate configmap for the KBS configuration",),
         Err(e) => error!("Failed to create the KBS configuration configmap: {e}"),
     }
@@ -168,7 +171,9 @@ async fn install_trustee_configuration(
     }
 
     let trustee_image = &cluster.spec.trustee_image;
-    match trustee::generate_kbs_deployment(client, owner_reference, trustee_image).await {
+    match trustee::generate_kbs_deployment(client, owner_reference, trustee_image, trustee_secret)
+        .await
+    {
         Ok(_) => info!("Generate the KBS deployment"),
         Err(e) => error!("Failed to create the KBS deployment: {e}"),
     }
@@ -183,8 +188,7 @@ async fn install_register_server(client: Client, cluster: &TrustedExecutionClust
         client.clone(),
         owner_reference.clone(),
         &cluster.spec.register_server_image,
-        cluster.spec.public_attestation_key_register_addr.as_deref(),
-        cluster.spec.attestation_key_registration.unwrap_or(false),
+        &cluster.spec.register_server_secret,
     )
     .await
     {
@@ -213,6 +217,7 @@ async fn install_attestation_key_register(
         client.clone(),
         owner_reference.clone(),
         &cluster.spec.attestation_key_register_image,
+        &cluster.spec.attestation_key_register_secret,
     )
     .await
     {

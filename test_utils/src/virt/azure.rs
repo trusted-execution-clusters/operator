@@ -97,7 +97,7 @@ impl VmBackend for AzureBackend {
         args.extend(["--network-security-group", nsg, "--public-ip-address", ip]);
         self.az_rg(args).await?;
 
-        let ign = generate_ignition(&self.config, false).await?;
+        let ign = generate_ignition(&self.config).await?;
         let custom_data = ign.to_string();
         if !self.config.image.starts_with('/') && self.config.image.split(':').count() < 4 {
             let err = "Invalid Image URN. Expected 'Publisher:Offer:Sku:Version'";

@@ -10,8 +10,8 @@ require (
 	github.com/mikefarah/yq/v4 v4.52.4
 	github.com/openshift/api v0.0.0-20260213204242-d34f11c515b3
 	github.com/projectcalico/api v0.0.0-20251022175904-f2ab03771208
-	k8s.io/api v0.35.1
-	k8s.io/apimachinery v0.35.1
+	k8s.io/api v0.35.2
+	k8s.io/apimachinery v0.35.2
 	sigs.k8s.io/controller-runtime v0.23.1
 	sigs.k8s.io/controller-tools v0.20.1
 	sigs.k8s.io/yaml v1.6.0

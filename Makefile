@@ -10,6 +10,8 @@ PLATFORM ?= kind
 
 KUBECTL=kubectl
 INTEGRATION_TEST_THREADS ?= 1
+# Azure CI only: which image to use as Kind host
+KIND_HOST_URN = RedHat:RHEL:10-lvm-gen2:10.1.2026022409
 
 LOCALBIN ?= $(shell pwd)/bin
 CONTROLLER_TOOLS_VERSION ?= $(shell go list -m -f '{{.Version}}' sigs.k8s.io/controller-tools)

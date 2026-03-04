@@ -4,6 +4,9 @@
 // SPDX-License-Identifier: MIT
 
 use anyhow::Context;
+use axum::response::{IntoResponse, Json};
+use axum::{http::StatusCode, routing::get, Router};
+use axum_server::tls_openssl::OpenSSLConfig;
 use clap::Parser;
 use clevis_pin_trustee_lib::{
     AttestationKey, Config as ClevisConfig, Registration, Server as ClevisServer,
@@ -12,12 +15,12 @@ use env_logger::Env;
 use ignition_config::v3_5::{
     Clevis, ClevisCustom, Config as IgnitionConfig, Filesystem, Luks, Storage,
 };
+use k8s_openapi::api::core::v1::Secret;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use kube::{Api, Client};
 use log::{error, info};
-use std::convert::Infallible;
+use std::net::SocketAddr;
 use uuid::Uuid;
-use warp::{http::StatusCode, reply, Filter};
 
 use trusted_cluster_operator_lib::endpoints::*;
 use trusted_cluster_operator_lib::{
@@ -30,14 +33,34 @@ use trusted_cluster_operator_lib::{
 struct Args {
     #[arg(short, long, default_value = "8000")]
     port: u16,
+
+    #[arg(long)]
+    cert_path: Option<String>,
+
+    #[arg(long)]
+    key_path: Option<String>,
 }
 
 /// Information about endpoints for clevis configuration
 struct EndpointInfo {
     /// The public address of the Trustee server
     trustee_addr: String,
+    /// The Trustee CA certificate (PEM-encoded) if TLS is enabled, None otherwise
+    trustee_ca_cert: Option<String>,
     /// The public address of the AK registration server
     ak_registration_addr: Option<String>,
+    /// AK registration CA certificate, identical to Trustee's if signed by the same root CA
+    ak_registration_ca_cert: Option<String>,
+}
+
+async fn get_ca(client: Client, secret_name: &str) -> anyhow::Result<String> {
+    let secrets: Api<Secret> = Api::default_namespaced(client);
+    let secret = secrets.get(secret_name).await?;
+    let err = format!("Secret {secret_name} does not contain ca.crt");
+    let ca_data = secret.data.as_ref();
+    let ca_bytes = ca_data.and_then(|data| data.get("ca.crt")).expect(&err);
+    let ca_pem = String::from_utf8(ca_bytes.0.clone())?;
+    Ok(ca_pem)
 }
 
 impl EndpointInfo {
@@ -49,27 +72,50 @@ impl EndpointInfo {
              Add an address and re-register the node."
         ))?;
 
+        let trustee_ca_cert = match &cluster.spec.trustee_secret {
+            Some(name) => Some(get_ca(client.clone(), name).await?),
+            None => None,
+        };
+
+        let ak_registration_ca_cert = match &cluster.spec.attestation_key_register_secret {
+            Some(name) => Some(get_ca(client.clone(), name).await?),
+            None => None,
+        };
+
         Ok(EndpointInfo {
             trustee_addr,
+            trustee_ca_cert,
             ak_registration_addr: cluster.spec.public_attestation_key_register_addr,
+            ak_registration_ca_cert,
         })
     }
 }
 
 fn generate_ignition(id: &str, endpoint_info: &EndpointInfo) -> IgnitionConfig {
     let ak_addr = endpoint_info.ak_registration_addr.as_deref();
-    let attestation_key = ak_addr.map(|url| AttestationKey {
-        registration: Registration {
-            url: format!("http://{url}/{ATTESTATION_KEY_REGISTER_RESOURCE}"),
-            uuid: id.to_string(),
-            cert: "".to_string(),
-        },
+    let attestation_key = ak_addr.map(|url| {
+        let (ak_reg_scheme, ak_reg_cert) = match &endpoint_info.ak_registration_ca_cert {
+            Some(ca_cert) => ("https", ca_cert.clone()),
+            None => ("http", String::new()),
+        };
+        AttestationKey {
+            registration: Registration {
+                url: format!("{ak_reg_scheme}://{url}/{ATTESTATION_KEY_REGISTER_RESOURCE}"),
+                uuid: id.to_string(),
+                cert: ak_reg_cert,
+            },
+        }
     });
+
+    let (trustee_scheme, trustee_cert) = match &endpoint_info.trustee_ca_cert {
+        Some(ca_cert) => ("https", ca_cert.clone()),
+        None => ("http", String::new()),
+    };
 
     let clevis_conf = ClevisConfig {
         servers: vec![ClevisServer {
-            url: format!("http://{}", endpoint_info.trustee_addr),
-            cert: "".to_string(),
+            url: format!("{trustee_scheme}://{}", endpoint_info.trustee_addr),
+            cert: trustee_cert,
         }],
         path: format!("default/{id}/root"),
         num_retries: None,
@@ -116,7 +162,7 @@ fn generate_ignition(id: &str, endpoint_info: &EndpointInfo) -> IgnitionConfig {
     }
 }
 
-async fn register_handler() -> Result<impl warp::Reply, Infallible> {
+async fn register_handler() -> impl IntoResponse {
     let id = Uuid::new_v4().to_string();
     let internal_error = |e: anyhow::Error| {
         let code = StatusCode::INTERNAL_SERVER_ERROR;
@@ -125,7 +171,7 @@ async fn register_handler() -> Result<impl warp::Reply, Infallible> {
             "code": code.as_u16(),
             "message": format!("{e:#}")
         });
-        Ok(reply::with_status(reply::json(&msg), code))
+        (code, Json(msg))
     };
 
     let kube_client = match Client::try_default().await {
@@ -167,10 +213,7 @@ async fn register_handler() -> Result<impl warp::Reply, Infallible> {
         );
     }
 
-    Ok(reply::with_status(
-        reply::json(&ignition_json),
-        StatusCode::OK,
-    ))
+    (StatusCode::OK, Json(ignition_json))
 }
 
 async fn create_machine(
@@ -202,15 +245,20 @@ async fn main() {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
     let args = Args::parse();
+    let endpoint = format!("/{REGISTER_SERVER_RESOURCE}");
+    let app = Router::new().route(&endpoint, get(register_handler));
+    let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
+    let service = app.into_make_service();
+    info!("Starting server on http://{addr}");
 
-    let register_route = warp::path(REGISTER_SERVER_RESOURCE)
-        .and(warp::get())
-        .and_then(register_handler);
-
-    let routes = register_route;
-
-    info!("Starting server on http://localhost:{}", args.port);
-    warp::serve(routes).run(([0, 0, 0, 0], args.port)).await;
+    let run = if args.cert_path.is_some() && args.key_path.is_some() {
+        let config = OpenSSLConfig::from_pem_file(args.cert_path.unwrap(), args.key_path.unwrap())
+            .expect("invalid PEM files");
+        axum_server::bind_openssl(addr, config).serve(service).await
+    } else {
+        axum_server::bind(addr).serve(service).await
+    };
+    run.expect("Server failed");
 }
 
 #[cfg(test)]
@@ -239,7 +287,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_public_trustee_addr_none() {
+    async fn test_get_trustee_info_no_cluster() {
         let clos = async |_, _| {
             let mut clusters = dummy_clusters();
             clusters.items.clear();
@@ -252,7 +300,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_public_trustee_addr_multiple() {
+    async fn test_get_trustee_info_multiple() {
         let clos = async |_, _| {
             let mut clusters = dummy_clusters();
             clusters.items.push(clusters.items[0].clone());
@@ -265,7 +313,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_public_trustee_no_addr() {
+    async fn test_get_trustee_info_no_addr() {
         let clos = async |_, _| {
             let mut clusters = dummy_clusters();
             clusters.items[0].spec.public_trustee_addr = None;

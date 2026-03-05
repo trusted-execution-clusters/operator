@@ -98,11 +98,16 @@ cluster-down:
 CONTAINER_CLI ?= podman
 RUNTIME ?= podman
 
-image:
+operator-image:
 	$(CONTAINER_CLI) build $(IMAGE_BUILD_OPTIONS) -t $(OPERATOR_IMAGE) -f Containerfile .
+compute-pcrs-image:
 	$(CONTAINER_CLI) build $(IMAGE_BUILD_OPTIONS) -t $(COMPUTE_PCRS_IMAGE) -f compute-pcrs/Containerfile .
+reg-server-image:
 	$(CONTAINER_CLI) build $(IMAGE_BUILD_OPTIONS) -t $(REG_SERVER_IMAGE) -f register-server/Containerfile .
+attestation-key-register-image:
 	$(CONTAINER_CLI) build $(IMAGE_BUILD_OPTIONS) -t $(ATTESTATION_KEY_REGISTER_IMAGE) -f attestation-key-register/Containerfile .
+
+image: operator-image compute-pcrs-image reg-server-image attestation-key-register-image
 
 push: image
 	$(CONTAINER_CLI) push $(OPERATOR_IMAGE) $(PUSH_FLAGS)
@@ -222,6 +227,7 @@ $(KOPIUM): $(LOCALBIN)
 	$(call cargo-install-tool,$(KOPIUM),kopium,$(KOPIUM_VERSION))
 
 build-tools: $(CONTROLLER_GEN) $(KOPIUM)
+yq: $(YQ)
 
 define go-install-tool
 [ -f "$(1)" ] || { \

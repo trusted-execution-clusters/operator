@@ -398,7 +398,7 @@ pub async fn generate_kbs_service(
     owner_reference: OwnerReference,
     kbs_port: Option<i32>,
 ) -> Result<()> {
-    let selector = Some(BTreeMap::from([("app".to_string(), "kbs".to_string())]));
+    let selector = Some(BTreeMap::from([("app".to_string(), TRUSTEE_APP_LABEL.to_string())]));
 
     let service = Service {
         metadata: ObjectMeta {

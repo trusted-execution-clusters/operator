@@ -44,7 +44,7 @@ pub async fn create_attestation_key_register_deployment(
     owner_reference: OwnerReference,
     image: &str,
 ) -> Result<()> {
-    let app_label = "attestation-key-register";
+    let app_label = ATTESTATION_KEY_REGISTER_APP_LABEL;
     let labels = BTreeMap::from([("app".to_string(), app_label.to_string())]);
 
     let deployment = Deployment {

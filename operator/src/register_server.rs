@@ -38,8 +38,7 @@ pub async fn create_register_server_deployment(
     owner_reference: OwnerReference,
     image: &str,
 ) -> Result<()> {
-    let app_label = "register-server";
-    let labels = BTreeMap::from([("app".to_string(), app_label.to_string())]);
+    let labels = BTreeMap::from([("app".to_string(), REGISTER_SERVER_APP_LABEL.to_string())]);
 
     let deployment = Deployment {
         metadata: ObjectMeta {

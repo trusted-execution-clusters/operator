@@ -408,6 +408,7 @@ impl TestContext {
         match namespace_api.get(&self.test_namespace).await {
             Ok(_) => {
                 namespace_api.delete(&self.test_namespace, &dp).await?;
+                wait_for_resource_deleted(&namespace_api, &self.test_namespace, 300, 5).await?;
                 test_info!(&self.test_name, "Deleted namespace {}", self.test_namespace);
             }
             Err(kube::Error::Api(ae)) if ae.code == 404 => {

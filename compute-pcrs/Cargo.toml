@@ -5,7 +5,7 @@
 
 [package]
 name = "compute-pcrs"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "A trusted-cluster-operator optimized compute-pcrs interface"

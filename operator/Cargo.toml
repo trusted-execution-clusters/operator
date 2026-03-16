@@ -25,7 +25,7 @@ kube.workspace = true
 log.workspace = true
 oci-client = { version = "0.16.1", default-features = false, features = ["native-tls"] }
 oci-spec = "0.9.0"
-openssl = "0.10.75"
+openssl = "0.10.76"
 serde.workspace = true
 serde_json.workspace = true
 thiserror = "2.0.18"

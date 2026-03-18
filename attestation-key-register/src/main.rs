@@ -2,16 +2,17 @@
 //
 // SPDX-License-Identifier: MIT
 
-use anyhow::Context;
+use axum::response::{IntoResponse, Json};
+use axum::{http::StatusCode, routing::put, Router};
+use axum_server::tls_openssl::OpenSSLConfig;
 use clap::Parser;
+use env_logger::Env;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::{Api, Client};
 use log::{error, info};
 use serde::{Deserialize, Serialize};
-use std::convert::Infallible;
 use std::net::SocketAddr;
 use uuid::Uuid;
-use warp::{http::StatusCode, reply, Filter};
 
 use trusted_cluster_operator_lib::endpoints::ATTESTATION_KEY_REGISTER_RESOURCE;
 use trusted_cluster_operator_lib::{
@@ -24,6 +25,10 @@ use trusted_cluster_operator_lib::{
 struct Args {
     #[arg(short, long, default_value = "8001")]
     port: u16,
+    #[arg(long)]
+    cert_path: Option<String>,
+    #[arg(long)]
+    key_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -38,40 +43,36 @@ struct AttestationKeyRegistration {
 }
 
 async fn handle_registration(
-    registration: AttestationKeyRegistration,
-    client: Client,
-) -> Result<impl warp::Reply, Infallible> {
+    Json(registration): Json<AttestationKeyRegistration>,
+) -> impl IntoResponse {
     info!("Received registration request: {registration:?}");
+
+    let internal_error = |e: anyhow::Error| {
+        let code = StatusCode::INTERNAL_SERVER_ERROR;
+        error!("{e:?}");
+        let msg = serde_json::json!({
+            "status": "error",
+            "message": format!("{e:#}"),
+        });
+        (code, Json(msg))
+    };
+
+    let client = match Client::try_default().await {
+        Ok(c) => c,
+        Err(e) => return internal_error(e.into()),
+    };
 
     let api: Api<AttestationKey> = Api::default_namespaced(client.clone());
 
     // Get the TrustedExecutionCluster to use as owner reference
     let cluster = match get_trusted_execution_cluster(client.clone()).await {
         Ok(c) => c,
-        Err(e) => {
-            error!("Failed to get TrustedExecutionCluster: {e}");
-            return Ok(reply::with_status(
-                reply::json(&serde_json::json!({
-                    "status": "error",
-                    "message": format!("Failed to get TrustedExecutionCluster: {e}"),
-                })),
-                StatusCode::INTERNAL_SERVER_ERROR,
-            ));
-        }
+        Err(e) => return internal_error(e.context("Failed to get TrustedExecutionCluster")),
     };
 
     let owner_reference = match generate_owner_reference(&cluster) {
         Ok(o) => o,
-        Err(e) => {
-            error!("Failed to generate owner reference: {e}");
-            return Ok(reply::with_status(
-                reply::json(&serde_json::json!({
-                    "status": "error",
-                    "message": format!("Failed to generate owner reference: {e}"),
-                })),
-                StatusCode::INTERNAL_SERVER_ERROR,
-            ));
-        }
+        Err(e) => return internal_error(e.context("Failed to generate owner reference")),
     };
 
     match api.list(&Default::default()).await {
@@ -82,25 +83,20 @@ async fn handle_registration(
                     error!(
                         "Duplicate public key detected: already exists in AttestationKey '{existing_name}'"
                     );
-                    return Ok(reply::with_status(
-                        reply::json(&serde_json::json!({
-                            "status": "error",
-                            "message": format!("Public key already registered"),
-                        })),
+                    return (
                         StatusCode::CONFLICT,
-                    ));
+                        Json(serde_json::json!({
+                            "status": "error",
+                            "message": "Public key already registered",
+                        })),
+                    );
                 }
             }
         }
         Err(e) => {
-            error!("Failed to list AttestationKeys: {e}");
-            return Ok(reply::with_status(
-                reply::json(&serde_json::json!({
-                    "status": "error",
-                    "message": format!("Failed to check for existing keys: {e}"),
-                })),
-                StatusCode::INTERNAL_SERVER_ERROR,
-            ));
+            return internal_error(
+                anyhow::Error::from(e).context("Failed to check for existing keys"),
+            )
         }
     }
 
@@ -120,57 +116,34 @@ async fn handle_registration(
 
     match api.create(&Default::default(), &attestation_key).await {
         Ok(created) => {
-            info!(
-                "Successfully created AttestationKey: {}",
-                created.metadata.name.unwrap_or_default()
-            );
-            Ok(reply::with_status(
-                reply::json(&serde_json::json!({
-                    "status": "success",
-                })),
-                StatusCode::CREATED,
-            ))
+            let name = created.metadata.name.unwrap_or_default();
+            info!("Successfully created AttestationKey: {name}",);
+            let json = Json(serde_json::json!({
+                "status": "success",
+            }));
+            (StatusCode::CREATED, json)
         }
-        Err(e) => {
-            error!("Failed to create AttestationKey: {e}");
-            Ok(reply::with_status(
-                reply::json(&serde_json::json!({
-                    "status": "error",
-                    "message": format!("Failed to create AttestationKey: {e}"),
-                })),
-                StatusCode::INTERNAL_SERVER_ERROR,
-            ))
-        }
+        Err(e) => internal_error(anyhow::Error::from(e).context("Failed to create AttestationKey")),
     }
 }
 
-fn with_client(client: Client) -> impl Filter<Extract = (Client,), Error = Infallible> + Clone {
-    warp::any().map(move || client.clone())
-}
-
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+async fn main() {
+    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
     let args = Args::parse();
+    let endpoint = format!("/{ATTESTATION_KEY_REGISTER_RESOURCE}");
+    let app = Router::new().route(&endpoint, put(handle_registration));
+    let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
+    let service = app.into_make_service();
+    info!("Starting attestation key registration server on http://{addr}",);
 
-    info!(
-        "Starting attestation key registration server on port {}",
-        args.port
-    );
-
-    let client = Client::try_default()
-        .await
-        .context("Failed to create Kubernetes client")?;
-
-    let register = warp::put()
-        .and(warp::path(ATTESTATION_KEY_REGISTER_RESOURCE))
-        .and(warp::body::json())
-        .and(with_client(client))
-        .and_then(handle_registration);
-
-    let addr: SocketAddr = ([0, 0, 0, 0], args.port).into();
-    warp::serve(register).run(addr).await;
-
-    Ok(())
+    let run = if args.cert_path.is_some() && args.key_path.is_some() {
+        let config = OpenSSLConfig::from_pem_file(args.cert_path.unwrap(), args.key_path.unwrap())
+            .expect("invalid PEM files");
+        axum_server::bind_openssl(addr, config).serve(service).await
+    } else {
+        axum_server::bind(addr).serve(service).await
+    };
+    run.expect("Server failed");
 }

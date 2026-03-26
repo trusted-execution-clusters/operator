@@ -4,6 +4,7 @@ insecure_http = true
 
 [admin]
 insecure_api = true
+auth_public_key="/key/public.pub"
 type = "InsecureAllowAll"
 
 [attestation_token]

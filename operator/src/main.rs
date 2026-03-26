@@ -179,6 +179,11 @@ async fn install_trustee_configuration(
         Err(e) => error!("Failed to create the attestation policy configmap: {e}"),
     }
 
+    match trustee::generate_trustee_auth_keys_secret(client.clone(), owner_reference.clone()).await {
+        Ok(_) => info!("Generate auth keys for the KBS API",),
+        Err(e) => error!("Failed to create the auth keys: {e}"),
+    }
+
     let kbs_port = cluster.spec.trustee_kbs_port;
     match trustee::generate_kbs_service(client.clone(), owner_reference.clone(), kbs_port).await {
         Ok(_) => info!("Generate the KBS service"),

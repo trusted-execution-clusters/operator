@@ -40,6 +40,8 @@ pub(crate) const TRUSTEE_DATA_MAP: &str = "trustee-data";
 const ATT_POLICY_MAP: &str = "attestation-policy";
 const TRUSTED_AK_KEYS_VOLUME: &str = "trusted-ak-keys";
 const TRUSTED_AK_KEYS_DIR: &str = "/etc/tpm/trusted_ak_keys";
+const TRUSTEE_AUTH_SECRET: &str = "trustee-auth";
+const TRUSTEE_AUTH_KEY_DIR: &str = "/key";
 
 fn primitive_date_time_to_str<S>(d: &DateTime<Utc>, s: S) -> Result<S::Ok, S::Error>
 where
@@ -107,6 +109,21 @@ pub async fn update_reference_values(ctx: RvContextData) -> Result<()> {
         .await?;
     info!("Recomputed reference values");
     Ok(())
+}
+
+pub struct Ed25519KeyPair {
+    pub private_key_pem: Vec<u8>,
+    pub public_key_pem: Vec<u8>,
+}
+
+fn generate_ed25519_key_pair() -> Result<Ed25519KeyPair> {
+    let key = openssl::pkey::PKey::generate_ed25519()?;
+    let private_key_pem = key.private_key_to_pem_pkcs8()?;
+    let public_key_pem = key.public_key_to_pem()?;
+    Ok(Ed25519KeyPair {
+        private_key_pem,
+        public_key_pem,
+    })
 }
 
 fn generate_luks_key() -> Result<Vec<u8>> {
@@ -346,6 +363,29 @@ pub async fn generate_secret(
     Ok(())
 }
 
+pub async fn generate_trustee_auth_keys_secret(
+    client: Client,
+    owner_reference: OwnerReference,
+) -> Result<()> {
+    let key_pair = generate_ed25519_key_pair()?;
+    let data = BTreeMap::from([
+        ("private.key".to_string(), k8s_openapi::ByteString(key_pair.private_key_pem)),
+        ("public.pub".to_string(), k8s_openapi::ByteString(key_pair.public_key_pem)),
+    ]);
+
+    let secret = Secret {
+        metadata: ObjectMeta {
+            name: Some(TRUSTEE_AUTH_SECRET.to_string()),
+            owner_references: Some(vec![owner_reference]),
+            ..Default::default()
+        },
+        data: Some(data),
+        ..Default::default()
+    };
+    create_or_info_if_exists!(client, Secret, secret);
+    Ok(())
+}
+
 pub async fn generate_attestation_policy(
     client: Client,
     owner_reference: OwnerReference,
@@ -422,7 +462,7 @@ pub async fn generate_kbs_service(
     Ok(())
 }
 
-fn generate_kbs_volume_templates() -> [(&'static str, &'static str, Volume); 3] {
+fn generate_kbs_volume_templates() -> [(&'static str, &'static str, Volume); 4] {
     [
         (
             ATT_POLICY_MAP,
@@ -452,6 +492,22 @@ fn generate_kbs_volume_templates() -> [(&'static str, &'static str, Volume); 3] 
             Volume {
                 empty_dir: Some(EmptyDirVolumeSource {
                     medium: Some("Memory".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ),
+        (
+            TRUSTEE_AUTH_SECRET,
+            TRUSTEE_AUTH_KEY_DIR,
+            Volume {
+                secret: Some(SecretVolumeSource {
+                    secret_name: Some(TRUSTEE_AUTH_SECRET.to_string()),
+                    items: Some(vec![KeyToPath {
+                        key: "public.pub".to_string(),
+                        path: "public.pub".to_string(),
+                        ..Default::default()
+                    }]),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -663,6 +719,23 @@ mod tests {
     fn test_generate_luks_key_returns_correct_size() {
         let jwk: ClevisKey = serde_json::from_slice(&generate_luks_key().unwrap()).unwrap();
         assert_eq!(jwk.key.len(), 32);
+    }
+
+    #[test]
+    fn test_generate_ed25519_key_pair() {
+        let pair = generate_ed25519_key_pair().unwrap();
+        let priv_pem = String::from_utf8(pair.private_key_pem).unwrap();
+        let pub_pem = String::from_utf8(pair.public_key_pem).unwrap();
+        assert!(priv_pem.starts_with("-----BEGIN PRIVATE KEY-----"));
+        assert!(pub_pem.starts_with("-----BEGIN PUBLIC KEY-----"));
+    }
+
+    #[test]
+    fn test_generate_ed25519_key_pair_unique() {
+        let pair1 = generate_ed25519_key_pair().unwrap();
+        let pair2 = generate_ed25519_key_pair().unwrap();
+        assert_ne!(pair1.private_key_pem, pair2.private_key_pem);
+        assert_ne!(pair1.public_key_pem, pair2.public_key_pem);
     }
 
     fn dummy_deployment() -> Deployment {

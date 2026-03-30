@@ -17,14 +17,14 @@ chrono = "0.4.44"
 clap = { version = "4.6.0", features = ["derive"] }
 clevis-pin-trustee-lib = { git = "https://github.com/latchset/clevis-pin-trustee" }
 compute-pcrs-lib = { git = "https://github.com/trusted-execution-clusters/compute-pcrs" }
-env_logger = { version = "0.11.9", default-features = false }
+env_logger = { version = "0.11.10", default-features = false }
 http = "1.4.0"
 ignition-config = "0.6.1"
 k8s-openapi = { version = "0.27.1", features = ["v1_33", "schemars"] }
-kube = { version = "3.0.1", default-features = false, features = ["derive", "runtime", "openssl-tls"] }
+kube = { version = "3.1.0", default-features = false, features = ["derive", "runtime", "openssl-tls"] }
 log = "0.4.29"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.148"
 tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread"] }
-uuid = { version = "1.22", features = ["v4", "serde"] }
+uuid = { version = "1.23", features = ["v4", "serde"] }
 warp = { version = "0.3", default-features = false }

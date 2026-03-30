@@ -27,6 +27,7 @@ use operator::{RvContextData, create_or_info_if_exists};
 use serde::{Serialize, Serializer};
 use serde_json::{Value::String as JsonString, json};
 use std::collections::BTreeMap;
+use kbs_client::set_resource;
 
 use trusted_cluster_operator_lib::endpoints::*;
 use trusted_cluster_operator_lib::reference_values::*;
@@ -154,6 +155,31 @@ fn generate_secret_volume(id: &str) -> (Volume, VolumeMount) {
             ..Default::default()
         },
     )
+}
+
+pub async fn send_secret(client: Client, id: &str) -> Result<()> {
+    let secret_api: Api<Secret> = Api::default_namespaced(client);
+    let auth_secret = secret_api.get(TRUSTEE_AUTH_SECRET).await?;
+    let auth_data = auth_secret.data.context("Auth secret has no data")?;
+    let auth_key_bytes = auth_data
+        .get("private.key")
+        .context("Auth secret missing private.key")?;
+    let auth_key = String::from_utf8(auth_key_bytes.0.clone())
+        .context("Auth private key is not valid UTF-8")?;
+
+    let secret = secret_api.get(id).await?;
+    let secret_data = secret.data.context("Secret has no data")?;
+    let resource_bytes = secret_data
+        .get("root")
+        .context("Secret missing root key")?
+        .0
+        .clone();
+    let url = format!("http://{TRUSTEE_SERVICE}:{TRUSTEE_PORT}");
+    let path = format!("default/{id}/root");
+
+    set_resource(&url, auth_key, resource_bytes, &path, vec![]).await?;
+    info!("Sent secret {id} to KBS API");
+    Ok(())
 }
 
 pub async fn mount_secret(client: Client, id: &str) -> Result<()> {

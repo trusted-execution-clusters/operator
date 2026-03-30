@@ -23,6 +23,8 @@ RUN sed -i 's/members = .*/members = ["lib", "operator"]/' Cargo.toml && \
 # In debug builds, build dependencies to avoid full rebuild.
 RUN if [ "$build_type" = debug ]; then cargo build -p operator; fi
 
+RUN dnf install -y perl-FindBin perl-core
+
 # Target build stage
 COPY operator/src operator/src
 RUN cargo build -p operator $(if [ "$build_type" = release ]; then echo --release; fi)

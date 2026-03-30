@@ -16,7 +16,7 @@ anyhow = "1.0.102"
 chrono = "0.4.44"
 clap = { version = "4.6.0", features = ["derive"] }
 clevis-pin-trustee-lib = { git = "https://github.com/latchset/clevis-pin-trustee" }
-compute-pcrs-lib = { git = "https://github.com/trusted-execution-clusters/compute-pcrs" }
+compute-pcrs-lib = { git = "https://github.com/trusted-execution-clusters/compute-pcrs", rev = "1e7b9f74206e436d1426c335e30b2f1a6bd1681e"}
 env_logger = { version = "0.11.9", default-features = false }
 http = "1.4.0"
 ignition-config = "0.6.1"

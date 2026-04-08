@@ -1,4 +1,4 @@
-# Trusted Execution Cluster Operator (trusted-cluster-operator)
+# Trusted Execution Cluster Operator (trusted-cluster-operator) 
 
 This repository contains a Kubernetes operator for managing Trusted Execution Clusters. The operator introduces a
 `TrustedExecutionCluster` Custom Resource Definition (CRD) which allows users to declaratively manage the configuration

@@ -47,6 +47,8 @@ struct ClusterContext {
     client: Client,
     /// UID of cluster that watchers are based on
     uid: Mutex<Option<String>>,
+    /// Handles for reference value controller tasks, aborted on TEC recreation
+    rv_handles: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 fn is_installed(status: Option<TrustedExecutionClusterStatus>) -> bool {
@@ -77,6 +79,12 @@ async fn launch_rv_watchers(
         warn!("Failed to acquire lock on context UID store");
     }
     if launch_watchers {
+        // Abort any previously spawned controllers before launching new ones
+        if let Ok(mut handles) = ctx.rv_handles.lock() {
+            for handle in handles.drain(..) {
+                handle.abort();
+            }
+        }
         info!(
             "First registration of TrustedExecutionCluster {name} by this operator. \
              Launching reference value watchers."
@@ -92,8 +100,12 @@ async fn launch_rv_watchers(
             owner_reference: owner_reference.clone(),
             pcrs_compute_image,
         };
-        reference_values::launch_rv_image_controller(rv_ctx.clone()).await;
-        reference_values::launch_rv_job_controller(rv_ctx.clone()).await;
+        let image_handle = reference_values::launch_rv_image_controller(rv_ctx.clone()).await;
+        let job_handle = reference_values::launch_rv_job_controller(rv_ctx.clone()).await;
+        if let Ok(mut handles) = ctx.rv_handles.lock() {
+            handles.push(image_handle);
+            handles.push(job_handle);
+        }
     }
     Ok(launch_watchers)
 }
@@ -282,6 +294,7 @@ async fn main() -> Result<()> {
     let ctx = Arc::new(ClusterContext {
         client: kube_client,
         uid: Mutex::new(None),
+        rv_handles: Mutex::new(Vec::new()),
     });
     Controller::new(cl, watcher::Config::default())
         .run(reconcile, controller_error_policy, ctx)
@@ -305,6 +318,7 @@ mod tests {
         ClusterContext {
             client,
             uid: Mutex::new(None),
+            rv_handles: Mutex::new(Vec::new()),
         }
     }
 

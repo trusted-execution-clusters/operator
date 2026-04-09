@@ -10,13 +10,15 @@ PLATFORM ?= kind
 
 KUBECTL=kubectl
 INTEGRATION_TEST_THREADS ?= 1
+# Azure CI only: which image to use as Kind host
+KIND_HOST_URN = RedHat:RHEL:10-lvm-gen2:10.1.2026022409
 
 LOCALBIN ?= $(shell pwd)/bin
 CONTROLLER_TOOLS_VERSION ?= $(shell go list -m -f '{{.Version}}' sigs.k8s.io/controller-tools)
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen-$(CONTROLLER_TOOLS_VERSION)
 YQ_VERSION ?= $(shell go list -m -f '{{.Version}}' github.com/mikefarah/yq/v4)
 YQ ?= $(LOCALBIN)/yq-$(YQ_VERSION)
-KOPIUM_VERSION ?= $(shell cargo metadata --format-version 1 | jq -r '.resolve.nodes[] | select(.deps[]?.name == "kopium") | .deps[] | select(.name == "kopium") | .pkg | split("@")[1]')
+KOPIUM_VERSION ?= $(shell grep kopium lib/Cargo.toml | sed -E 's/.*"(.*)"/\1/')
 KOPIUM ?= $(LOCALBIN)/kopium-$(KOPIUM_VERSION)
 
 REGISTRY ?= quay.io/trusted-execution-clusters
@@ -98,11 +100,16 @@ cluster-down:
 CONTAINER_CLI ?= podman
 RUNTIME ?= podman
 
-image:
+operator-image:
 	$(CONTAINER_CLI) build $(IMAGE_BUILD_OPTIONS) -t $(OPERATOR_IMAGE) -f Containerfile .
+compute-pcrs-image:
 	$(CONTAINER_CLI) build $(IMAGE_BUILD_OPTIONS) -t $(COMPUTE_PCRS_IMAGE) -f compute-pcrs/Containerfile .
+reg-server-image:
 	$(CONTAINER_CLI) build $(IMAGE_BUILD_OPTIONS) -t $(REG_SERVER_IMAGE) -f register-server/Containerfile .
+attestation-key-register-image:
 	$(CONTAINER_CLI) build $(IMAGE_BUILD_OPTIONS) -t $(ATTESTATION_KEY_REGISTER_IMAGE) -f attestation-key-register/Containerfile .
+
+image: operator-image compute-pcrs-image reg-server-image attestation-key-register-image
 
 push: image
 	$(CONTAINER_CLI) push $(OPERATOR_IMAGE) $(PUSH_FLAGS)
@@ -200,12 +207,9 @@ test: crds-rs
 test-release: crds-rs
 	cargo test --workspace --bins --release
 
-ENABLE_ATTESTATION_KEY_REGISTRATION ?= true
-
 integration-tests: generate trusted-cluster-gen crds-rs
 	RUST_LOG=info REGISTRY=$(REGISTRY) TAG=$(TAG) \
 		TRUSTEE_IMAGE=$(TRUSTEE_IMAGE) APPROVED_IMAGE=$(APPROVED_IMAGE) TEST_IMAGE=$(TEST_IMAGE) \
-		ENABLE_ATTESTATION_KEY_REGISTRATION=$(ENABLE_ATTESTATION_KEY_REGISTRATION) \
 		cargo test --test trusted_execution_cluster --test attestation \
 		--features virtualization -- --nocapture --test-threads=$(INTEGRATION_TEST_THREADS)
 
@@ -222,6 +226,7 @@ $(KOPIUM): $(LOCALBIN)
 	$(call cargo-install-tool,$(KOPIUM),kopium,$(KOPIUM_VERSION))
 
 build-tools: $(CONTROLLER_GEN) $(KOPIUM)
+yq: $(YQ)
 
 define go-install-tool
 [ -f "$(1)" ] || { \

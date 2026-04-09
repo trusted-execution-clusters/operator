@@ -16,4 +16,5 @@ import (
 	_ "github.com/openshift/api/route/v1"
 	_ "github.com/projectcalico/api/pkg/lib/numorstring"
 	_ "sigs.k8s.io/controller-tools/cmd/controller-gen"
+	_ "sigs.k8s.io/kind"
 )

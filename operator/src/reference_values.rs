@@ -134,7 +134,7 @@ async fn job_reconcile(job: Arc<Job>, ctx: Arc<RvContextData>) -> Result<Action,
     Ok(Action::await_change())
 }
 
-pub async fn launch_rv_job_controller(ctx: RvContextData) {
+pub async fn launch_rv_job_controller(ctx: RvContextData) -> tokio::task::JoinHandle<()> {
     let jobs: Api<Job> = Api::default_namespaced(ctx.client.clone());
     let watcher = watcher::Config {
         label_selector: Some(format!("{JOB_LABEL_KEY}={PCR_COMMAND_NAME}")),
@@ -144,7 +144,7 @@ pub async fn launch_rv_job_controller(ctx: RvContextData) {
         Controller::new(jobs, watcher)
             .run(job_reconcile, controller_error_policy, Arc::new(ctx))
             .for_each(controller_info),
-    );
+    )
 }
 
 // Name job by sanitized image name, plus a hash to disambiguate
@@ -257,6 +257,19 @@ async fn image_add_reconcile(
     let kube_client = ctx.client.clone();
     let name = image.metadata.name.as_ref().unwrap();
 
+    let clusters: Api<TrustedExecutionCluster> = Api::default_namespaced(kube_client.clone());
+    let cluster_name = &ctx.owner_reference.name;
+    if let Err(kube::Error::Api(ae)) = clusters.get(cluster_name).await
+        && ae.code == 404
+    {
+        info!(
+            "Image reconciler was registered with TrustedExecutionCluster {cluster_name}, \
+             but it did not exist. Creating a new TrustedExecutionCluster will \
+             trigger a fresh reconciler. Requeueing..."
+        );
+        return Ok(Action::await_change());
+    }
+
     // Adopt the image by adding TEC as owner reference if not already owned
     let tec_uid = &ctx.owner_reference.uid;
     let already_owned = image
@@ -307,13 +320,13 @@ async fn image_add_reconcile(
     Ok(action)
 }
 
-pub async fn launch_rv_image_controller(ctx: RvContextData) {
+pub async fn launch_rv_image_controller(ctx: RvContextData) -> tokio::task::JoinHandle<()> {
     let images: Api<ApprovedImage> = Api::default_namespaced(ctx.client.clone());
     tokio::spawn(
         Controller::new(images, Default::default())
             .run(image_reconcile, controller_error_policy, Arc::new(ctx))
             .for_each(controller_info),
-    );
+    )
 }
 
 pub async fn handle_new_image(

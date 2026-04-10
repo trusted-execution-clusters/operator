@@ -104,7 +104,9 @@ async fn reconcile(
 ) -> Result<Action, ControllerError> {
     let generation = cluster.metadata.generation;
     let known_address = cluster.spec.public_trustee_addr.is_some();
-    let address_condition = known_trustee_address_condition(known_address, generation);
+    let existing_status = &cluster.status;
+    let address_condition =
+        known_trustee_address_condition(known_address, generation, existing_status);
     let mut conditions = Some(vec![address_condition]);
 
     let kube_client = ctx.client.clone();
@@ -114,7 +116,8 @@ async fn reconcile(
 
     if cluster.metadata.deletion_timestamp.is_some() {
         info!("Registered deletion of TrustedExecutionCluster {name}");
-        let condition = installed_condition(NOT_INSTALLED_REASON_UNINSTALLING, generation);
+        let uninstalling_reason = NOT_INSTALLED_REASON_UNINSTALLING;
+        let condition = installed_condition(uninstalling_reason, generation, existing_status);
         conditions.as_mut().unwrap().push(condition);
         update_status!(clusters, name, TrustedExecutionClusterStatus { conditions })?;
         return Ok(Action::await_change());
@@ -134,7 +137,8 @@ async fn reconcile(
             "More than one TrustedExecutionCluster found in namespace {namespace}. \
              trusted-cluster-operator does not support more than one TrustedExecutionCluster. Requeueing...",
         );
-        let condition = installed_condition(NOT_INSTALLED_REASON_NON_UNIQUE, generation);
+        let condition =
+            installed_condition(NOT_INSTALLED_REASON_NON_UNIQUE, generation, existing_status);
         conditions.as_mut().unwrap().push(condition);
         update_status!(clusters, name, TrustedExecutionClusterStatus { conditions })?;
         return Ok(Action::requeue(Duration::from_secs(60)));
@@ -142,7 +146,8 @@ async fn reconcile(
 
     info!("Setting up TrustedExecutionCluster {name}");
     let mut installing = conditions.clone();
-    let condition = installed_condition(NOT_INSTALLED_REASON_INSTALLING, generation);
+    let installing_reason = NOT_INSTALLED_REASON_INSTALLING;
+    let condition = installed_condition(installing_reason, generation, existing_status);
     installing.as_mut().unwrap().push(condition);
     let status = TrustedExecutionClusterStatus {
         conditions: installing,
@@ -152,7 +157,7 @@ async fn reconcile(
     install_trustee_configuration(kube_client.clone(), &cluster).await?;
     install_register_server(kube_client.clone(), &cluster).await?;
     install_attestation_key_register(kube_client, &cluster).await?;
-    let condition = installed_condition(INSTALLED_REASON, generation);
+    let condition = installed_condition(INSTALLED_REASON, generation, existing_status);
     conditions.as_mut().unwrap().push(condition);
     update_status!(clusters, name, TrustedExecutionClusterStatus { conditions })?;
     Ok(Action::await_change())

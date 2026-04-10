@@ -5,6 +5,7 @@
 use compute_pcrs_lib::{Part, Pcr};
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{ConfigMap, Secret};
+use kube::api::ObjectMeta;
 use kube::{Api, api::DeleteParams};
 use std::time::Duration;
 use trusted_cluster_operator_lib::reference_values::ImagePcrs;
@@ -431,6 +432,30 @@ async fn test_attestation_key_lifecycle() -> anyhow::Result<()> {
 
     test_ctx.cleanup().await?;
 
+    Ok(())
+}
+}
+
+named_test! {
+async fn test_uniqueness_webhook() -> anyhow::Result<()> {
+    let test_ctx = setup!().await?;
+    let client = test_ctx.client();
+    let namespace = test_ctx.namespace();
+    let tec_name = "trusted-execution-cluster";
+
+    let tec_api: Api<TrustedExecutionCluster> = Api::namespaced(client.clone(), namespace);
+    let tec = TrustedExecutionCluster {
+        metadata: ObjectMeta {
+            name: Some(format!("{tec_name}1")),
+            ..Default::default()
+        },
+        spec: Default::default(),
+        status: Default::default(),
+    };
+    let result = tec_api.create(&Default::default(), &tec).await;
+    assert!(result.is_err());
+
+    test_ctx.cleanup().await?;
     Ok(())
 }
 }

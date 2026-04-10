@@ -12,6 +12,7 @@ trusted-cluster-gen
 /config/deploy
 /config/rbac/role.yaml
 /config/rbac/kustomization.yaml
+/config/webhook
 /lib/src/kopium
 /target
 bundle/manifests/

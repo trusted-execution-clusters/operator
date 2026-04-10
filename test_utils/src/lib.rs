@@ -601,6 +601,13 @@ impl TestContext {
             kustomize = true
         );
 
+        let webhook_dir = workspace_root.join("config/webhook");
+        kube_apply!(
+            webhook_dir.to_str().unwrap(),
+            &self.test_name,
+            "Applying webhooks"
+        );
+
         let manifests_path = Path::new(&self.manifests_dir);
         let operator_manifest_path = manifests_path.join("operator.yaml");
         let operator_manifest_str = operator_manifest_path.to_str().unwrap();

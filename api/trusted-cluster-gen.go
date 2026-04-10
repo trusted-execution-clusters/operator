@@ -18,6 +18,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/yaml"
 )
 
@@ -81,6 +82,9 @@ func generateOperator(args *Args) error {
 	labels := map[string]string{"app": name}
 	replicas := int32(1)
 
+	webhookCertSecret := name + "-webhook-cert"
+	webhookCertDir := "/etc/webhook/tls"
+
 	templateSpec := corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels: labels,
@@ -92,6 +96,30 @@ func generateOperator(args *Args) error {
 					Name:    name,
 					Image:   args.image,
 					Command: []string{"/usr/bin/operator"},
+					Ports: []corev1.ContainerPort{
+						{
+							Name:          "webhook-server",
+							ContainerPort: 9443,
+							Protocol:      corev1.ProtocolTCP,
+						},
+					},
+					VolumeMounts: []corev1.VolumeMount{
+						{
+							Name:      "webhook-certs",
+							MountPath: webhookCertDir,
+							ReadOnly:  true,
+						},
+					},
+				},
+			},
+			Volumes: []corev1.Volume{
+				{
+					Name: "webhook-certs",
+					VolumeSource: corev1.VolumeSource{
+						Secret: &corev1.SecretVolumeSource{
+							SecretName: webhookCertSecret,
+						},
+					},
 				},
 			},
 		},
@@ -119,8 +147,33 @@ func generateOperator(args *Args) error {
 		return fmt.Errorf("failed to marshal deployment: %w", err)
 	}
 
+	webhookService := &corev1.Service{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "Service",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name + "-webhook",
+			Namespace: args.namespace,
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: labels,
+			Ports: []corev1.ServicePort{
+				{
+					Port:       443,
+					TargetPort: intstr.FromInt32(9443),
+					Protocol:   corev1.ProtocolTCP,
+				},
+			},
+		},
+	}
+	webhookServiceYAML, err := yaml.Marshal(webhookService)
+	if err != nil {
+		return fmt.Errorf("failed to marshal webhook service: %w", err)
+	}
+
 	outputPath := filepath.Join(args.outputDir, "operator.yaml")
-	operatorResources := []string{string(nsYAML), string(operatorYAML)}
+	operatorResources := []string{string(nsYAML), string(operatorYAML), string(webhookServiceYAML)}
 	if err := writeResources(outputPath, operatorResources); err != nil {
 		return fmt.Errorf("failed to write %s: %v", outputPath, err)
 	}

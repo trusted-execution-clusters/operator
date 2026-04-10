@@ -27,6 +27,7 @@ mod register_server;
 #[cfg(test)]
 mod test_utils;
 mod trustee;
+mod webhook;
 
 use crate::conditions::*;
 use operator::*;
@@ -278,6 +279,8 @@ async fn main() -> Result<()> {
     attestation_key_register::launch_ak_controller(kube_client.clone()).await;
     attestation_key_register::launch_machine_ak_controller(kube_client.clone()).await;
     attestation_key_register::launch_secret_ak_controller(kube_client.clone()).await;
+
+    tokio::spawn(webhook::run_webhook_server());
 
     let ctx = Arc::new(ClusterContext {
         client: kube_client,

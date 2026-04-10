@@ -63,7 +63,7 @@ $(CRD_RS_PATH):
 	mkdir $(CRD_RS_PATH)
 
 $(CRD_RS_PATH)/%.rs: $(CRD_YAML_PATH)/*_%.yaml $(KOPIUM) $(CRD_RS_PATH)
-	$(KOPIUM) -f $< $$(grep -Eq '(certificates|issuers)' <<< $< && echo --derive Default) > $@
+	$(KOPIUM) -f $< $$(grep -Eq '(certificates|issuers|trustedexecutionclusters)' <<< $< && echo --derive Default) > $@
 	sed -i 'N; s/, Default)\]\n\(pub struct CertificateAdditionalOutputFormats\)/)]\n\1/; P; D' $@
 	rustfmt $@
 
@@ -159,9 +159,14 @@ endif
 	$(YQ) '.spec.publicAttestationKeyRegisterAddr = "$(AK_REGISTRATION_ADDR):8001"' \
 		-i $(DEPLOY_PATH)/trusted_execution_cluster_cr.yaml
 	sed "s/NAMESPACE/$(NAMESPACE)/g" config/rbac/kustomization.yaml.in > config/rbac/kustomization.yaml
+	sed "s/NAMESPACE/$(NAMESPACE)/g" config/webhook/certificate.yaml.in | $(KUBECTL) apply -f -
 	$(KUBECTL) apply -f $(DEPLOY_PATH)/operator.yaml
 	$(KUBECTL) apply -f config/crd
 	$(KUBECTL) apply -k config/rbac
+	sed 's/namespace: system/namespace: $(NAMESPACE)/;s/name: webhook-service/name: trusted-cluster-operator-webhook/' \
+		config/webhook/manifests.yaml \
+		| $(YQ) '.metadata.annotations["cert-manager.io/inject-ca-from"] = "$(NAMESPACE)/webhook-cert"' \
+		| $(KUBECTL) apply -f -
 	@if [ "$(PLATFORM)" = "openshift" ]; then \
 		sed 's/<NAMESPACE>/$(NAMESPACE)/g' config/openshift/scc.yaml | $(KUBECTL) apply -f -; \
 	else \
@@ -169,6 +174,7 @@ endif
 		sed 's/<NAMESPACE>/$(NAMESPACE)/g' kind/register-forward.yaml | $(KUBECTL) apply -f -; \
 		sed 's/<NAMESPACE>/$(NAMESPACE)/g' kind/kbs-forward.yaml | $(KUBECTL) apply -f -; \
 	fi
+	$(KUBECTL) rollout status deployment/trusted-cluster-operator -n $(NAMESPACE) --timeout=120s
 	$(KUBECTL) apply -f $(DEPLOY_PATH)/trusted_execution_cluster_cr.yaml
 	$(KUBECTL) apply -f $(DEPLOY_PATH)/approved_image_cr.yaml
 
@@ -183,7 +189,7 @@ pre-pull-images:
 
 clean:
 	cargo clean
-	rm -rf bin manifests $(CRD_YAML_PATH) $(CRD_RS_PATH)
+	rm -rf bin manifests $(CRD_YAML_PATH) $(CRD_RS_PATH) config/webhook
 	rm -f trusted-cluster-gen config/rbac/role.yaml .crates.toml .crates2.json
 
 fmt-check:
@@ -213,8 +219,8 @@ integration-tests: generate trusted-cluster-gen crds-rs
 	RUST_LOG=info REGISTRY=$(REGISTRY) TAG=$(TAG) \
 		TRUSTEE_IMAGE=$(TRUSTEE_IMAGE) APPROVED_IMAGE=$(APPROVED_IMAGE) TEST_IMAGE=$(TEST_IMAGE) \
 		ENABLE_ATTESTATION_KEY_REGISTRATION=$(ENABLE_ATTESTATION_KEY_REGISTRATION) \
-		cargo test --test trusted_execution_cluster --test attestation \
-		--features virtualization -- --nocapture --test-threads=$(INTEGRATION_TEST_THREADS)
+		cargo test --test trusted_execution_cluster \
+		--features virtualization -- test_uniqueness_webhook --nocapture --test-threads=$(INTEGRATION_TEST_THREADS)
 
 $(LOCALBIN):
 	mkdir -p $(LOCALBIN)

@@ -10,6 +10,8 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+axum.workspace = true
+axum-server.workspace = true
 base64 = "0.22.1"
 chrono.workspace = true
 clevis-pin-trustee-lib.workspace = true

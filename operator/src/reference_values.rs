@@ -299,7 +299,7 @@ async fn image_add_reconcile(
             (action, NOT_COMMITTED_REASON_FAILED)
         }
     };
-    let committed = committed_condition(reason, image.metadata.generation);
+    let committed = committed_condition(reason, image.metadata.generation, &image.status);
     let conditions = Some(vec![committed]);
     let images: Api<ApprovedImage> = Api::default_namespaced(kube_client);
     update_status!(images, &name, ApprovedImageStatus { conditions })

@@ -74,7 +74,7 @@ async fn main() -> Result<()> {
 
     let approved_images: Api<ApprovedImage> = Api::default_namespaced(client);
     let image = approved_images.get(&args.resource_name).await?;
-    let committed = committed_condition(INSTALLED_REASON, image.metadata.generation);
+    let committed = committed_condition(INSTALLED_REASON, image.metadata.generation, &None);
     let conditions = Some(vec![committed]);
     let status = ApprovedImageStatus { conditions };
     update_status!(approved_images, &args.resource_name, status)?;

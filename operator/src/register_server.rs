@@ -178,7 +178,12 @@ async fn keygen_reconcile(
                     }
                 }
 
-                // TODO: Add deletion of the secret from the trustee as well, once the trustee supports it
+                trustee::delete_secret(kube_client, id).await.map_err(|e| {
+                    finalizer::Error::<ControllerError>::CleanupFailed(anyhow!(
+                        "failed to delete secret for machine {id}: {e}"
+                    )
+                    .into())
+                })?;
                 Ok(Action::await_change())
             }
         }

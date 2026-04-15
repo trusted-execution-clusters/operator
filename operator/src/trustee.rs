@@ -27,7 +27,7 @@ use operator::{RvContextData, create_or_info_if_exists};
 use serde::{Serialize, Serializer};
 use serde_json::{Value::String as JsonString, json};
 use std::collections::BTreeMap;
-use kbs_client::set_resource;
+use kbs_client;
 
 use trusted_cluster_operator_lib::endpoints::*;
 use trusted_cluster_operator_lib::reference_values::*;
@@ -139,24 +139,6 @@ fn generate_luks_key() -> Result<Vec<u8>> {
     serde_json::to_vec(&jwk).map_err(Into::into)
 }
 
-fn generate_secret_volume(id: &str) -> (Volume, VolumeMount) {
-    (
-        Volume {
-            name: id.to_string(),
-            secret: Some(SecretVolumeSource {
-                secret_name: Some(id.to_string()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        },
-        VolumeMount {
-            name: id.to_string(),
-            mount_path: format!("{TRUSTEE_SECRETS_PATH}/{id}"),
-            ..Default::default()
-        },
-    )
-}
-
 pub async fn send_secret(client: Client, id: &str) -> Result<()> {
     let secret_api: Api<Secret> = Api::default_namespaced(client);
     let auth_secret = secret_api.get(TRUSTEE_AUTH_SECRET).await?;
@@ -176,60 +158,26 @@ pub async fn send_secret(client: Client, id: &str) -> Result<()> {
         .clone();
     let url = format!("http://{TRUSTEE_SERVICE}:{TRUSTEE_PORT}");
     let path = format!("default/{id}/root");
-
-    set_resource(&url, auth_key, resource_bytes, &path, vec![]).await?;
-    info!("Sent secret {id} to KBS API");
+    info!("Sending secret {id} to KBS API...");
+    kbs_client::set_resource(&url, auth_key, resource_bytes, &path, vec![]).await?;
+    info!("Secret {id} sent successfully");
     Ok(())
 }
 
-pub async fn mount_secret(client: Client, id: &str) -> Result<()> {
-    let result = do_mount_secret(client, id, true).await;
-    info!("Mounted secret {id} to {TRUSTEE_DEPLOYMENT}");
-    result
-}
-
-pub async fn unmount_secret(client: Client, id: &str) -> Result<()> {
-    let result = do_mount_secret(client, id, false).await;
-    info!("Unmounted secret {id} from {TRUSTEE_DEPLOYMENT}");
-    result
-}
-
-pub async fn do_mount_secret(client: Client, id: &str, add: bool) -> Result<()> {
-    let deployments: Api<Deployment> = Api::default_namespaced(client);
-    let mut deployment = deployments.get(TRUSTEE_DEPLOYMENT).await?;
-
-    let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no spec");
-    let depl_spec = deployment.spec.as_mut().context(err)?;
-    let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no pod spec");
-    let pod_spec = depl_spec.template.spec.as_mut().context(err)?;
-    let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no containers");
-    let container = pod_spec.containers.get_mut(0).context(err)?;
-    let vol_mounts = container.volume_mounts.get_or_insert_default();
-
-    if add {
-        let (volume, volume_mount) = generate_secret_volume(id);
-        pod_spec.volumes.get_or_insert_default().push(volume);
-        vol_mounts.push(volume_mount);
-    } else {
-        let vol_result = pod_spec.volumes.as_mut().and_then(|vs| {
-            let pos = vs.iter().position(|v| v.name == id);
-            pos.map(|p| vs.swap_remove(p))
-        });
-        if vol_result.is_none() {
-            info!("Secret {id} was to be dropped, but volume had already been removed");
-        }
-        let vol_mount_result = container.volume_mounts.as_mut().and_then(|vms| {
-            let pos = vms.iter().position(|v| v.name == id);
-            pos.map(|p| vms.swap_remove(p))
-        });
-        if vol_mount_result.is_none() {
-            info!("Secret {id} was to be dropped, but volume mount had already been removed");
-        }
-    }
-
-    deployments
-        .replace(TRUSTEE_DEPLOYMENT, &Default::default(), &deployment)
-        .await?;
+pub async fn delete_secret(client: Client, id: &str) -> Result<()> {
+    let secret_api: Api<Secret> = Api::default_namespaced(client);
+    let auth_secret = secret_api.get(TRUSTEE_AUTH_SECRET).await?;
+    let auth_data = auth_secret.data.context("Auth secret has no data")?;
+    let auth_key_bytes = auth_data
+        .get("private.key")
+        .context("Auth secret missing private.key")?;
+    let auth_key = String::from_utf8(auth_key_bytes.0.clone())
+        .context("Auth private key is not valid UTF-8")?;
+    let url = format!("http://{TRUSTEE_SERVICE}:{TRUSTEE_PORT}");
+    let path = format!("default/{id}/root");
+    info!("Deleting secret {id} to KBS API...");
+    kbs_client::delete_resource(&url, auth_key, &path, vec![]).await?;
+    info!("Secret {id} deleted successfully");
     Ok(())
 }
 
@@ -629,7 +577,6 @@ mod tests {
     use super::*;
     use crate::test_utils::*;
     use http::{Method, Request, StatusCode};
-    use kube::client::Body;
     use trusted_cluster_operator_test_utils::mock_client::*;
 
     #[test]
@@ -779,100 +726,6 @@ mod tests {
             }),
             ..Default::default()
         }
-    }
-
-    #[tokio::test]
-    async fn test_mount_secret_success() {
-        let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
-            (0, &Method::GET) | (1, &Method::PUT) => {
-                Ok(serde_json::to_string(&dummy_deployment()).unwrap())
-            }
-            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
-        };
-        count_check!(2, clos, |client| {
-            assert!(mount_secret(client, "id").await.is_ok());
-        });
-    }
-
-    #[tokio::test]
-    async fn test_mount_secret_no_depl() {
-        let clos = async |_, _| Err(StatusCode::NOT_FOUND);
-        count_check!(1, clos, |client| {
-            assert!(mount_secret(client, "id").await.is_err());
-        });
-    }
-
-    #[tokio::test]
-    async fn test_mount_secret_no_spec() {
-        let clos = async |_, _| {
-            let mut depl = dummy_deployment();
-            depl.spec = None;
-            Ok(serde_json::to_string(&depl).unwrap())
-        };
-        count_check!(1, clos, |client| {
-            let err = mount_secret(client, "id").await.err().unwrap();
-            assert!(err.to_string().contains("but had no spec"));
-        });
-    }
-
-    #[tokio::test]
-    async fn test_mount_secret_no_pod_spec() {
-        let clos = async |_, _| {
-            let mut depl = dummy_deployment();
-            let spec = depl.spec.as_mut().unwrap();
-            spec.template.spec = None;
-            Ok(serde_json::to_string(&depl).unwrap())
-        };
-        count_check!(1, clos, |client| {
-            let err = mount_secret(client, "id").await.err().unwrap();
-            assert!(err.to_string().contains("but had no pod spec"));
-        });
-    }
-
-    #[tokio::test]
-    async fn test_mount_secret_no_containers() {
-        let clos = async |_, _| {
-            let mut depl = dummy_deployment();
-            let spec = depl.spec.as_mut().unwrap();
-            let pod_spec = spec.template.spec.as_mut().unwrap();
-            pod_spec.containers = vec![];
-            Ok(serde_json::to_string(&depl).unwrap())
-        };
-        count_check!(1, clos, |client| {
-            let err = mount_secret(client, "id").await.err().unwrap();
-            assert!(err.to_string().contains("but had no containers"));
-        });
-    }
-
-    #[tokio::test]
-    async fn test_unmount_secret() {
-        let clos = async |req: Request<Body>, ctr| match (ctr, req.method()) {
-            (0, &Method::GET) => {
-                let mut depl = dummy_deployment();
-                let spec = depl.spec.as_mut().unwrap();
-                let pod_spec = spec.template.spec.as_mut().unwrap();
-                pod_spec.volumes = Some(vec![Volume {
-                    name: "id".to_string(),
-                    ..Default::default()
-                }]);
-                let container = pod_spec.containers.get_mut(0).unwrap();
-                container.volume_mounts = Some(vec![VolumeMount {
-                    name: "id".to_string(),
-                    ..Default::default()
-                }]);
-                Ok(serde_json::to_string(&depl).unwrap())
-            }
-            (1, &Method::PUT) => {
-                let bytes = req.into_body().collect_bytes().await.unwrap().to_vec();
-                let body = String::from_utf8_lossy(&bytes);
-                assert!(!body.contains("id"));
-                Ok(serde_json::to_string(&dummy_deployment()).unwrap())
-            }
-            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
-        };
-        count_check!(2, clos, |client| {
-            assert!(unmount_secret(client, "id").await.is_ok());
-        });
     }
 
     #[tokio::test]

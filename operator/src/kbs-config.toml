@@ -33,8 +33,7 @@ policy_engine = "opa"
 
 [[plugins]]
 name = "resource"
-type = "LocalFs"
-dir_path = "/opt/trustee/kbs-repository"
+type = "kvstorage"
 
 [policy_engine]
 policy_path = "/opt/trustee/policy.rego"

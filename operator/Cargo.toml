@@ -30,7 +30,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror = "2.0.18"
 tokio.workspace = true
-kbs-client = {git = "https://github.com/confidential-containers/trustee"}
+kbs-client = {git = "https://github.com/iroykaufman/trustee/", branch = "ak-registration"}
 
 [dev-dependencies]
 http.workspace = true

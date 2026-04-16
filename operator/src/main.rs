@@ -10,6 +10,7 @@ use std::time::Duration;
 use anyhow::Result;
 use env_logger::Env;
 use futures_util::StreamExt;
+use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::watcher;
@@ -17,6 +18,7 @@ use kube::{Api, Client};
 use log::{error, info, warn};
 
 use operator::generate_owner_reference;
+use trusted_cluster_operator_lib::endpoints::TRUSTEE_DEPLOYMENT;
 use trusted_cluster_operator_lib::{TrustedExecutionCluster, TrustedExecutionClusterStatus};
 use trusted_cluster_operator_lib::{conditions::*, update_status};
 
@@ -195,9 +197,22 @@ async fn install_trustee_configuration(
         "RELATED_IMAGE_TRUSTEE",
         "quay.io/trusted-execution-clusters/key-broker-service:20260106",
     );
-    match trustee::generate_kbs_deployment(client, owner_reference, &trustee_image).await {
+    match trustee::generate_kbs_deployment(client.clone(), owner_reference, &trustee_image).await {
         Ok(_) => info!("Generate the KBS deployment"),
         Err(e) => error!("Failed to create the KBS deployment: {e}"),
+    }
+
+    // Wait for the KBS pod to be ready before syncing secrets
+    let deployments: Api<Deployment> =
+        Api::default_namespaced(client.clone());
+    match trustee::wait_for_deployment_ready(&deployments).await {
+        Ok(_) => {}
+        Err(e) => error!("Error waiting for {TRUSTEE_DEPLOYMENT} to be ready: {e}"),
+    }
+
+    match trustee::sync_all_machine_secrets(client).await {
+        Ok(_) => info!("Synced all machine secrets to KBS"),
+        Err(e) => error!("Failed to sync machine secrets to KBS: {e}"),
     }
 
     Ok(())

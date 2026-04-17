@@ -7,6 +7,7 @@ use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{ConfigMap, Secret};
 use kube::{Api, api::DeleteParams};
 use std::time::Duration;
+use trusted_cluster_operator_lib::conditions::NOT_COMMITTED_REASON_PENDING;
 use trusted_cluster_operator_lib::reference_values::ImagePcrs;
 use trusted_cluster_operator_lib::{
     ApprovedImage, AttestationKey, Machine, TrustedExecutionCluster, generate_owner_reference,
@@ -431,6 +432,47 @@ async fn test_attestation_key_lifecycle() -> anyhow::Result<()> {
 
     test_ctx.cleanup().await?;
 
+    Ok(())
+}
+}
+
+named_test! {
+async fn test_nonexistent_approved_image() -> anyhow::Result<()> {
+    let test_ctx = setup!().await?;
+    let client = test_ctx.client();
+    let namespace = test_ctx.namespace();
+
+    let images: Api<ApprovedImage> = Api::namespaced(client.clone(), namespace);
+    images.create(&Default::default(), &ApprovedImage {
+        metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+            name: Some("coreos1".to_string()),
+            namespace: Some(namespace.to_string()),
+            ..Default::default()
+        },
+        spec: trusted_cluster_operator_lib::ApprovedImageSpec {
+            image: "quay.io/trusted-execution-clusters/fedora-coreos@sha256:0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+        },
+        status: None,
+    }).await?;
+
+    let poller = Poller::new()
+        .with_timeout(Duration::from_secs(30))
+        .with_interval(Duration::from_millis(500))
+        .with_error_message("ApprovedImage not created".to_string());
+    poller.poll_async(|| {
+        let api = images.clone();
+        async move {
+            let img = api.get("coreos1").await?;
+            if img.status.as_ref().and_then(|s| s.conditions.as_ref()).map(|conditions| {
+                conditions.iter().any(|c| c.reason == NOT_COMMITTED_REASON_PENDING)
+            }).unwrap_or(false) {
+                return Ok(());
+            }
+            Err(anyhow::anyhow!("ApprovedImage not yet committed"))
+        }
+    }).await?;
+
+    test_ctx.cleanup().await?;
     Ok(())
 }
 }

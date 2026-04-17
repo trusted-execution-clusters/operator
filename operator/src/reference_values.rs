@@ -9,14 +9,13 @@ use futures_util::StreamExt;
 use k8s_openapi::{
     api::{
         batch::v1::{Job, JobSpec},
-        core::v1::{
-            ConfigMap, Container, ImageVolumeSource, PodSpec, PodTemplateSpec, Volume, VolumeMount,
-        },
+        core::v1::{ConfigMap, Container, ImageVolumeSource, Volume, VolumeMount},
+        core::v1::{Pod, PodSpec, PodTemplateSpec},
     },
     apimachinery::pkg::apis::meta::v1::OwnerReference,
     jiff::Timestamp,
 };
-use kube::api::{DeleteParams, ObjectMeta};
+use kube::api::{DeleteParams, ListParams, ObjectMeta};
 use kube::runtime::{
     controller::{Action, Controller},
     finalizer,
@@ -39,6 +38,7 @@ use operator::{
 use trusted_cluster_operator_lib::{conditions::*, reference_values::*, *};
 
 const JOB_LABEL_KEY: &str = "kind";
+const APPROVED_IMAGE_ANNOTATION: &str = "approved-image";
 const PCR_COMMAND_NAME: &str = "compute-pcrs";
 const PCR_LABEL: &str = "org.coreos.pcrs";
 /// Finalizer name to discard reference values when an image is no longer approved
@@ -179,8 +179,14 @@ async fn compute_fresh_pcrs(
         },
         spec: Some(JobSpec {
             template: PodTemplateSpec {
+                metadata: Some(ObjectMeta {
+                    labels: Some(BTreeMap::from([(
+                        APPROVED_IMAGE_ANNOTATION.to_string(),
+                        resource_name.to_string(),
+                    )])),
+                    ..Default::default()
+                }),
                 spec: Some(pod_spec),
-                ..Default::default()
             },
             ..Default::default()
         }),
@@ -292,7 +298,15 @@ async fn image_add_reconcile(
     }
 
     let (action, reason) = match handle_new_image(ctx, name, &image.spec.image).await {
-        Ok(reason) => (Action::await_change(), reason),
+        Ok(reason) => {
+            let action = match reason {
+                NOT_COMMITTED_REASON_COMPUTING | NOT_COMMITTED_REASON_PENDING => {
+                    Action::requeue(Duration::from_secs(10))
+                }
+                _ => Action::await_change(),
+            };
+            (action, reason)
+        }
         Err(e) => {
             warn!("PCR computation for {name} failed: {e}");
             let action = Action::requeue(Duration::from_secs(60));
@@ -314,6 +328,17 @@ pub async fn launch_rv_image_controller(ctx: RvContextData) {
             .run(image_reconcile, controller_error_policy, Arc::new(ctx))
             .for_each(controller_info),
     );
+}
+
+async fn is_pending(client: &Client, resource_name: &str) -> Result<bool> {
+    let pods: Api<Pod> = Api::default_namespaced(client.clone());
+    let lp = ListParams::default().labels(&format!("{APPROVED_IMAGE_ANNOTATION}={resource_name}"));
+    let pod_list = pods.list(&lp).await?;
+    Ok(pod_list
+        .iter()
+        .max_by_key(|pod| pod.metadata.creation_timestamp.as_ref().map(|t| t.0))
+        .and_then(|pod| pod.status.as_ref().and_then(|s| s.phase.as_ref()))
+        .is_some_and(|phase| phase == "Pending"))
 }
 
 pub async fn handle_new_image(
@@ -344,6 +369,9 @@ pub async fn handle_new_image(
     let compute_pcrs = match label {
         Err(ref e) => {
             warn!("Fetching PCR label for {image_ref} failed: {e}. Falling back to computation.");
+            if is_pending(&ctx.client, resource_name).await? {
+                return Ok(NOT_COMMITTED_REASON_PENDING);
+            }
             true
         }
         Ok(None) => {

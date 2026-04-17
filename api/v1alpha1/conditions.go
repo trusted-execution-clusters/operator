@@ -20,6 +20,7 @@ const (
 	NotCommittedReasonComputing string = "Computing"
 	NotCommittedReasonNoDigest  string = "NoDigestGiven"
 	NotCommittedReasonFailed    string = "ComputationFailed"
+	NotCommittedReasonPending   string = "PodPending"
 
 	// Conditions for the AttestationKey
 	AttestationKeyApprovedCondition     string = "Approved"

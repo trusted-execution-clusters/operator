@@ -51,6 +51,7 @@ pub fn committed_condition(reason: &str, generation: Option<i64>) -> Condition {
                 "Image did not specify a digest. \
                  Only images with a digest are supported to avoid ambiguity."
             }
+            NOT_COMMITTED_REASON_PENDING => "Pod is pending, check pods for details",
             NOT_COMMITTED_REASON_FAILED => "Computation failed, check operator log for details",
             _ => "",
         }

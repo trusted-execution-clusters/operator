@@ -17,6 +17,7 @@ pub const COMMITTED_REASON: &str = "ImageCommitted";
 pub const NOT_COMMITTED_REASON_COMPUTING: &str = "Computing";
 pub const NOT_COMMITTED_REASON_NO_DIGEST: &str = "NoDigestGiven";
 pub const NOT_COMMITTED_REASON_FAILED: &str = "ComputationFailed";
+pub const NOT_COMMITTED_REASON_PENDING: &str = "PodPending";
 
 pub const ATTESTATION_KEY_APPROVED_CONDITION: &str = "Approved";
 pub const ATTESTATION_KEY_REGISTRATION_REASON: &str = "Registration";

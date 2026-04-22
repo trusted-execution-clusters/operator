@@ -14,6 +14,8 @@ use std::{convert::Infallible, sync::Arc};
 use tower::service_fn;
 use trusted_cluster_operator_lib::{TrustedExecutionCluster, TrustedExecutionClusterSpec};
 
+pub const TEST_UID: &str = "test-uid";
+
 #[macro_export]
 macro_rules! assert_kube_api_error {
     ($err:expr, $code:expr, $reason:expr, $message:expr, $status:expr) => {{
@@ -176,7 +178,7 @@ pub fn dummy_cluster() -> TrustedExecutionCluster {
     TrustedExecutionCluster {
         metadata: ObjectMeta {
             name: Some("test".to_string()),
-            uid: Some("uid".to_string()),
+            uid: Some(TEST_UID.to_string()),
             ..Default::default()
         },
         status: None,

@@ -52,6 +52,9 @@ Machines booting this image can now register and attest.
 
 **NB:** Updating nodes is not supported yet. Updates incur one intermediary stage of PCR values (assuming no further update on that boot) because kernel update is effective one boot _before_ shim & GRUB update.
 
+**NB:** The TrustedExecutionCluster object adopts ApprovedImages, including those that lived before it.
+This ensures that removal of a TrustedExecutionCluster acts as complete uninstallation.
+
 # Disallowing a bootable container image
 
 For the example above:

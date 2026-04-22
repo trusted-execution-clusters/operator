@@ -93,3 +93,16 @@ A reference value listing for Trustee could then look like this:
 ## Data flow
 
 ![](../pics/rv-flow.png)
+
+## Ownership
+
+Unlike `reference-values`, `ApprovedImages` can live independently of a `TrustedExecutionCluster` object.
+They can be created without one existing, and reference values are written by jobs (that the `ApprovedImages` also own) to the `image-pcrs` ConfigMap, which is created by the operator and is also independent of `TrustedExecutionClusters`.
+
+However, the `ApprovedImages` are adopted by the `TrustedExecutionCluster` object, both when created with a `TrustedExecutionCluster` existing and retroactively when created before `TrustedExecutionCluster` creation.
+This ensures that removal of a `TrustedExecutionCluster` acts as a complete uninstallation.
+Finalizers on the `ApprovedImages` ensure the PCR values are removed back out of `image-pcrs` again.
+
+## Ownership flow
+
+![](../pics/image-flow.png)

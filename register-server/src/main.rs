@@ -355,7 +355,7 @@ mod tests {
             api_version: "trusted-execution-clusters.io/v1alpha1".to_string(),
             kind: "TrustedExecutionCluster".to_string(),
             name: "test-cluster".to_string(),
-            uid: "test-uid".to_string(),
+            uid: TEST_UID.to_string(),
             controller: Some(true),
             block_owner_deletion: Some(true),
         }

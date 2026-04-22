@@ -10,7 +10,6 @@
 
 use anyhow::Result;
 use k8s_openapi::api::core::v1::{Secret, SecretVolumeSource, Volume, VolumeMount};
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
 use k8s_openapi::jiff::Timestamp;
 use kube::{Api, Client, runtime::controller::Action};
@@ -20,13 +19,6 @@ use std::{sync::Arc, time::Duration};
 
 // Re-export common functions from the lib
 pub use trusted_cluster_operator_lib::generate_owner_reference;
-
-#[derive(Clone)]
-pub struct RvContextData {
-    pub client: Client,
-    pub owner_reference: OwnerReference,
-    pub pcrs_compute_image: String,
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ControllerError {

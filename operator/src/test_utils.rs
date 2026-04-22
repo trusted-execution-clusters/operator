@@ -4,8 +4,6 @@
 
 use compute_pcrs_lib::Pcr;
 use k8s_openapi::{api::core::v1::ConfigMap, jiff::Timestamp};
-use kube::Client;
-use operator::RvContextData;
 use std::collections::BTreeMap;
 
 use crate::trustee;
@@ -51,13 +49,5 @@ pub fn dummy_pcrs_map() -> ConfigMap {
     ConfigMap {
         data: Some(data),
         ..Default::default()
-    }
-}
-
-pub fn generate_rv_ctx(client: Client) -> RvContextData {
-    RvContextData {
-        client,
-        owner_reference: Default::default(),
-        pcrs_compute_image: String::new(),
     }
 }

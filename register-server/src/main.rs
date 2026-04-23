@@ -263,10 +263,15 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{create_machine, EndpointInfo, Machine};
+    use http::{Method, Request, StatusCode};
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
     use kube::api::ObjectList;
+    use kube::api::ObjectMeta;
+    use trusted_cluster_operator_lib::MachineSpec;
     use trusted_cluster_operator_lib::TrustedExecutionCluster;
     use trusted_cluster_operator_test_utils::mock_client::*;
+    use trusted_cluster_operator_test_utils::test_error_method;
 
     fn dummy_clusters() -> ObjectList<TrustedExecutionCluster> {
         ObjectList {
@@ -328,7 +333,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_public_trustee_error() {
-        test_get_error(async |c| EndpointInfo::create(c).await.map(|_| ())).await;
+        let clos = async |c| EndpointInfo::create(c).await.map(|_| ());
+        test_error_method!(clos, Method::GET);
     }
 
     fn dummy_machine() -> Machine {
@@ -367,11 +373,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_machine_error() {
-        test_create_error(async |c| {
-            create_machine(c, "test", dummy_owner_reference())
-                .await
-                .map(|_| ())
-        })
-        .await;
+        let clos = async |c| {
+            let machine = create_machine(c, "test", dummy_owner_reference());
+            machine.await.map(|_| ())
+        };
+        test_error_method!(clos, Method::POST);
     }
 }

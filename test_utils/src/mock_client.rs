@@ -42,6 +42,17 @@ macro_rules! count_check {
     }
 }
 
+#[macro_export]
+macro_rules! test_error_method {
+    ($action:ident, $method:path) => {
+        let clos = async |req: Request<_>, _| match req.method() {
+            &$method => Err(StatusCode::INTERNAL_SERVER_ERROR),
+            _ => panic!("unexpected API interaction: {req:?}"),
+        };
+        test_error($action, clos).await;
+    };
+}
+
 pub use count_check;
 
 async fn create_response<T: Future<Output = Result<String, StatusCode>>>(
@@ -144,7 +155,7 @@ pub async fn test_create_already_exists<
     });
 }
 
-async fn test_error<
+pub async fn test_error<
     F: Fn(Client) -> S,
     S: Future<Output = anyhow::Result<T>>,
     T: Debug,
@@ -159,24 +170,6 @@ async fn test_error<
         let msg = "internal server error";
         assert_kube_api_error!(err, 500, "ServerTimeout", msg, Some(StatusSummary::Failure));
     });
-}
-
-pub async fn test_create_error<F: Fn(Client) -> S, S: Future<Output = anyhow::Result<()>>>(
-    create: F,
-) {
-    let clos = async |req: Request<_>, _| match req.method() {
-        &Method::POST => Err(StatusCode::INTERNAL_SERVER_ERROR),
-        _ => panic!("unexpected API interaction: {req:?}"),
-    };
-    test_error(create, clos).await;
-}
-
-pub async fn test_get_error<F: Fn(Client) -> S, S: Future<Output = anyhow::Result<()>>>(get: F) {
-    let clos = async |req: Request<_>, _| match req.method() {
-        &Method::GET => Err(StatusCode::INTERNAL_SERVER_ERROR),
-        _ => panic!("unexpected API interaction: {req:?}"),
-    };
-    test_error(get, clos).await;
 }
 
 pub fn dummy_cluster() -> TrustedExecutionCluster {

@@ -582,6 +582,7 @@ mod tests {
     use http::{Method, Request, StatusCode};
     use kube::client::Body;
     use trusted_cluster_operator_test_utils::mock_client::*;
+    use trusted_cluster_operator_test_utils::test_error_method;
 
     #[test]
     fn test_get_image_pcrs_success() {
@@ -824,7 +825,7 @@ mod tests {
     #[tokio::test]
     async fn test_generate_att_policy_error() {
         let clos = |client| generate_attestation_policy(client, Default::default());
-        test_create_error(clos).await;
+        test_error_method!(clos, Method::POST);
     }
 
     #[tokio::test]
@@ -842,7 +843,7 @@ mod tests {
     #[tokio::test]
     async fn test_generate_secret_error() {
         let clos = |client| generate_secret(client, "id", Default::default());
-        test_create_error(clos).await;
+        test_error_method!(clos, Method::POST);
     }
 
     #[tokio::test]
@@ -860,7 +861,7 @@ mod tests {
     #[tokio::test]
     async fn test_generate_trustee_data_error() {
         let clos = |client| generate_trustee_data(client, Default::default(), &None);
-        test_create_error(clos).await;
+        test_error_method!(clos, Method::POST);
     }
 
     #[tokio::test]
@@ -872,7 +873,7 @@ mod tests {
     #[tokio::test]
     async fn test_generate_kbs_service_error() {
         let clos = |client| generate_kbs_service(client, Default::default(), Some(80));
-        test_create_error(clos).await;
+        test_error_method!(clos, Method::POST);
     }
 
     #[tokio::test]
@@ -884,6 +885,6 @@ mod tests {
     #[tokio::test]
     async fn test_generate_kbs_depl_error() {
         let clos = |client| generate_kbs_deployment(client, Default::default(), "image", &None);
-        test_create_error(clos).await;
+        test_error_method!(clos, Method::POST);
     }
 }

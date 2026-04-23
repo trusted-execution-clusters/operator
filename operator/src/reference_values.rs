@@ -420,10 +420,11 @@ pub async fn disallow_image(ctx: RvContextData, resource_name: &str) -> Result<(
 mod tests {
     use super::*;
     use crate::test_utils::*;
-    use http::{Method, Request};
+    use http::{Method, Request, StatusCode};
     use k8s_openapi::api::batch::v1::JobStatus;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
     use trusted_cluster_operator_test_utils::mock_client::*;
+    use trusted_cluster_operator_test_utils::test_error_method;
 
     #[tokio::test]
     async fn test_create_pcrs_cm_success() {
@@ -440,7 +441,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_pcrs_cm_error() {
         let clos = |client| create_pcrs_config_map(client, Default::default());
-        test_create_error(clos).await;
+        test_error_method!(clos, Method::POST);
     }
 
     fn dummy_job() -> Job {
@@ -516,7 +517,7 @@ mod tests {
     #[tokio::test]
     async fn test_compute_fresh_pcrs_error() {
         let clos = |client| compute_fresh_pcrs(generate_rv_ctx(client), "image", "registry");
-        test_create_error(clos).await;
+        test_error_method!(clos, Method::POST);
     }
 
     // handle_new_image is an inherently online function and not tested here.

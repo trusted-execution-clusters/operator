@@ -208,7 +208,9 @@ pub async fn launch_keygen_controller(client: Client) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http::{Method, Request, StatusCode};
     use trusted_cluster_operator_test_utils::mock_client::*;
+    use trusted_cluster_operator_test_utils::test_error_method;
 
     #[tokio::test]
     async fn test_create_reg_server_depl_success() {
@@ -221,7 +223,7 @@ mod tests {
     async fn test_create_reg_server_depl_error() {
         let clos =
             |client| create_register_server_deployment(client, Default::default(), "image", &None);
-        test_create_error(clos).await;
+        test_error_method!(clos, Method::POST);
     }
 
     #[tokio::test]
@@ -233,6 +235,6 @@ mod tests {
     #[tokio::test]
     async fn test_create_reg_server_svc_error() {
         let clos = |client| create_register_server_service(client, Default::default(), Some(80));
-        test_create_error(clos).await;
+        test_error_method!(clos, Method::POST);
     }
 }

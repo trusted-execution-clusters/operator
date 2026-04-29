@@ -18,12 +18,15 @@ use k8s_openapi::apimachinery::pkg::{
     apis::meta::v1::{LabelSelector, OwnerReference},
     util::intstr::IntOrString,
 };
+use futures_util::StreamExt;
 use kube::{
     Api, Client, Resource,
     api::ObjectMeta,
+    runtime::{controller::{Action, Controller}, watcher},
 };
 use log::{info, warn};
-use operator::{RvContextData, create_or_info_if_exists};
+use operator::{ControllerError, RvContextData, controller_error_policy, controller_info, create_or_info_if_exists};
+use std::sync::Arc;
 use serde::{Serialize, Serializer};
 use serde_json::{Value::String as JsonString};
 use std::collections::BTreeMap;
@@ -136,9 +139,8 @@ fn generate_luks_key() -> Result<Vec<u8>> {
     };
     serde_json::to_vec(&jwk).map_err(Into::into)
 }
-
-pub async fn send_secret(client: Client, id: &str) -> Result<()> {
-    let secret_api: Api<Secret> = Api::default_namespaced(client);
+async fn get_auth_key(client: &Client) -> Result<String> {
+    let secret_api: Api<Secret> = Api::default_namespaced(client.clone());
     let auth_secret = secret_api.get(TRUSTEE_AUTH_SECRET).await?;
     let auth_data = auth_secret.data.context("Auth secret has no data")?;
     let auth_key_bytes = auth_data
@@ -146,7 +148,11 @@ pub async fn send_secret(client: Client, id: &str) -> Result<()> {
         .context("Auth secret missing private.key")?;
     let auth_key = String::from_utf8(auth_key_bytes.0.clone())
         .context("Auth private key is not valid UTF-8")?;
-
+    Ok(auth_key)
+}
+pub async fn send_secret(client: Client, id: &str) -> Result<()> {
+    let secret_api: Api<Secret> = Api::default_namespaced(client.clone());
+    let auth_key = get_auth_key(&client).await?;
     let secret = secret_api.get(id).await?;
     let secret_data = secret.data.context("Secret has no data")?;
     let resource_bytes = secret_data
@@ -163,14 +169,7 @@ pub async fn send_secret(client: Client, id: &str) -> Result<()> {
 }
 
 pub async fn delete_secret(client: Client, id: &str) -> Result<()> {
-    let secret_api: Api<Secret> = Api::default_namespaced(client);
-    let auth_secret = secret_api.get(TRUSTEE_AUTH_SECRET).await?;
-    let auth_data = auth_secret.data.context("Auth secret has no data")?;
-    let auth_key_bytes = auth_data
-        .get("private.key")
-        .context("Auth secret missing private.key")?;
-    let auth_key = String::from_utf8(auth_key_bytes.0.clone())
-        .context("Auth private key is not valid UTF-8")?;
+    let auth_key = get_auth_key(&client).await?;
     let url = format!("http://{TRUSTEE_SERVICE}:{TRUSTEE_PORT}");
     let path = format!("default/{id}/root");
     info!("Deleting secret {id} to KBS API...");
@@ -180,15 +179,7 @@ pub async fn delete_secret(client: Client, id: &str) -> Result<()> {
 }
 
 pub async fn register_ak(client: Client, ak_pub_bytes: Vec<u8>) -> Result<()> {
-    let secret_api: Api<Secret> = Api::default_namespaced(client);
-    let auth_secret = secret_api.get(TRUSTEE_AUTH_SECRET).await?;
-    let auth_data = auth_secret.data.context("Auth secret has no data")?;
-    let auth_key_bytes = auth_data
-        .get("private.key")
-        .context("Auth secret missing private.key")?;
-    let auth_key = String::from_utf8(auth_key_bytes.0.clone())
-        .context("Auth private key is not valid UTF-8")?;
-
+    let auth_key = get_auth_key(&client).await?;
     let url = format!("http://{TRUSTEE_SERVICE}:{TRUSTEE_PORT}");
     info!("Registering AK to KBS API...");
     kbs_client::set_attestation_key(&url, auth_key, ak_pub_bytes, vec![]).await?;
@@ -196,37 +187,7 @@ pub async fn register_ak(client: Client, ak_pub_bytes: Vec<u8>) -> Result<()> {
     Ok(())
 }
 
-pub async fn wait_for_deployment_ready(deployments: &Api<Deployment>) -> Result<()> {
-    let timeout = std::time::Duration::from_secs(120);
-    let poll_interval = std::time::Duration::from_secs(5);
-    let start = std::time::Instant::now();
-
-    info!("Waiting for {TRUSTEE_DEPLOYMENT} rollout to complete...");
-    loop {
-        let deployment = deployments.get(TRUSTEE_DEPLOYMENT).await?;
-        if let Some(status) = &deployment.status {
-            let desired = deployment
-                .spec
-                .as_ref()
-                .and_then(|s| s.replicas)
-                .unwrap_or(1);
-            let ready = status.ready_replicas.unwrap_or(0);
-            let updated = status.updated_replicas.unwrap_or(0);
-            if updated >= desired && ready >= desired {
-                info!("{TRUSTEE_DEPLOYMENT} rollout complete");
-                return Ok(());
-            }
-        }
-        if start.elapsed() >= timeout {
-            warn!("{TRUSTEE_DEPLOYMENT} rollout did not complete within timeout, proceeding with secret sync anyway");
-            return Ok(());
-        }
-        tokio::time::sleep(poll_interval).await;
-    }
-}
-
-
-pub async fn sync_all_machine_secrets(client: Client) -> Result<()> {
+pub async fn sync_all_machine_luks_key(client: Client) -> Result<()> {
     let secret_api: Api<Secret> = Api::default_namespaced(client.clone());
     let secret_list = secret_api.list(&Default::default()).await?;
 
@@ -246,7 +207,7 @@ pub async fn sync_all_machine_secrets(client: Client) -> Result<()> {
         .collect();
 
     info!(
-        "Syncing {} machine secrets to KBS",
+        "Syncing {} machine luks key to KBS",
         machine_secret_ids.len()
     );
     for id in &machine_secret_ids {
@@ -255,6 +216,47 @@ pub async fn sync_all_machine_secrets(client: Client) -> Result<()> {
         }
     }
     Ok(())
+}
+
+async fn trustee_deployment_reconcile(
+    deployment: Arc<Deployment>,
+    client: Arc<Client>,
+) -> Result<Action, ControllerError> {
+    if let Some(status) = &deployment.status {
+        let desired = deployment
+            .spec
+            .as_ref()
+            .and_then(|s| s.replicas)
+            .unwrap_or(1);
+        let ready = status.ready_replicas.unwrap_or(0);
+        if ready >= desired && desired > 0 {
+            info!("{TRUSTEE_DEPLOYMENT} is ready, syncing machine secrets");
+            sync_all_machine_luks_key(Arc::unwrap_or_clone(client.clone()))
+                .await
+                .map_err(ControllerError::Anyhow)?;
+            update_attestation_keys(Arc::unwrap_or_clone(client))
+                .await
+                .map_err(ControllerError::Anyhow)?;
+        }
+    }
+    Ok(Action::await_change())
+}
+
+pub async fn launch_trustee_sync_controller(client: Client) {
+    let deployments: Api<Deployment> = Api::default_namespaced(client.clone());
+    let watcher_config = watcher::Config {
+        label_selector: Some("app=kbs".to_string()),
+        ..Default::default()
+    };
+    tokio::spawn(
+        Controller::new(deployments, watcher_config)
+            .run(
+                trustee_deployment_reconcile,
+                controller_error_policy,
+                Arc::new(client),
+            )
+            .for_each(controller_info),
+    );
 }
 
 pub async fn update_attestation_keys(client: Client) -> Result<()> {
@@ -539,6 +541,7 @@ pub async fn generate_kbs_deployment(
     let deployment = Deployment {
         metadata: ObjectMeta {
             name: Some(TRUSTEE_DEPLOYMENT.to_string()),
+            labels: selector.clone(),
             owner_references: Some(vec![owner_reference]),
             ..Default::default()
         },

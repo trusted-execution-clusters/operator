@@ -2,31 +2,42 @@
 //
 // SPDX-License-Identifier: MIT
 
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
-use k8s_openapi::jiff::Timestamp;
-use trusted_cluster_operator_lib::{condition_status, conditions::*};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
+use trusted_cluster_operator_lib::{AttestationKeyStatus, TrustedExecutionClusterStatus};
+use trusted_cluster_operator_lib::{condition_status, conditions::*, transition_time};
 
-pub fn known_trustee_address_condition(known: bool, generation: Option<i64>) -> Condition {
+pub fn known_trustee_address_condition(
+    known: bool,
+    generation: Option<i64>,
+    existing_status: &Option<TrustedExecutionClusterStatus>,
+) -> Condition {
     let err = "No publicTrusteeAddr specified. Components can deploy, \
                but register-server will not be able to point to Trustee until you add an address";
     let (reason, message) = match known {
         true => (KNOWN_TRUSTEE_ADDRESS_REASON, ""),
         false => (UNKNOWN_TRUSTEE_ADDRESS_REASON, err),
     };
+    let type_ = KNOWN_TRUSTEE_ADDRESS_CONDITION;
+    let status = condition_status(known);
     Condition {
-        type_: KNOWN_TRUSTEE_ADDRESS_CONDITION.to_string(),
-        status: condition_status(known),
+        type_: type_.to_string(),
         reason: reason.to_string(),
         message: message.to_string(),
-        last_transition_time: Time(Timestamp::now()),
+        last_transition_time: transition_time(existing_status, type_, &status),
+        status,
         observed_generation: generation,
     }
 }
 
-pub fn installed_condition(reason: &str, generation: Option<i64>) -> Condition {
+pub fn installed_condition(
+    reason: &str,
+    generation: Option<i64>,
+    existing_status: &Option<TrustedExecutionClusterStatus>,
+) -> Condition {
+    let status = condition_status(reason == INSTALLED_REASON);
+    let type_ = INSTALLED_CONDITION;
     Condition {
-        type_: INSTALLED_CONDITION.to_string(),
-        status: condition_status(reason == INSTALLED_REASON),
+        type_: type_.to_string(),
         reason: reason.to_string(),
         message: match reason {
             NOT_INSTALLED_REASON_NON_UNIQUE => {
@@ -38,15 +49,21 @@ pub fn installed_condition(reason: &str, generation: Option<i64>) -> Condition {
             _ => "",
         }
         .to_string(),
-        last_transition_time: Time(Timestamp::now()),
+        last_transition_time: transition_time(existing_status, type_, &status),
+        status,
         observed_generation: generation,
     }
 }
 
-pub fn attestation_key_approved_condition(reason: &str, generation: Option<i64>) -> Condition {
+pub fn attestation_key_approved_condition(
+    reason: &str,
+    generation: Option<i64>,
+    existing_status: &Option<AttestationKeyStatus>,
+) -> Condition {
+    let status = condition_status(reason == ATTESTATION_KEY_MACHINE_APPROVE);
+    let type_ = ATTESTATION_KEY_APPROVED_CONDITION;
     Condition {
-        type_: ATTESTATION_KEY_APPROVED_CONDITION.to_string(),
-        status: condition_status(reason == ATTESTATION_KEY_MACHINE_APPROVE),
+        type_: type_.to_string(),
         reason: reason.to_string(),
         message: match reason {
             ATTESTATION_KEY_MACHINE_APPROVE => {
@@ -55,7 +72,8 @@ pub fn attestation_key_approved_condition(reason: &str, generation: Option<i64>)
             _ => "",
         }
         .to_string(),
-        last_transition_time: Time(Timestamp::now()),
+        last_transition_time: transition_time(existing_status, type_, &status),
+        status,
         observed_generation: generation,
     }
 }

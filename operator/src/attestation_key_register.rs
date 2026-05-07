@@ -204,8 +204,8 @@ async fn approve_ak(ak: &AttestationKey, machine: &Machine, client: Client) -> R
 
     if !is_approved {
         let generation = ak.metadata.generation;
-        let condition =
-            attestation_key_approved_condition(ATTESTATION_KEY_MACHINE_APPROVE, generation);
+        let approve_reason = ATTESTATION_KEY_MACHINE_APPROVE;
+        let condition = attestation_key_approved_condition(approve_reason, generation, &ak.status);
         let mut conditions = ak
             .status
             .as_ref()

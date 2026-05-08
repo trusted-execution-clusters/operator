@@ -18,14 +18,14 @@ compute-pcrs-lib.workspace = true
 env_logger.workspace = true
 futures-util = "0.3.32"
 hex = "0.4.3"
-json-patch = "4.1.0"
+json-patch = "4.2.0"
 jsonptr = "0.7.1"
 k8s-openapi.workspace = true
 kube.workspace = true
 log.workspace = true
 oci-client = { version = "0.16.1", default-features = false, features = ["native-tls"] }
 oci-spec = "0.9.0"
-openssl = "0.10.76"
+openssl = "0.10.79"
 serde.workspace = true
 serde_json.workspace = true
 thiserror = "2.0.18"

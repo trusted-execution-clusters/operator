@@ -23,6 +23,8 @@ updates:
       golang:
         patterns:
           - "*"
+    ignore:
+      - dependency-name: "go"
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:

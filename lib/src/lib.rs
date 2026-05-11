@@ -16,6 +16,11 @@ pub use kopium::ingresses as openshift_ingresses;
 pub use kopium::machines::*;
 pub use kopium::routes;
 pub use kopium::trustedexecutionclusters::*;
+
+pub use kopium::certificaterequests;
+pub use kopium::certificates;
+pub use kopium::clusterissuers;
+pub use kopium::issuers;
 pub use vendor_kopium::virtualmachineinstances;
 pub use vendor_kopium::virtualmachines;
 

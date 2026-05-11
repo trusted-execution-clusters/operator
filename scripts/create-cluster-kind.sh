@@ -56,3 +56,6 @@ CALICO_VERSION=$(git ls-remote --tags https://github.com/projectcalico/api | gre
 curl -Lo $CALICO_FILE "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/calico.yaml"
 sed -i 's|docker.io/calico|quay.io/calico|g' $CALICO_FILE
 kubectl apply -f $CALICO_FILE
+
+CRT_MGR_VERSION=$(go list -m -f '{{.Version}}' github.com/cert-manager/cert-manager)
+kubectl apply -f "https://github.com/cert-manager/cert-manager/releases/download/${CRT_MGR_VERSION}/cert-manager.yaml"

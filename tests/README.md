@@ -9,6 +9,8 @@ Upon a successful test, the namespace is cleaned up, otherwise it is kept for in
 The tests use [`virtctl`](https://kubevirt.io/user-guide/user_workloads/virtctl_client_tool/) in order to interact with
 VM, like getting the serial console and verifying that the guest has correctly booted by ssh-ing into it.
 
+Other dependencies: *openssl-devel, gcc-c++*
+
 N.B KubeVirt requires the cluster to be run as a privileged container on the host in order to handle the devices. Therefore, for now, we have moved to Docker with kind in order to generate the cluster. In the future, we might be able to move to rootful podman.
 
 Run the tests locally with kind:

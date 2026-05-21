@@ -13,12 +13,23 @@ Kind can be used with `docker` or `podman`. Although, we set `podman` as default
 export RUNTIME=docker
 ```
 
+The `CONTAINER_CLI` env var will used for building and pushing. If you require a non-Podman engine for building and pushing images, you can override it with the `$CONTAINER_CLI` variable.
+```console
+export CONTAINER_CLI=docker
+```
+
 In order to interact with the cluster, `kubectl` is required.
 ```console
 dnf install -y kubectl
 ```
 
-Our kind cluster configuration is available under the `kind` directory and it uses the script `scripts/create-cluster-kind.sh`. The cluster can be simply created by running:
+Our kind cluster configuration is available under the `kind` directory and it uses the script `scripts/create-cluster-kind.sh`. 
+Make sure any previously installed cluster is deleted before attempting to install a new one:
+```console
+make cluster-down
+```
+
+The cluster can be simply created by running:
 ```console
 make cluster-up
 ```
@@ -75,15 +86,24 @@ export TRUSTEE_ADDR=kbs-service.trusted-execution-clusters.svc.cluster.local
 export AK_REGISTRATION_ADDR=attestation-key-register.trusted-execution-clusters.svc.cluster.local
 
 ```
-This example works with KubeVirt when the KBS is reachable using the pod networking.
 
 Finally, the operator can be installed with:
 ```console
 make install
 ```
 
+Wait for cluster to be ready and in installed state:
+```console
+kubectl wait -n trusted-execution-clusters --for=condition=Installed TrustedExecutionCluster trusted-execution-cluster
+```
+
+Print cluster status
+```console
+kubectl -n trusted-execution-clusters get po,svc
+```
+
 Further customization of the project can be controlled with the following env variables:
-+ NAMESPACE: sets the namespace where the operator will be deplyoed
++ NAMESPACE: sets the namespace where the operator will be deployed
 + PLATFORM: use during the installation to configure the platform where the operator will be deployed (`kind` or `openshift`)
 + INTEGRATION_TEST_THREADS: how many integration tests are run in parallel
 + REGISTRY: the registry used to publish the images

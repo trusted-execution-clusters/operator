@@ -2,11 +2,18 @@
 sockets = ["0.0.0.0:8080"]
 
 [admin]
-type = "DenyAll"
+authorization_mode = "AuthenticatedAuthorization"
+
+[admin.authentication.bearer_jwt]
+identity_providers = [
+  { public_key_uri = "/key/public.pub" }
+]
+
+[admin.authorization.regex_acl]
+acls = [{ role = "admin", allowed_endpoints = "^/kbs/.+$" }]
 
 [attestation_token]
-insecure_key = true
-attestation_token_type = "CoCo"
+insecure_header_jwk = true
 
 [attestation_service]
 type = "coco_as_builtin"
@@ -30,8 +37,7 @@ policy_engine = "opa"
 
 [[plugins]]
 name = "resource"
-type = "LocalFs"
-dir_path = "/opt/trustee/kbs-repository"
+storage_backend_type = "kvstorage"
 
 [policy_engine]
 policy_path = "/opt/trustee/policy.rego"

@@ -27,8 +27,8 @@ mod register_server;
 #[cfg(test)]
 mod test_utils;
 mod trustee;
-
 use crate::conditions::*;
+use jsonwebtoken::crypto::CryptoProvider;
 use operator::*;
 
 /// Default version tag for operator-managed component images
@@ -299,7 +299,8 @@ async fn install_attestation_key_register(
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
-
+    // Prevent conflict issues with AWS-LC provider and rust crypto by installing the default provider explicitly
+    let _ = CryptoProvider::install_default(&jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER);
     let kube_client = Client::try_default().await?;
     info!("trusted execution clusters operator",);
     let cl: Api<TrustedExecutionCluster> = Api::default_namespaced(kube_client.clone());
@@ -309,6 +310,7 @@ async fn main() -> Result<()> {
     attestation_key_register::launch_ak_controller(kube_client.clone()).await;
     attestation_key_register::launch_machine_ak_controller(kube_client.clone()).await;
     attestation_key_register::launch_secret_ak_controller(kube_client.clone()).await;
+    trustee::launch_trustee_sync_controller(kube_client.clone()).await;
 
     let ctx = Arc::new(ClusterContext {
         client: kube_client,

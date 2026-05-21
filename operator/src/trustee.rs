@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use base64::{Engine as _, engine::general_purpose};
 use chrono::{DateTime, Utc};
 use clevis_pin_trustee_lib::Key as ClevisKey;
+use futures_util::StreamExt;
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
     ConfigMap, ConfigMapVolumeSource, Container, ContainerPort, EmptyDirVolumeSource, EnvVar,
@@ -18,18 +19,29 @@ use k8s_openapi::apimachinery::pkg::{
     apis::meta::v1::{LabelSelector, OwnerReference},
     util::intstr::IntOrString,
 };
+
 use kube::{
     Api, Client, Resource,
     api::{ObjectMeta, Patch, PatchParams},
+    runtime::{
+        controller::{Action, Controller},
+        watcher,
+    },
 };
-use log::info;
-use operator::{RvContextData, TLS_DIR, create_or_info_if_exists, read_certificate};
+use log::{info, warn};
+use operator::{
+    ControllerError, RvContextData, TLS_DIR, controller_error_policy, controller_info,
+    create_or_info_if_exists, read_certificate,
+};
+
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use serde::{Serialize, Serializer};
 use serde_json::{Value::String as JsonString, json};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-use trusted_cluster_operator_lib::endpoints::*;
 use trusted_cluster_operator_lib::reference_values::*;
+use trusted_cluster_operator_lib::{Machine, endpoints::*};
 
 const TRUSTEE_DATA_DIR: &str = "/opt/trustee";
 pub const TRUSTEE_SECRETS_PATH: &str = "/opt/trustee/kbs-repository/default";
@@ -137,74 +149,140 @@ fn generate_luks_key() -> Result<Vec<u8>> {
     };
     serde_json::to_vec(&jwk).map_err(Into::into)
 }
+async fn get_auth_key_token(client: &Client) -> Result<String> {
+    let secret_api: Api<Secret> = Api::default_namespaced(client.clone());
+    let auth_secret = secret_api.get(TRUSTEE_AUTH_SECRET).await?;
+    let auth_data = auth_secret.data.context("Auth secret has no data")?;
+    let auth_key_bytes = auth_data
+        .get("private.key")
+        .context("Auth secret missing private.key")?;
 
-fn generate_secret_volume(id: &str) -> (Volume, VolumeMount) {
-    (
-        Volume {
-            name: id.to_string(),
-            secret: Some(SecretVolumeSource {
-                secret_name: Some(id.to_string()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        },
-        VolumeMount {
-            name: id.to_string(),
-            mount_path: format!("{TRUSTEE_SECRETS_PATH}/{id}"),
-            ..Default::default()
-        },
-    )
+    let claims = json!({
+        "role": "admin",
+        "exp": 2147483647 // Set to Jan 19, 2038
+    });
+
+    let encoding_key = EncodingKey::from_ed_pem(auth_key_bytes.0.as_slice())?;
+
+    let token = encode(&Header::new(Algorithm::EdDSA), &claims, &encoding_key)?;
+    Ok(token)
 }
+async fn get_kbs_connection(client: &Client) -> Result<(String, Vec<String>)> {
+    let tec = trusted_cluster_operator_lib::get_trusted_execution_cluster(client.clone()).await?;
+    let secret_api: Api<Secret> = Api::default_namespaced(client.clone());
 
-pub async fn mount_secret(client: Client, id: &str) -> Result<()> {
-    let result = do_mount_secret(client, id, true).await;
-    info!("Mounted secret {id} to {TRUSTEE_DEPLOYMENT}");
-    result
-}
-
-pub async fn unmount_secret(client: Client, id: &str) -> Result<()> {
-    let result = do_mount_secret(client, id, false).await;
-    info!("Unmounted secret {id} from {TRUSTEE_DEPLOYMENT}");
-    result
-}
-
-pub async fn do_mount_secret(client: Client, id: &str, add: bool) -> Result<()> {
-    let deployments: Api<Deployment> = Api::default_namespaced(client);
-    let mut deployment = deployments.get(TRUSTEE_DEPLOYMENT).await?;
-
-    let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no spec");
-    let depl_spec = deployment.spec.as_mut().context(err)?;
-    let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no pod spec");
-    let pod_spec = depl_spec.template.spec.as_mut().context(err)?;
-    let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no containers");
-    let container = pod_spec.containers.get_mut(0).context(err)?;
-    let vol_mounts = container.volume_mounts.get_or_insert_default();
-
-    if add {
-        let (volume, volume_mount) = generate_secret_volume(id);
-        pod_spec.volumes.get_or_insert_default().push(volume);
-        vol_mounts.push(volume_mount);
-    } else {
-        let vol_result = pod_spec.volumes.as_mut().and_then(|vs| {
-            let pos = vs.iter().position(|v| v.name == id);
-            pos.map(|p| vs.swap_remove(p))
-        });
-        if vol_result.is_none() {
-            info!("Secret {id} was to be dropped, but volume had already been removed");
-        }
-        let vol_mount_result = container.volume_mounts.as_mut().and_then(|vms| {
-            let pos = vms.iter().position(|v| v.name == id);
-            pos.map(|p| vms.swap_remove(p))
-        });
-        if vol_mount_result.is_none() {
-            info!("Secret {id} was to be dropped, but volume mount had already been removed");
+    if let Some(secret_name) = &tec.spec.trustee_secret {
+        if let Ok(secret) = secret_api.get(secret_name).await {
+            if let Some(ca_crt) = secret.data.as_ref().and_then(|d| d.get("ca.crt")) {
+                let ca_pem = String::from_utf8(ca_crt.0.clone())
+                    .context("ca certificate is not valid UTF-8")?;
+                let trustee_addr = format!(
+                    "https://{}",
+                    tec.spec
+                        .public_trustee_addr
+                        .as_ref()
+                        .context("TrustedExecutionCluster missing public_trustee_addr HTTPS")?
+                );
+                return Ok((trustee_addr, vec![ca_pem]));
+            }
         }
     }
 
-    deployments
-        .replace(TRUSTEE_DEPLOYMENT, &Default::default(), &deployment)
-        .await?;
+    Ok((
+        format!(
+            "http://{}",
+            tec.spec
+                .public_trustee_addr
+                .as_ref()
+                .context("TrustedExecutionCluster missing public_trustee_addr HTTP")?
+        ),
+        vec![],
+    ))
+}
+
+pub async fn send_secret(client: Client, id: &str) -> Result<()> {
+    let secret_api: Api<Secret> = Api::default_namespaced(client.clone());
+    let auth_key_token = get_auth_key_token(&client).await?;
+    let (url, certs) = get_kbs_connection(&client).await?;
+    let secret = secret_api.get(id).await?;
+    let secret_data = secret.data.context("Secret has no data")?;
+    let resource_bytes = secret_data
+        .get("root")
+        .context("Secret missing root key")?
+        .0
+        .clone();
+    let path = format!("default/{id}/root");
+    info!("Sending secret {id} to KBS API...");
+    kbs_client::set_resource(&url, Some(auth_key_token), resource_bytes, &path, certs).await?;
+    info!("Secret {id} sent successfully");
     Ok(())
+}
+
+pub async fn delete_secret(client: Client, id: &str) -> Result<()> {
+    let auth_key_token = get_auth_key_token(&client).await?;
+    let (url, certs) = get_kbs_connection(&client).await?;
+    let path = format!("default/{id}/root");
+    info!("Deleting secret {id} to KBS API...");
+    kbs_client::delete_resource(&url, Some(auth_key_token), &path, certs).await?;
+    info!("Secret {id} deleted successfully");
+    Ok(())
+}
+
+pub async fn sync_all_machine_luks_key(client: Client) -> Result<()> {
+    let machine_api: Api<Machine> = Api::default_namespaced(client.clone());
+    let machine_list = machine_api.list(&Default::default()).await?;
+
+    let machine_ids: Vec<String> = machine_list
+        .items
+        .iter()
+        .map(|machine| machine.spec.id.clone())
+        .collect();
+
+    info!("Syncing {} machine luks key to KBS", machine_ids.len());
+    for id in &machine_ids {
+        if let Err(e) = send_secret(client.clone(), id).await {
+            warn!("Failed to sync secret {id} to KBS: {e}");
+        }
+    }
+    Ok(())
+}
+
+async fn trustee_deployment_reconcile(
+    deployment: Arc<Deployment>,
+    client: Arc<Client>,
+) -> Result<Action, ControllerError> {
+    if let Some(status) = &deployment.status {
+        let desired = deployment
+            .spec
+            .as_ref()
+            .and_then(|s| s.replicas)
+            .unwrap_or(1);
+        let ready = status.ready_replicas.unwrap_or(0);
+        if ready >= desired && desired > 0 {
+            info!("{TRUSTEE_DEPLOYMENT} is ready, syncing machine secrets");
+            sync_all_machine_luks_key(Arc::unwrap_or_clone(client.clone()))
+                .await
+                .map_err(ControllerError::Anyhow)?;
+        }
+    }
+    Ok(Action::await_change())
+}
+
+pub async fn launch_trustee_sync_controller(client: Client) {
+    let deployments: Api<Deployment> = Api::default_namespaced(client.clone());
+    let watcher_config = watcher::Config {
+        label_selector: Some(format!("app={TRUSTEE_APP_LABEL}")),
+        ..Default::default()
+    };
+    tokio::spawn(
+        Controller::new(deployments, watcher_config)
+            .run(
+                trustee_deployment_reconcile,
+                controller_error_policy,
+                Arc::new(client),
+            )
+            .for_each(controller_info),
+    );
 }
 
 pub async fn update_attestation_keys(client: Client) -> Result<()> {
@@ -605,7 +683,10 @@ pub async fn generate_kbs_deployment(
     image: &str,
     secret: &Option<String>,
 ) -> Result<()> {
-    let selector = Some(BTreeMap::from([("app".to_string(), "kbs".to_string())]));
+    let selector = Some(BTreeMap::from([(
+        "app".to_string(),
+        TRUSTEE_APP_LABEL.to_string(),
+    )]));
     let tls_volumes = read_certificate(client.clone(), secret).await?;
     let pod_spec = generate_kbs_pod_spec(image, tls_volumes);
 
@@ -613,6 +694,7 @@ pub async fn generate_kbs_deployment(
     let deployment = Deployment {
         metadata: ObjectMeta {
             name: Some(TRUSTEE_DEPLOYMENT.to_string()),
+            labels: selector.clone(),
             owner_references: Some(vec![owner_reference]),
             ..Default::default()
         },
@@ -642,7 +724,6 @@ mod tests {
     use super::*;
     use crate::test_utils::*;
     use http::{Method, Request, StatusCode};
-    use kube::client::Body;
     use trusted_cluster_operator_test_utils::mock_client::*;
 
     #[test]
@@ -760,115 +841,21 @@ mod tests {
         assert_eq!(jwk.key.len(), 32);
     }
 
-    fn dummy_deployment() -> Deployment {
-        Deployment {
-            spec: Some(DeploymentSpec {
-                replicas: Some(1),
-                template: PodTemplateSpec {
-                    spec: Some(PodSpec {
-                        containers: vec![Container::default()],
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-            ..Default::default()
-        }
+    #[test]
+    fn test_generate_ed25519_key_pair() {
+        let pair = generate_ed25519_key_pair().unwrap();
+        let priv_pem = String::from_utf8(pair.private_key_pem).unwrap();
+        let pub_pem = String::from_utf8(pair.public_key_pem).unwrap();
+        assert!(priv_pem.starts_with("-----BEGIN PRIVATE KEY-----"));
+        assert!(pub_pem.starts_with("-----BEGIN PUBLIC KEY-----"));
     }
 
-    #[tokio::test]
-    async fn test_mount_secret_success() {
-        let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
-            (0, &Method::GET) | (1, &Method::PUT) => {
-                Ok(serde_json::to_string(&dummy_deployment()).unwrap())
-            }
-            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
-        };
-        count_check!(2, clos, |client| {
-            assert!(mount_secret(client, "id").await.is_ok());
-        });
-    }
-
-    #[tokio::test]
-    async fn test_mount_secret_no_depl() {
-        let clos = async |_, _| Err(StatusCode::NOT_FOUND);
-        count_check!(1, clos, |client| {
-            assert!(mount_secret(client, "id").await.is_err());
-        });
-    }
-
-    #[tokio::test]
-    async fn test_mount_secret_no_spec() {
-        let clos = async |_, _| {
-            let mut depl = dummy_deployment();
-            depl.spec = None;
-            Ok(serde_json::to_string(&depl).unwrap())
-        };
-        count_check!(1, clos, |client| {
-            let err = mount_secret(client, "id").await.err().unwrap();
-            assert!(err.to_string().contains("but had no spec"));
-        });
-    }
-
-    #[tokio::test]
-    async fn test_mount_secret_no_pod_spec() {
-        let clos = async |_, _| {
-            let mut depl = dummy_deployment();
-            let spec = depl.spec.as_mut().unwrap();
-            spec.template.spec = None;
-            Ok(serde_json::to_string(&depl).unwrap())
-        };
-        count_check!(1, clos, |client| {
-            let err = mount_secret(client, "id").await.err().unwrap();
-            assert!(err.to_string().contains("but had no pod spec"));
-        });
-    }
-
-    #[tokio::test]
-    async fn test_mount_secret_no_containers() {
-        let clos = async |_, _| {
-            let mut depl = dummy_deployment();
-            let spec = depl.spec.as_mut().unwrap();
-            let pod_spec = spec.template.spec.as_mut().unwrap();
-            pod_spec.containers = vec![];
-            Ok(serde_json::to_string(&depl).unwrap())
-        };
-        count_check!(1, clos, |client| {
-            let err = mount_secret(client, "id").await.err().unwrap();
-            assert!(err.to_string().contains("but had no containers"));
-        });
-    }
-
-    #[tokio::test]
-    async fn test_unmount_secret() {
-        let clos = async |req: Request<Body>, ctr| match (ctr, req.method()) {
-            (0, &Method::GET) => {
-                let mut depl = dummy_deployment();
-                let spec = depl.spec.as_mut().unwrap();
-                let pod_spec = spec.template.spec.as_mut().unwrap();
-                pod_spec.volumes = Some(vec![Volume {
-                    name: "id".to_string(),
-                    ..Default::default()
-                }]);
-                let container = pod_spec.containers.get_mut(0).unwrap();
-                container.volume_mounts = Some(vec![VolumeMount {
-                    name: "id".to_string(),
-                    ..Default::default()
-                }]);
-                Ok(serde_json::to_string(&depl).unwrap())
-            }
-            (1, &Method::PUT) => {
-                let bytes = req.into_body().collect_bytes().await.unwrap().to_vec();
-                let body = String::from_utf8_lossy(&bytes);
-                assert!(!body.contains("id"));
-                Ok(serde_json::to_string(&dummy_deployment()).unwrap())
-            }
-            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
-        };
-        count_check!(2, clos, |client| {
-            assert!(unmount_secret(client, "id").await.is_ok());
-        });
+    #[test]
+    fn test_generate_ed25519_key_pair_unique() {
+        let pair1 = generate_ed25519_key_pair().unwrap();
+        let pair2 = generate_ed25519_key_pair().unwrap();
+        assert_ne!(pair1.private_key_pem, pair2.private_key_pem);
+        assert_ne!(pair1.public_key_pem, pair2.public_key_pem);
     }
 
     #[tokio::test]

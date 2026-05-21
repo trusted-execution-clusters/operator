@@ -356,6 +356,9 @@ impl TestContext {
     pub async fn new(test_name: &str) -> Result<Self> {
         INIT.call_once(|| {
             let _ = env_logger::builder().is_test(true).try_init();
+            rustls::crypto::ring::default_provider()
+                .install_default()
+                .ok();
         });
 
         let client = setup_test_client().await?;
@@ -500,7 +503,7 @@ impl TestContext {
         Ok(())
     }
 
-    async fn wait_for_deployment_ready(
+    pub async fn wait_for_deployment_ready(
         &self,
         deployments_api: &Api<Deployment>,
         deployment_name: &str,

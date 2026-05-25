@@ -108,7 +108,7 @@ pub async fn create_register_server_service(
         spec: Some(ServiceSpec {
             selector: Some(labels),
             ports: Some(vec![ServicePort {
-                name: Some("http".to_string()),
+                name: Some("register-server-port".to_string()),
                 port: register_server_port.unwrap_or(REGISTER_SERVER_PORT),
                 target_port: Some(IntOrString::Int(REGISTER_SERVER_PORT)),
                 protocol: Some("TCP".to_string()),

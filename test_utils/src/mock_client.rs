@@ -35,11 +35,10 @@ macro_rules! assert_kube_api_error {
 #[macro_export]
 macro_rules! count_check {
     ($expected:literal, $closure:ident, |$client:ident| $body:block) => {
-        use std::sync::atomic;
-        let count = std::sync::Arc::new(atomic::AtomicU32::new(0));
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let $client = MockClient::new($closure, "test".to_string(), count.clone()).into_client();
         $body
-        assert_eq!(count.load(atomic::Ordering::Acquire), $expected, "Endpoint call count mismatch");
+        assert_eq!(count.load(std::sync::atomic::Ordering::Acquire), $expected, "Endpoint call count mismatch");
     }
 }
 
@@ -108,9 +107,13 @@ where
 }
 
 pub async fn assert_body_contains(req: Request<Body>, contains: &str) {
+    let body_string = get_body_string(req).await;
+    assert!(body_string.contains(contains));
+}
+
+pub async fn get_body_string(req: Request<Body>) -> String {
     let bytes = req.into_body().collect_bytes().await.unwrap().to_vec();
-    let body = String::from_utf8_lossy(&bytes);
-    assert!(body.contains(contains));
+    String::from_utf8_lossy(&bytes).to_string()
 }
 
 pub async fn test_create_success<

@@ -11,6 +11,8 @@
 use anyhow::Result;
 use k8s_openapi::api::core::v1::{Secret, SecretVolumeSource, Volume, VolumeMount};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
+use k8s_openapi::jiff::Timestamp;
 use kube::{Api, Client, runtime::controller::Action};
 use log::{info, warn};
 use std::fmt::{Debug, Display};
@@ -93,4 +95,47 @@ pub async fn read_certificate(
         ..Default::default()
     };
     Ok(Some((volume, volume_mount)))
+}
+
+// TODO: Port this functionality to kube-rs API.
+// Update condition if already present, otherwise append(insert) it into the conditions vector.
+pub fn upsert_condition(
+    existing_conditions: &mut Option<Vec<Condition>>,
+    new_condition: Condition,
+) -> bool {
+    let conditions_vec = existing_conditions.get_or_insert_with(Vec::new);
+
+    if let Some(existing) = conditions_vec
+        .iter_mut()
+        .find(|c| c.type_ == new_condition.type_)
+    {
+        let mut changed = false;
+
+        // Being faithful to kubernetes API semantics, only update transition time if status changes.
+        if existing.status != new_condition.status {
+            existing.status = new_condition.status;
+            existing.last_transition_time = Time(Timestamp::now());
+            changed = true;
+        }
+
+        if existing.reason != new_condition.reason {
+            existing.reason = new_condition.reason;
+            changed = true;
+        }
+
+        if existing.message != new_condition.message {
+            existing.message = new_condition.message;
+            changed = true;
+        }
+
+        if existing.observed_generation != new_condition.observed_generation {
+            existing.observed_generation = new_condition.observed_generation;
+            changed = true;
+        }
+
+        changed
+    } else {
+        conditions_vec.push(new_condition);
+        true
+    }
 }

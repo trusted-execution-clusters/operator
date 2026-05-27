@@ -18,7 +18,7 @@ use log::{error, info, warn};
 
 use operator::generate_owner_reference;
 use trusted_cluster_operator_lib::{TrustedExecutionCluster, TrustedExecutionClusterStatus};
-use trusted_cluster_operator_lib::{conditions::*, update_status};
+use trusted_cluster_operator_lib::{conditions::*, images::*, update_status};
 
 mod attestation_key_register;
 mod conditions;
@@ -84,7 +84,7 @@ async fn launch_rv_watchers(
         let owner_reference = generate_owner_reference(&*cluster)?;
         let pcrs_compute_image = get_image_or_env(
             &cluster.spec.pcrs_compute_image,
-            "RELATED_IMAGE_COMPUTE_PCRS",
+            RELATED_IMAGE_COMPUTE_PCRS,
             &format!("quay.io/trusted-execution-clusters/compute-pcrs:{COMPONENT_VERSION}"),
         );
         let rv_ctx = RvContextData {
@@ -195,7 +195,7 @@ async fn install_trustee_configuration(
 
     let trustee_image = get_image_or_env(
         &cluster.spec.trustee_image,
-        "RELATED_IMAGE_TRUSTEE",
+        RELATED_IMAGE_TRUSTEE,
         "quay.io/trusted-execution-clusters/key-broker-service:20260106",
     );
     match trustee::generate_kbs_deployment(client, owner_reference, &trustee_image, trustee_secret)
@@ -213,7 +213,7 @@ async fn install_register_server(client: Client, cluster: &TrustedExecutionClust
 
     let register_server_image = get_image_or_env(
         &cluster.spec.register_server_image,
-        "RELATED_IMAGE_REGISTRATION_SERVER",
+        RELATED_IMAGE_REGISTRATION_SERVER,
         &format!("quay.io/trusted-execution-clusters/registration-server:{COMPONENT_VERSION}"),
     );
     match register_server::create_register_server_deployment(
@@ -247,7 +247,7 @@ async fn install_attestation_key_register(
 
     let attestation_key_register_image = get_image_or_env(
         &cluster.spec.attestation_key_register_image,
-        "RELATED_IMAGE_ATTESTATION_KEY_REGISTER",
+        RELATED_IMAGE_ATTESTATION_KEY_REGISTER,
         &format!("quay.io/trusted-execution-clusters/attestation-key-register:{COMPONENT_VERSION}"),
     );
     match attestation_key_register::create_attestation_key_register_deployment(

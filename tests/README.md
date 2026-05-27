@@ -55,6 +55,8 @@ make push
 export REGISTRY=image-registry.openshift-image-registry.svc:5000/$NAMESPACE
 ```
 
+Alternatively, you can also export `$OPERATOR_IMAGE`, `$RELATED_IMAGE_COMPUTE_PCRS`, `$RELATED_IMAGE_REGISTRATION_SERVER`, and `$RELATED_IMAGE_ATTESTATION_KEY_REGISTER` directly.
+
 ### Run integration tests on Azure
 
 Like the KubeVirt tests, the Azure integration tests create CoreOS VMs that retrieve a disk encryption key from Trustee, but do not execute a cluster join.

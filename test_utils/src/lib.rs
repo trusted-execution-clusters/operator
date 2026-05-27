@@ -18,9 +18,9 @@ use trusted_cluster_operator_lib::certificates::{
 use trusted_cluster_operator_lib::issuers::{Issuer, IssuerCa, IssuerSpec};
 
 use trusted_cluster_operator_lib::TrustedExecutionCluster;
-use trusted_cluster_operator_lib::endpoints::*;
 use trusted_cluster_operator_lib::openshift_ingresses::Ingress;
 use trusted_cluster_operator_lib::routes::Route;
+use trusted_cluster_operator_lib::{endpoints::*, images::*};
 
 pub mod timer;
 pub use timer::Poller;
@@ -664,10 +664,14 @@ impl TestContext {
         let approved_image = get_env("APPROVED_IMAGE")?;
 
         let mut args = vec!["-namespace", &ns, "-output-dir", &self.manifests_dir];
-        let operator_img = format!("{repo}/trusted-cluster-operator:{tag}");
-        let compute_pcrs_img = format!("{repo}/compute-pcrs:{tag}");
-        let reg_srv_img = format!("{repo}/registration-server:{tag}");
-        let att_reg_img = format!("{repo}/attestation-key-register:{tag}");
+        let operator_img = env::var("OPERATOR_IMAGE")
+            .unwrap_or_else(|_| format!("{repo}/trusted-cluster-operator:{tag}"));
+        let compute_pcrs_img = env::var(RELATED_IMAGE_COMPUTE_PCRS)
+            .unwrap_or_else(|_| format!("{repo}/compute-pcrs:{tag}"));
+        let reg_srv_img = env::var(RELATED_IMAGE_REGISTRATION_SERVER)
+            .unwrap_or_else(|_| format!("{repo}/registration-server:{tag}"));
+        let att_reg_img = env::var(RELATED_IMAGE_ATTESTATION_KEY_REGISTER)
+            .unwrap_or_else(|_| format!("{repo}/attestation-key-register:{tag}"));
         args.extend(&["-image", &operator_img]);
         args.extend(&["-pcrs-compute-image", &compute_pcrs_img]);
         args.extend(&["-trustee-image", &trustee_image]);

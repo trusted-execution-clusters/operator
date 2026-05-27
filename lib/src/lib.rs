@@ -4,6 +4,7 @@
 
 pub mod conditions;
 pub mod endpoints;
+pub mod images;
 pub mod reference_values;
 
 mod kopium;

@@ -5,6 +5,8 @@
 
 .PHONY: all build build-tools crds-rs generate manifests cluster-up cluster-down image push install-trustee install clean fmt-check clippy lint test test-release release-tarball
 
+SHELL := /bin/bash
+
 NAMESPACE ?= trusted-execution-clusters
 PLATFORM ?= kind
 

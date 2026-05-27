@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+use axum::extract::State;
 use axum::response::{IntoResponse, Json};
 use axum::{http::StatusCode, routing::put, Router};
 use axum_server::tls_openssl::OpenSSLConfig;
@@ -43,6 +44,7 @@ struct AttestationKeyRegistration {
 }
 
 async fn handle_registration(
+    State(client): State<Client>,
     Json(registration): Json<AttestationKeyRegistration>,
 ) -> impl IntoResponse {
     info!("Received registration request: {registration:?}");
@@ -55,11 +57,6 @@ async fn handle_registration(
             "message": format!("{e:#}"),
         });
         (code, Json(msg))
-    };
-
-    let client = match Client::try_default().await {
-        Ok(c) => c,
-        Err(e) => return internal_error(e.into()),
     };
 
     let api: Api<AttestationKey> = Api::default_namespaced(client.clone());
@@ -133,15 +130,20 @@ async fn main() {
 
     let args = Args::parse();
     let endpoint = format!("/{ATTESTATION_KEY_REGISTER_RESOURCE}");
-    let app = Router::new().route(&endpoint, put(handle_registration));
+    let err = "failed to create Kubernetes client";
+    let client = Client::try_default().await.expect(err);
+    let app = Router::new()
+        .route(&endpoint, put(handle_registration))
+        .with_state(client);
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     let service = app.into_make_service();
-    info!("Starting attestation key registration server on http://{addr}",);
 
     let run = if let (Some(cert_path), Some(key_path)) = (args.cert_path, args.key_path) {
         let config = OpenSSLConfig::from_pem_file(cert_path, key_path).expect("invalid PEM files");
+        info!("Starting attestation key registration server on https://{addr}");
         axum_server::bind_openssl(addr, config).serve(service).await
     } else {
+        info!("Starting attestation key registration server on http://{addr}");
         axum_server::bind(addr).serve(service).await
     };
     run.expect("Server failed");

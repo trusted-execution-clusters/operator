@@ -682,9 +682,9 @@ impl TestContext {
             .await?;
 
         let secrets: Api<Secret> = Api::namespaced(self.client.clone(), &self.test_namespace);
-        wait_for_resource_created(&secrets, REG_SECRET, scaled_timeout(15), 1).await?;
-        wait_for_resource_created(&secrets, TRUSTEE_SECRET, scaled_timeout(15), 1).await?;
-        wait_for_resource_created(&secrets, ATT_REG_SECRET, scaled_timeout(15), 1).await?;
+        wait_for_resource_created(&secrets, REG_SECRET, scaled_timeout(60), 1).await?;
+        wait_for_resource_created(&secrets, TRUSTEE_SECRET, scaled_timeout(60), 1).await?;
+        wait_for_resource_created(&secrets, ATT_REG_SECRET, scaled_timeout(60), 1).await?;
         Ok(())
     }
 

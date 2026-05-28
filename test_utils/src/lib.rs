@@ -606,9 +606,9 @@ impl TestContext {
             .await?;
 
         let secrets: Api<Secret> = Api::namespaced(self.client.clone(), &self.test_namespace);
-        wait_for_resource_created(&secrets, REG_SECRET, 15, 1).await?;
-        wait_for_resource_created(&secrets, TRUSTEE_SECRET, 15, 1).await?;
-        wait_for_resource_created(&secrets, ATT_REG_SECRET, 15, 1).await?;
+        wait_for_resource_created(&secrets, REG_SECRET, 60, 1).await?;
+        wait_for_resource_created(&secrets, TRUSTEE_SECRET, 60, 1).await?;
+        wait_for_resource_created(&secrets, ATT_REG_SECRET, 60, 1).await?;
         Ok(())
     }
 

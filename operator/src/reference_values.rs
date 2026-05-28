@@ -33,7 +33,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use crate::trustee::{self, get_image_pcrs};
 use operator::{
     ControllerError, RvContextData, controller_error_policy, controller_info,
-    create_or_info_if_exists,
+    create_or_info_if_exists, upsert_condition,
 };
 use trusted_cluster_operator_lib::{conditions::*, reference_values::*, *};
 
@@ -314,10 +314,15 @@ async fn image_add_reconcile(
         }
     };
     let committed = committed_condition(reason, image.metadata.generation, &image.status);
-    let conditions = Some(vec![committed]);
-    let images: Api<ApprovedImage> = Api::default_namespaced(kube_client);
-    update_status!(images, &name, ApprovedImageStatus { conditions })
-        .map_err(|e| finalizer::Error::<ControllerError>::ApplyFailed(e.into()))?;
+
+    // Upserting the committed condition and keeping the existing conditions intact.
+    let mut conditions = image.status.as_ref().and_then(|s| s.conditions.clone());
+    let changed = upsert_condition(&mut conditions, committed);
+    if changed {
+        let images: Api<ApprovedImage> = Api::default_namespaced(kube_client);
+        update_status!(images, &name, ApprovedImageStatus { conditions })
+            .map_err(|e| finalizer::Error::<ControllerError>::ApplyFailed(e.into()))?;
+    }
     Ok(action)
 }
 
@@ -366,7 +371,9 @@ pub async fn handle_new_image(
         return Ok(NOT_COMMITTED_REASON_NO_DIGEST);
     }
     let label = fetch_pcr_label(&image_ref).await;
-    let compute_pcrs = match label {
+
+    // Whether to compute pcrs or not.
+    let should_compute_pcrs = match label {
         Err(ref e) => {
             warn!("Fetching PCR label for {image_ref} failed: {e}. Falling back to computation.");
             if is_pending(&ctx.client, resource_name).await? {
@@ -380,7 +387,7 @@ pub async fn handle_new_image(
         }
         _ => false,
     };
-    if compute_pcrs {
+    if should_compute_pcrs {
         return compute_fresh_pcrs(ctx, resource_name, boot_image)
             .await
             .map(|_| NOT_COMMITTED_REASON_COMPUTING);

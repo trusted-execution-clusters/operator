@@ -16,7 +16,7 @@ use kube::runtime::watcher;
 use kube::{Api, Client};
 use log::{error, info, warn};
 
-use operator::generate_owner_reference;
+use operator::{generate_owner_reference, upsert_condition};
 use trusted_cluster_operator_lib::{TrustedExecutionCluster, TrustedExecutionClusterStatus};
 use trusted_cluster_operator_lib::{conditions::*, images::*, update_status};
 
@@ -107,7 +107,11 @@ async fn reconcile(
     let existing_status = &cluster.status;
     let address_condition =
         known_trustee_address_condition(known_address, generation, existing_status);
-    let mut conditions = Some(vec![address_condition]);
+
+    // Get existing conditions or default to empty vector
+    let mut conditions = existing_status.as_ref().and_then(|s| s.conditions.clone());
+    // Update or insert address condition to prevent rebuilding the status object from scratch every time the reconcile is called.
+    let _ = upsert_condition(&mut conditions, address_condition);
 
     let kube_client = ctx.client.clone();
     let err = "trusted execution cluster had no name";
@@ -117,9 +121,12 @@ async fn reconcile(
     if cluster.metadata.deletion_timestamp.is_some() {
         info!("Registered deletion of TrustedExecutionCluster {name}");
         let uninstalling_reason = NOT_INSTALLED_REASON_UNINSTALLING;
-        let condition = installed_condition(uninstalling_reason, generation, existing_status);
-        conditions.as_mut().unwrap().push(condition);
-        update_status!(clusters, name, TrustedExecutionClusterStatus { conditions })?;
+        let uninstall_condition =
+            installed_condition(uninstalling_reason, generation, existing_status);
+        let changed = upsert_condition(&mut conditions, uninstall_condition);
+        if changed {
+            update_status!(clusters, name, TrustedExecutionClusterStatus { conditions })?;
+        }
         return Ok(Action::await_change());
     }
 
@@ -137,29 +144,35 @@ async fn reconcile(
             "More than one TrustedExecutionCluster found in namespace {namespace}. \
              trusted-cluster-operator does not support more than one TrustedExecutionCluster. Requeueing...",
         );
-        let condition =
+        let non_unique_condition =
             installed_condition(NOT_INSTALLED_REASON_NON_UNIQUE, generation, existing_status);
-        conditions.as_mut().unwrap().push(condition);
-        update_status!(clusters, name, TrustedExecutionClusterStatus { conditions })?;
+        let changed = upsert_condition(&mut conditions, non_unique_condition);
+        if changed {
+            update_status!(clusters, name, TrustedExecutionClusterStatus { conditions })?;
+        }
         return Ok(Action::requeue(Duration::from_secs(60)));
     }
 
     info!("Setting up TrustedExecutionCluster {name}");
-    let mut installing = conditions.clone();
-    let installing_reason = NOT_INSTALLED_REASON_INSTALLING;
-    let condition = installed_condition(installing_reason, generation, existing_status);
-    installing.as_mut().unwrap().push(condition);
-    let status = TrustedExecutionClusterStatus {
-        conditions: installing,
-    };
-    update_status!(clusters, name, status)?;
+    let installing_condition =
+        installed_condition(NOT_INSTALLED_REASON_INSTALLING, generation, existing_status);
+    let changed = upsert_condition(&mut conditions, installing_condition);
+    if changed {
+        let status = TrustedExecutionClusterStatus {
+            conditions: conditions.clone(),
+        };
+        update_status!(clusters, name, status)?;
+    }
 
     install_trustee_configuration(kube_client.clone(), &cluster).await?;
     install_register_server(kube_client.clone(), &cluster).await?;
     install_attestation_key_register(kube_client, &cluster).await?;
-    let condition = installed_condition(INSTALLED_REASON, generation, existing_status);
-    conditions.as_mut().unwrap().push(condition);
-    update_status!(clusters, name, TrustedExecutionClusterStatus { conditions })?;
+    let installed_condition = installed_condition(INSTALLED_REASON, generation, existing_status);
+    let changed = upsert_condition(&mut conditions, installed_condition);
+    if changed {
+        let status = TrustedExecutionClusterStatus { conditions };
+        update_status!(clusters, name, status)?;
+    }
     Ok(Action::await_change())
 }
 
@@ -358,7 +371,8 @@ mod tests {
     async fn test_reconcile_uninstalling() {
         let clos = async |req: Request<Body>, ctr| match req.method() {
             &Method::PATCH => {
-                assert_body_contains(req, NOT_INSTALLED_REASON_UNINSTALLING).await;
+                let body = get_body_string(req).await;
+                assert!(body.contains(NOT_INSTALLED_REASON_UNINSTALLING),);
                 Ok(serde_json::to_string(&dummy_cluster()).unwrap())
             }
             _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
@@ -385,7 +399,8 @@ mod tests {
                 // Watchers
                 Ok(serde_json::to_string(&dummy_cluster()).unwrap())
             } else if ctr == 4 && req.method() == Method::PATCH {
-                assert_body_contains(req, NOT_INSTALLED_REASON_NON_UNIQUE).await;
+                let body = get_body_string(req).await;
+                assert!(body.contains(NOT_INSTALLED_REASON_NON_UNIQUE));
                 Ok(serde_json::to_string(&dummy_cluster()).unwrap())
             } else {
                 panic!("unexpected API interaction: {req:?}, counter {ctr}");
@@ -408,6 +423,169 @@ mod tests {
             let cluster = Arc::new(dummy_cluster());
             let result = reconcile(cluster, Arc::new(dummy_cluster_ctx(client))).await;
             assert!(result.is_err());
+        });
+    }
+
+    fn dummy_foreign_condition() -> Condition {
+        Condition {
+            type_: "ForeignCondition".to_string(),
+            status: "True".to_string(),
+            reason: "ExternalController".to_string(),
+            message: "Set by another controller".to_string(),
+            last_transition_time: Time(Timestamp::now()),
+            observed_generation: None,
+        }
+    }
+
+    // Makes sure that uninstall trigger preserves foreign independent controller conditions, and our operator doesn't overwrite it in the reconcile function. Tests insert of our upsert_condition function.
+    #[tokio::test]
+    async fn test_reconcile_uninstall_preserves_foreign_controller_condition_by_inserting_owned_condition()
+     {
+        let foreign_condition = dummy_foreign_condition();
+
+        let clos = async |req: Request<Body>, ctr| match req.method() {
+            &Method::PATCH => {
+                let body = get_body_string(req).await;
+                assert!(body.contains("ForeignCondition"));
+                assert!(body.contains("ExternalController"));
+                assert!(body.contains(NOT_INSTALLED_REASON_UNINSTALLING));
+                Ok(serde_json::to_string(&dummy_cluster()).unwrap())
+            }
+            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        };
+
+        count_check!(1, clos, |client| {
+            let mut cluster = dummy_cluster();
+            cluster.metadata.deletion_timestamp = Some(Time(Timestamp::now()));
+            cluster.status = Some(TrustedExecutionClusterStatus {
+                conditions: Some(vec![foreign_condition]),
+            });
+            let result = reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client))).await;
+            assert_eq!(result.unwrap(), Action::await_change());
+        });
+    }
+
+    // Tests the update of our upsert functionality, preserving foreign conditions, and updating operator's owned condition.
+    // End to end unit test of the reconcile function, to ensure that new conditions are inserted and existing conditions are updated, without overwriting foreign conditions and creating conditions from scratch.
+    #[tokio::test]
+    async fn test_reconcile_install_preserves_foreign_condition_while_updating_owned_condition() {
+        let foreign_condition = dummy_foreign_condition();
+
+        let pre_existing_installed = Condition {
+            type_: INSTALLED_CONDITION.to_string(),
+            status: "False".to_string(),
+            reason: NOT_INSTALLED_REASON_INSTALLING.to_string(),
+            message: "Installation is in progress".to_string(),
+            last_transition_time: Time(Timestamp::now()),
+            observed_generation: None,
+        };
+
+        let clos = async |req: Request<Body>, _ctr| {
+            match *req.method() {
+                Method::GET => {
+                    let object_list = ObjectList::<TrustedExecutionCluster> {
+                        items: vec![dummy_cluster()],
+                        types: Default::default(),
+                        metadata: Default::default(),
+                    };
+                    Ok(serde_json::to_string(&object_list).unwrap())
+                }
+                Method::POST => Ok(serde_json::to_string(&dummy_cluster()).unwrap()),
+                Method::PATCH => {
+                    let body = req.into_body().collect_bytes().await.unwrap().to_vec();
+                    let body = String::from_utf8_lossy(&body);
+                    assert!(body.contains("ForeignCondition"),);
+
+                    // If body doesn't contain INSTALLED_REASON, that means its the patch call for Installing, hence returning early.
+                    if !body.contains(INSTALLED_REASON) {
+                        return Ok(serde_json::to_string(&dummy_cluster()).unwrap());
+                    }
+
+                    // Also assert that the installed condition is updated to True from False, and only 1 installed condition is updated and present.
+                    let patch: serde_json::Value = serde_json::from_str(&body).unwrap();
+                    let conditions = patch["status"]["conditions"]
+                        .as_array()
+                        .expect("conditions should be an array");
+                    let installed: Vec<_> = conditions
+                        .iter()
+                        .filter(|c| c["type"] == "Installed")
+                        .collect();
+                    assert_eq!(
+                        installed.len(),
+                        1,
+                        "Expected exactly one Installed condition, found {}",
+                        installed.len()
+                    );
+                    assert_eq!(
+                        installed[0]["status"], "True",
+                        "Installed condition should be updated to True"
+                    );
+                    Ok(serde_json::to_string(&dummy_cluster()).unwrap())
+                }
+                _ => panic!("unexpected API interaction: {req:?}"),
+            }
+        };
+
+        let request_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let client = MockClient::new(clos, "test".to_string(), request_count).into_client();
+
+        let mut cluster = dummy_cluster();
+        cluster.status = Some(TrustedExecutionClusterStatus {
+            conditions: Some(vec![pre_existing_installed, foreign_condition]),
+        });
+        let result = reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client))).await;
+        assert_eq!(result.unwrap(), Action::await_change());
+    }
+
+    // This test ensures that if the condition is not changed, the status is not patched. The transition_time and all other fields remain same.
+    #[tokio::test]
+    async fn test_reconcile_no_patch_when_conditions_unchanged() {
+        let clos1 = async |req: Request<Body>, _| match *req.method() {
+            Method::PATCH => Ok(serde_json::to_string(&dummy_cluster()).unwrap()),
+            _ => panic!("unexpected: {req:?}"),
+        };
+
+        // Deletion makes 1 patch status.
+        count_check!(1, clos1, |client| {
+            let mut cluster = dummy_cluster();
+            cluster.metadata.deletion_timestamp = Some(Time(Timestamp::now()));
+            reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client)))
+                .await
+                .unwrap();
+        });
+
+        // Building the uninstalling cluster state.
+        let dummy = dummy_cluster();
+        let existing_status = &dummy.status; // None
+        let generation = dummy.metadata.generation;
+        let known_address = dummy.spec.public_trustee_addr.is_some();
+
+        let mut conditions = None;
+        let _ = upsert_condition(
+            &mut conditions,
+            known_trustee_address_condition(known_address, generation, existing_status),
+        );
+        let _ = upsert_condition(
+            &mut conditions,
+            installed_condition(
+                NOT_INSTALLED_REASON_UNINSTALLING,
+                generation,
+                existing_status,
+            ),
+        );
+
+        assert_eq!(conditions.as_ref().unwrap().len(), 2);
+
+        let clos2 = async |req: Request<Body>, _| panic!("unexpected API call: {req:?}");
+
+        // Reconcile should not send another patch request, as conditions are exactly the same.
+        count_check!(0, clos2, |client| {
+            let mut cluster = dummy_cluster();
+            cluster.metadata.deletion_timestamp = Some(Time(Timestamp::now()));
+            cluster.status = Some(TrustedExecutionClusterStatus { conditions });
+            reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client)))
+                .await
+                .unwrap();
         });
     }
 }

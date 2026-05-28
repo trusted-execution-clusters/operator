@@ -251,13 +251,13 @@ async fn main() {
     let service = app.into_make_service();
     info!("Starting server on http://{addr}");
 
-    let run = if args.cert_path.is_some() && args.key_path.is_some() {
-        let config = OpenSSLConfig::from_pem_file(args.cert_path.unwrap(), args.key_path.unwrap())
-            .expect("invalid PEM files");
+    let run = if let (Some(cert_path), Some(key_path)) = (args.cert_path, args.key_path) {
+        let config = OpenSSLConfig::from_pem_file(cert_path, key_path).expect("invalid PEM files");
         axum_server::bind_openssl(addr, config).serve(service).await
     } else {
         axum_server::bind(addr).serve(service).await
     };
+
     run.expect("Server failed");
 }
 

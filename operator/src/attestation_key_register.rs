@@ -30,6 +30,7 @@ use crate::conditions::attestation_key_approved_condition;
 use crate::trustee;
 use operator::{
     ControllerError, TLS_DIR, controller_error_policy, create_or_info_if_exists, read_certificate,
+    upsert_condition,
 };
 
 const INTERNAL_ATTESTATION_KEY_REGISTER_PORT: i32 = 8001;
@@ -200,31 +201,14 @@ async fn approve_ak(ak: &AttestationKey, machine: &Machine, client: Client) -> R
     let name = ak.metadata.name.clone().unwrap_or_default();
     let aks: Api<AttestationKey> = Api::default_namespaced(client.clone());
 
-    let is_approved = ak
-        .status
-        .as_ref()
-        .and_then(|s| s.conditions.as_ref())
-        .map(|conditions| {
-            conditions
-                .iter()
-                .any(|c| c.type_ == "Approved" && c.status == "True")
-        })
-        .unwrap_or(false);
+    let generation = ak.metadata.generation;
+    let approve_reason = ATTESTATION_KEY_MACHINE_APPROVE;
+    let condition = attestation_key_approved_condition(approve_reason, generation, &ak.status);
+    let mut conditions = ak.status.as_ref().and_then(|s| s.conditions.clone());
+    let changed = upsert_condition(&mut conditions, condition);
 
-    if !is_approved {
-        let generation = ak.metadata.generation;
-        let approve_reason = ATTESTATION_KEY_MACHINE_APPROVE;
-        let condition = attestation_key_approved_condition(approve_reason, generation, &ak.status);
-        let mut conditions = ak
-            .status
-            .as_ref()
-            .and_then(|s| s.conditions.clone())
-            .unwrap_or_default();
-        conditions.push(condition);
-
-        let status = AttestationKeyStatus {
-            conditions: Some(conditions),
-        };
+    if changed {
+        let status = AttestationKeyStatus { conditions };
         update_status!(aks, &name, status)?;
         info!("Approved attestation key {name}");
     }

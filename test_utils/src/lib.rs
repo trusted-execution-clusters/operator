@@ -775,7 +775,8 @@ impl TestContext {
             rbac_temp_dir.to_str().unwrap(),
             &self.test_name,
             "Applying RBAC",
-            kustomize = true
+            kustomize = true,
+            fssa = true
         );
 
         let manifests_path = Path::new(&self.manifests_dir);

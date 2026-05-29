@@ -480,61 +480,51 @@ mod tests {
             observed_generation: None,
         };
 
-        let clos = async |req: Request<Body>, _ctr| {
-            match *req.method() {
-                Method::GET => {
-                    let object_list = ObjectList::<TrustedExecutionCluster> {
-                        items: vec![dummy_cluster()],
-                        types: Default::default(),
-                        metadata: Default::default(),
-                    };
-                    Ok(serde_json::to_string(&object_list).unwrap())
-                }
-                Method::POST => Ok(serde_json::to_string(&dummy_cluster()).unwrap()),
-                Method::PATCH => {
-                    let body = req.into_body().collect_bytes().await.unwrap().to_vec();
-                    let body = String::from_utf8_lossy(&body);
-                    assert!(body.contains("ForeignCondition"),);
+        let clos = async |req: Request<Body>, ctr| {
+            if ctr < 3 && req.method() == Method::GET {
+                let object_list = ObjectList::<TrustedExecutionCluster> {
+                    items: vec![dummy_cluster()],
+                    types: Default::default(),
+                    metadata: Default::default(),
+                };
+                Ok(serde_json::to_string(&object_list).unwrap())
+            } else if (2 < ctr && ctr < 12 || ctr == 13) && req.method() == Method::POST {
+                Ok(serde_json::to_string(&dummy_cluster()).unwrap())
+            } else if ctr == 12 && req.method() == Method::PATCH {
+                let body = req.into_body().collect_bytes().await.unwrap().to_vec();
+                let body = String::from_utf8_lossy(&body);
+                assert!(body.contains("ForeignCondition"),);
 
-                    // If body doesn't contain INSTALLED_REASON, that means its the patch call for Installing, hence returning early.
-                    if !body.contains(INSTALLED_REASON) {
-                        return Ok(serde_json::to_string(&dummy_cluster()).unwrap());
-                    }
-
-                    // Also assert that the installed condition is updated to True from False, and only 1 installed condition is updated and present.
-                    let patch: serde_json::Value = serde_json::from_str(&body).unwrap();
-                    let conditions = patch["status"]["conditions"]
-                        .as_array()
-                        .expect("conditions should be an array");
-                    let installed: Vec<_> = conditions
-                        .iter()
-                        .filter(|c| c["type"] == "Installed")
-                        .collect();
-                    assert_eq!(
-                        installed.len(),
-                        1,
-                        "Expected exactly one Installed condition, found {}",
-                        installed.len()
-                    );
-                    assert_eq!(
-                        installed[0]["status"], "True",
-                        "Installed condition should be updated to True"
-                    );
-                    Ok(serde_json::to_string(&dummy_cluster()).unwrap())
-                }
-                _ => panic!("unexpected API interaction: {req:?}"),
+                // Also assert that the installed condition is updated to True from False, and only 1 installed condition is updated and present.
+                let patch: serde_json::Value = serde_json::from_str(&body).unwrap();
+                let err = "conditions should be an array";
+                let conditions = patch["status"]["conditions"].as_array().expect(err);
+                let chk = |c: &&serde_json::Value| c["type"] == "Installed";
+                let installed: Vec<_> = conditions.iter().filter(chk).collect();
+                assert_eq!(
+                    installed.len(),
+                    1,
+                    "Expected exactly one Installed condition, found {}",
+                    installed.len()
+                );
+                assert_eq!(
+                    installed[0]["status"], "True",
+                    "Installed condition should be updated to True"
+                );
+                Ok(serde_json::to_string(&dummy_cluster()).unwrap())
+            } else {
+                panic!("unexpected API interaction: {req:?}, counter {ctr}");
             }
         };
-
-        let request_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let client = MockClient::new(clos, "test".to_string(), request_count).into_client();
 
         let mut cluster = dummy_cluster();
         cluster.status = Some(TrustedExecutionClusterStatus {
             conditions: Some(vec![pre_existing_installed, foreign_condition]),
         });
-        let result = reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client))).await;
-        assert_eq!(result.unwrap(), Action::await_change());
+        count_check!(13, clos, |client| {
+            let result = reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client))).await;
+            assert_eq!(result.unwrap(), Action::await_change());
+        });
     }
 
     // This test ensures that if the condition is not changed, the status is not patched. The transition_time and all other fields remain same.

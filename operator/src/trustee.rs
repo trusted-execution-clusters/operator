@@ -200,6 +200,10 @@ async fn get_kbs_connection(client: &Client) -> Result<(String, Vec<String>)> {
     ))
 }
 
+pub fn secret_path(id: &str) -> String {
+    format!("default/{id}/root")
+}
+
 pub async fn send_secret(client: Client, id: &str) -> Result<()> {
     let secret_api: Api<Secret> = Api::default_namespaced(client.clone());
     let auth_key_token = get_auth_key_token(&client).await?;
@@ -211,7 +215,7 @@ pub async fn send_secret(client: Client, id: &str) -> Result<()> {
         .context("Secret missing root key")?
         .0
         .clone();
-    let path = format!("default/{id}/root");
+    let path = secret_path(id);
     info!("Sending secret {id} to KBS API...");
     kbs_client::set_resource(&url, Some(auth_key_token), resource_bytes, &path, certs).await?;
     info!("Secret {id} sent successfully");
@@ -221,7 +225,7 @@ pub async fn send_secret(client: Client, id: &str) -> Result<()> {
 pub async fn delete_secret(client: Client, id: &str) -> Result<()> {
     let auth_key_token = get_auth_key_token(&client).await?;
     let (url, certs) = get_kbs_connection(&client).await?;
-    let path = format!("default/{id}/root");
+    let path = secret_path(id);
     info!("Deleting secret {id} to KBS API...");
     kbs_client::delete_resource(&url, Some(auth_key_token), &path, certs).await?;
     info!("Secret {id} deleted successfully");

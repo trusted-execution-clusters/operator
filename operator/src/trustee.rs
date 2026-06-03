@@ -19,11 +19,11 @@ use k8s_openapi::apimachinery::pkg::{
     util::intstr::IntOrString,
 };
 use kube::{
-    Api, Client, Resource,
+    Api, Client,
     api::{ObjectMeta, Patch, PatchParams},
 };
 use log::info;
-use operator::{RvContextData, TLS_DIR, create_or_info_if_exists, read_certificate};
+use operator::{RvContextData, TLS_DIR, apply_resource, read_certificate};
 use serde::{Serialize, Serializer};
 use serde_json::{Value::String as JsonString, json};
 use std::collections::BTreeMap;
@@ -102,8 +102,18 @@ pub async fn update_reference_values(ctx: RvContextData) -> Result<()> {
     let trustee_data = trustee_map.data.as_mut().context(err)?;
     trustee_data.insert(REFERENCE_VALUES_FILE.to_string(), rv_json);
 
+    let body = json!({
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {"name": TRUSTEE_DATA_MAP},
+        "data": trustee_data
+    });
     config_maps
-        .replace(TRUSTEE_DATA_MAP, &Default::default(), &trustee_map)
+        .patch(
+            TRUSTEE_DATA_MAP,
+            &PatchParams::apply(trusted_cluster_operator_lib::FIELD_MANAGER),
+            &Patch::Apply(&body),
+        )
         .await?;
     info!("Recomputed reference values");
     Ok(())
@@ -163,10 +173,17 @@ pub async fn do_mount_secret(client: Client, id: &str, add: bool) -> Result<()> 
     let container = pod_spec.containers.get_mut(0).context(err)?;
     let vol_mounts = container.volume_mounts.get_or_insert_default();
 
+    // Additional check to prevent duplicate mounts. Volume and volume mounts are added atomically, so a volume check suffices.
     if add {
-        let (volume, volume_mount) = generate_secret_volume(id);
-        pod_spec.volumes.get_or_insert_default().push(volume);
-        vol_mounts.push(volume_mount);
+        let already_mounted = pod_spec
+            .volumes
+            .as_ref()
+            .is_some_and(|vs| vs.iter().any(|v| v.name == id));
+        if !already_mounted {
+            let (volume, volume_mount) = generate_secret_volume(id);
+            pod_spec.volumes.get_or_insert_default().push(volume);
+            vol_mounts.push(volume_mount);
+        }
     } else {
         let vol_result = pod_spec.volumes.as_mut().and_then(|vs| {
             let pos = vs.iter().position(|v| v.name == id);
@@ -203,22 +220,27 @@ pub async fn update_attestation_keys(client: Client) -> Result<()> {
                 return false;
             }
 
+            // Removing secrets that don't have an AttestationKey as owner-controller.
             secret
                 .metadata
                 .owner_references
                 .as_ref()
-                .map(|owners| owners.iter().any(|owner| owner.kind == "AttestationKey"))
-                .unwrap_or(false)
+                .is_some_and(|owners| {
+                    owners.iter().any(|owner| {
+                        owner.kind == "AttestationKey" && owner.controller == Some(true)
+                    })
+                })
         })
         .filter_map(|secret| secret.metadata.name.clone())
         .collect();
 
+    // specs should be mutable, as we are patching the deployment.
     let deployments: Api<Deployment> = Api::default_namespaced(client);
-    let deployment = deployments.get(TRUSTEE_DEPLOYMENT).await?;
+    let mut deployment = deployments.get(TRUSTEE_DEPLOYMENT).await?;
     let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no spec");
-    let depl_spec = deployment.spec.as_ref().context(err)?;
+    let depl_spec = deployment.spec.as_mut().context(err)?;
     let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no pod spec");
-    let pod_spec = depl_spec.template.spec.as_ref().context(err)?;
+    let pod_spec = depl_spec.template.spec.as_mut().context(err)?;
 
     // Get existing volumes and volumeMounts, filtering out the attestation key volume
     let mut volumes: Vec<Volume> = pod_spec
@@ -233,7 +255,7 @@ pub async fn update_attestation_keys(client: Client) -> Result<()> {
         .unwrap_or_default();
 
     let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no containers");
-    let container = pod_spec.containers.first().context(err)?;
+    let container = pod_spec.containers.first_mut().context(err)?;
     let mut vol_mounts: Vec<VolumeMount> = container
         .volume_mounts
         .as_ref()
@@ -290,31 +312,21 @@ pub async fn update_attestation_keys(client: Client) -> Result<()> {
     let vol_mounts_changed = container.volume_mounts.as_ref() != Some(&vol_mounts);
 
     if volumes_changed || vol_mounts_changed {
-        // Patch the deployment with updated volumes and volumeMounts
-        let patch = json!({
+        pod_spec.volumes = Some(volumes);
+        container.volume_mounts = Some(vol_mounts);
+
+        let body = json!({
             "apiVersion": "apps/v1",
             "kind": "Deployment",
-            "metadata": {
-                "name": TRUSTEE_DEPLOYMENT
-            },
-            "spec": {
-                "template": {
-                    "spec": {
-                        "volumes": volumes,
-                        "containers": [{
-                            "name": "kbs",
-                            "volumeMounts": vol_mounts
-                        }]
-                    }
-                }
-            }
+            "metadata": {"name": TRUSTEE_DEPLOYMENT},
+            "spec": deployment.spec
         });
 
         deployments
             .patch(
                 TRUSTEE_DEPLOYMENT,
-                &PatchParams::apply("trusted-cluster-operator").force(),
-                &Patch::Apply(&patch),
+                &PatchParams::apply(trusted_cluster_operator_lib::FIELD_MANAGER),
+                &Patch::Apply(&body),
             )
             .await?;
         info!("Successfully patched {TRUSTEE_DEPLOYMENT} with attestation key volumes");
@@ -342,7 +354,7 @@ pub async fn generate_secret(
         data: Some(data),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, Secret, secret);
+    apply_resource!(client, Secret, secret);
     Ok(())
 }
 
@@ -366,7 +378,7 @@ pub async fn generate_attestation_policy(
         data: Some(data),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, ConfigMap, config_map);
+    apply_resource!(client, ConfigMap, config_map);
     Ok(())
 }
 
@@ -415,7 +427,7 @@ pub async fn generate_trustee_data(
         data: Some(data),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, ConfigMap, config_map);
+    apply_resource!(client, ConfigMap, config_map);
     Ok(())
 }
 
@@ -445,7 +457,7 @@ pub async fn generate_kbs_service(
         }),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, Service, service);
+    apply_resource!(client, Service, service);
     Ok(())
 }
 
@@ -571,7 +583,7 @@ pub async fn generate_kbs_deployment(
         }),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, Deployment, deployment);
+    apply_resource!(client, Deployment, deployment);
     Ok(())
 }
 

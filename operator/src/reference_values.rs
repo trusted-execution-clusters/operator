@@ -22,7 +22,7 @@ use kube::runtime::{
     finalizer::Event,
     watcher,
 };
-use kube::{Api, Client, Resource};
+use kube::{Api, Client};
 use log::{info, warn};
 use oci_client::secrets::RegistryAuth;
 use oci_spec::image::ImageConfiguration;
@@ -32,8 +32,8 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use crate::trustee::{self, get_image_pcrs};
 use operator::{
-    ControllerError, RvContextData, controller_error_policy, controller_info,
-    create_or_info_if_exists, upsert_condition,
+    ControllerError, RvContextData, apply_resource, controller_error_policy, controller_info,
+    upsert_condition,
 };
 use trusted_cluster_operator_lib::{conditions::*, reference_values::*, *};
 
@@ -64,7 +64,7 @@ pub async fn create_pcrs_config_map(client: Client, owner_reference: OwnerRefere
         data: Some(empty_data),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, ConfigMap, config_map);
+    apply_resource!(client, ConfigMap, config_map);
     Ok(())
 }
 
@@ -127,7 +127,7 @@ async fn job_reconcile(job: Arc<Job>, ctx: Arc<RvContextData>) -> Result<Action,
         return Ok(Action::requeue(Duration::from_secs(300)));
     }
     let jobs: Api<Job> = Api::default_namespaced(ctx.client.clone());
-    // Foreground deletion: Delete the pod too
+    // Foreground client-side deletion: Delete the pod too
     let delete = jobs.delete(name, &DeleteParams::foreground()).await;
     delete.map_err(Into::<anyhow::Error>::into)?;
     trustee::update_reference_values(Arc::unwrap_or_clone(ctx)).await?;
@@ -174,7 +174,7 @@ async fn compute_fresh_pcrs(
                 JOB_LABEL_KEY.to_string(),
                 PCR_COMMAND_NAME.to_string(),
             )])),
-            owner_references: Some(vec![ctx.owner_reference]),
+            owner_references: Some(vec![ctx.owner_reference.clone()]),
             ..Default::default()
         },
         spec: Some(JobSpec {
@@ -192,7 +192,7 @@ async fn compute_fresh_pcrs(
         }),
         ..Default::default()
     };
-    create_or_info_if_exists!(ctx.client, Job, job);
+    apply_resource!(ctx.client, Job, job);
     Ok(())
 }
 
@@ -283,14 +283,22 @@ async fn image_add_reconcile(
         info!("Adding owner reference from ApprovedImage {name} to TrustedExecutionCluster");
 
         let patch = json!({
+            "apiVersion": "trusted-execution-clusters.io/v1alpha1",
+            "kind": "ApprovedImage",
             "metadata": {
+                "name": name,
                 "ownerReferences": [ctx.owner_reference]
             }
         });
 
+        // SSA requires even apiVersion and kind to be present in the patch.
         let images: Api<ApprovedImage> = Api::default_namespaced(kube_client.clone());
         images
-            .patch(name, &PatchParams::default(), &Patch::Merge(&patch))
+            .patch(
+                name,
+                &PatchParams::apply(trusted_cluster_operator_lib::FIELD_MANAGER),
+                &Patch::Apply(&patch),
+            )
             .await
             .map_err(|e| {
                 finalizer::Error::<ControllerError>::ApplyFailed(anyhow::Error::from(e).into())
@@ -320,8 +328,17 @@ async fn image_add_reconcile(
     let changed = upsert_condition(&mut conditions, committed);
     if changed {
         let images: Api<ApprovedImage> = Api::default_namespaced(kube_client);
-        update_status!(images, &name, ApprovedImageStatus { conditions })
-            .map_err(|e| finalizer::Error::<ControllerError>::ApplyFailed(e.into()))?;
+        // Forcing the update to avoid race condition with operator, which also updates the status field.
+        // TODO: Simplify ownership of this field.
+        update_status!(
+            images,
+            &name,
+            ApprovedImageStatus { conditions },
+            ApprovedImage,
+            trusted_cluster_operator_lib::FIELD_MANAGER,
+            force
+        )
+        .map_err(|e| finalizer::Error::<ControllerError>::ApplyFailed(e.into()))?;
     }
     Ok(action)
 }

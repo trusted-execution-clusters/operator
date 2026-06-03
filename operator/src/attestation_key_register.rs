@@ -14,7 +14,7 @@ use k8s_openapi::apimachinery::pkg::{
     util::intstr::IntOrString,
 };
 use kube::{
-    Api, Client, Resource,
+    Api, Client,
     api::{ListParams, ObjectList, Patch, PatchParams},
     runtime::{Controller, controller::Action, finalizer, finalizer::Event, watcher},
 };
@@ -29,7 +29,7 @@ use trusted_cluster_operator_lib::{AttestationKey, AttestationKeyStatus, Machine
 use crate::conditions::attestation_key_approved_condition;
 use crate::trustee;
 use operator::{
-    ControllerError, TLS_DIR, controller_error_policy, create_or_info_if_exists, read_certificate,
+    ControllerError, TLS_DIR, apply_resource, controller_error_policy, read_certificate,
     upsert_condition,
 };
 
@@ -97,7 +97,7 @@ pub async fn create_attestation_key_register_deployment(
         ..Default::default()
     };
 
-    create_or_info_if_exists!(client, Deployment, deployment);
+    apply_resource!(client, Deployment, deployment);
     info!("Attestation key register deployment created successfully");
     Ok(())
 }
@@ -133,7 +133,7 @@ pub async fn create_attestation_key_register_service(
         ..Default::default()
     };
 
-    create_or_info_if_exists!(client, Service, service);
+    apply_resource!(client, Service, service);
     info!("Attestation key register service created successfully");
     Ok(())
 }
@@ -209,35 +209,45 @@ async fn approve_ak(ak: &AttestationKey, machine: &Machine, client: Client) -> R
 
     if changed {
         let status = AttestationKeyStatus { conditions };
-        update_status!(aks, &name, status)?;
+        update_status!(
+            aks,
+            &name,
+            status,
+            AttestationKey,
+            trusted_cluster_operator_lib::FIELD_MANAGER
+        )?;
         info!("Approved attestation key {name}");
     }
 
     let machine_name = machine.metadata.name.clone().unwrap_or_default();
-    let has_machine_owner = ak
+    let has_machine_owner_controller = ak
         .metadata
         .owner_references
         .as_ref()
         .map(|owners| {
-            owners
-                .iter()
-                .any(|owner| owner.kind == "Machine" && owner.name == machine_name)
+            owners.iter().any(|owner| {
+                owner.kind == "Machine"
+                    && owner.name == machine_name
+                    && owner.controller == Some(true)
+            })
         })
         .unwrap_or(false);
 
-    if !has_machine_owner {
-        let machine_owner_reference =
-            trusted_cluster_operator_lib::generate_owner_reference(machine)?;
+    if !has_machine_owner_controller {
+        let owner_controller_reference =
+            trusted_cluster_operator_lib::generate_owner_controller_reference(machine)?;
 
+        // Replacing the owner of the AttestationKey to the Machine controller, as now the AttestationKey is tied to the Machine.
         let patch = json!({
             "metadata": {
-                "ownerReferences": [machine_owner_reference]
+                "ownerReferences": [owner_controller_reference]
             }
         });
 
+        // This requires a client-side patch since merge patches replaces entire owners field. SSA would upsert, and cause issues where we might not cleanly remove the TEC owner reference.
         aks.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
             .await?;
-        info!("Set Machine as owner of AttestationKey {name}");
+        info!("Set Machine as owner-controller of AttestationKey {name}");
     }
 
     let secret_name = name.clone();
@@ -248,12 +258,13 @@ async fn approve_ak(ak: &AttestationKey, machine: &Machine, client: Client) -> R
         let public_key_data = ByteString(ak.spec.public_key.as_bytes().to_vec());
         let data = BTreeMap::from([("public_key".to_string(), public_key_data)]);
 
-        let owner_reference = trusted_cluster_operator_lib::generate_owner_reference(ak)?;
+        let owner_controller_reference =
+            trusted_cluster_operator_lib::generate_owner_controller_reference(ak)?;
 
         let secret = Secret {
             metadata: ObjectMeta {
                 name: Some(secret_name.clone()),
-                owner_references: Some(vec![owner_reference]),
+                owner_references: Some(vec![owner_controller_reference]),
                 finalizers: Some(vec![ATTESTATION_KEY_SECRET_FINALIZER.to_string()]),
                 ..Default::default()
             },
@@ -261,7 +272,7 @@ async fn approve_ak(ak: &AttestationKey, machine: &Machine, client: Client) -> R
             ..Default::default()
         };
 
-        create_or_info_if_exists!(client.clone(), Secret, secret);
+        apply_resource!(client.clone(), Secret, secret);
         info!("Created secret {secret_name} for attestation key {name} with finalizer");
     }
 
@@ -274,13 +285,16 @@ async fn secret_reconcile(
 ) -> Result<Action, ControllerError> {
     let secret_name = secret.metadata.name.clone().unwrap_or_default();
 
-    // Only handle secrets owned by AttestationKey
+    // Only handle secrets controlled by an AttestationKey
     let is_ak_secret = secret
         .metadata
         .owner_references
         .as_ref()
-        .map(|owners| owners.iter().any(|owner| owner.kind == "AttestationKey"))
-        .unwrap_or(false);
+        .is_some_and(|owners| {
+            owners
+                .iter()
+                .any(|owner| owner.kind == "AttestationKey" && owner.controller == Some(true))
+        });
 
     if !is_ak_secret {
         return Ok(Action::await_change());

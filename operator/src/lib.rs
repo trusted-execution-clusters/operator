@@ -18,8 +18,7 @@ use log::{info, warn};
 use std::fmt::{Debug, Display};
 use std::{sync::Arc, time::Duration};
 
-// Re-export common functions from the lib
-pub use trusted_cluster_operator_lib::generate_owner_reference;
+pub use trusted_cluster_operator_lib::generate_owner_controller_reference;
 
 #[derive(Clone)]
 pub struct RvContextData {
@@ -44,6 +43,34 @@ pub async fn controller_info<T: Debug, E: Debug>(res: Result<T, E>) {
         Ok(o) => info!("reconciled {o:?}"),
         Err(e) => info!("reconcile failed: {e:?}"),
     }
+}
+
+/// Applying a resource using Server-Side Apply (SSA). Creates if absent, updates owned fields if present.
+#[macro_export]
+macro_rules! apply_resource {
+    ($client:expr, $type:ident, $resource:ident) => {
+        $crate::apply_resource!(
+            $client,
+            $type,
+            $resource,
+            trusted_cluster_operator_lib::FIELD_MANAGER
+        )
+    };
+    ($client:expr, $type:ident, $resource:ident, $field_manager:expr) => {{
+        let api: Api<$type> = kube::Api::default_namespaced($client);
+        let name = $resource.metadata.name.as_ref().unwrap().clone();
+        let mut body = serde_json::to_value(&$resource).map_err(anyhow::Error::from)?;
+        body["apiVersion"] = serde_json::json!(<$type as kube::Resource>::api_version(&()));
+        body["kind"] = serde_json::json!(<$type as kube::Resource>::kind(&()));
+        let params = kube::api::PatchParams::apply($field_manager);
+        match api
+            .patch(&name, &params, &kube::api::Patch::Apply(&body))
+            .await
+        {
+            Ok(_) => info!("Applied {} {}", <$type as kube::Resource>::kind(&()), name),
+            Err(e) => return Err(e.into()),
+        }
+    }};
 }
 
 #[macro_export]

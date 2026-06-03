@@ -16,7 +16,7 @@ use kube::runtime::watcher;
 use kube::{Api, Client};
 use log::{error, info, warn};
 
-use operator::{generate_owner_reference, upsert_condition};
+use operator::{generate_owner_controller_reference, upsert_condition};
 use trusted_cluster_operator_lib::{TrustedExecutionCluster, TrustedExecutionClusterStatus};
 use trusted_cluster_operator_lib::{conditions::*, images::*, update_status};
 
@@ -81,7 +81,7 @@ async fn launch_rv_watchers(
             "First registration of TrustedExecutionCluster {name} by this operator. \
              Launching reference value watchers."
         );
-        let owner_reference = generate_owner_reference(&*cluster)?;
+        let owner_controller_reference = generate_owner_controller_reference(&*cluster)?;
         let pcrs_compute_image = get_image_or_env(
             &cluster.spec.pcrs_compute_image,
             RELATED_IMAGE_COMPUTE_PCRS,
@@ -89,7 +89,7 @@ async fn launch_rv_watchers(
         );
         let rv_ctx = RvContextData {
             client,
-            owner_reference: owner_reference.clone(),
+            owner_reference: owner_controller_reference.clone(),
             pcrs_compute_image,
         };
         reference_values::launch_rv_image_controller(rv_ctx.clone()).await;
@@ -125,7 +125,13 @@ async fn reconcile(
             installed_condition(uninstalling_reason, generation, existing_status);
         let changed = upsert_condition(&mut conditions, uninstall_condition);
         if changed {
-            update_status!(clusters, name, TrustedExecutionClusterStatus { conditions })?;
+            update_status!(
+                clusters,
+                name,
+                TrustedExecutionClusterStatus { conditions },
+                TrustedExecutionCluster,
+                trusted_cluster_operator_lib::FIELD_MANAGER
+            )?;
         }
         return Ok(Action::await_change());
     }
@@ -148,7 +154,13 @@ async fn reconcile(
             installed_condition(NOT_INSTALLED_REASON_NON_UNIQUE, generation, existing_status);
         let changed = upsert_condition(&mut conditions, non_unique_condition);
         if changed {
-            update_status!(clusters, name, TrustedExecutionClusterStatus { conditions })?;
+            update_status!(
+                clusters,
+                name,
+                TrustedExecutionClusterStatus { conditions },
+                TrustedExecutionCluster,
+                trusted_cluster_operator_lib::FIELD_MANAGER
+            )?;
         }
         return Ok(Action::requeue(Duration::from_secs(60)));
     }
@@ -161,7 +173,13 @@ async fn reconcile(
         let status = TrustedExecutionClusterStatus {
             conditions: conditions.clone(),
         };
-        update_status!(clusters, name, status)?;
+        update_status!(
+            clusters,
+            name,
+            status,
+            TrustedExecutionCluster,
+            trusted_cluster_operator_lib::FIELD_MANAGER
+        )?;
     }
 
     install_trustee_configuration(kube_client.clone(), &cluster).await?;
@@ -171,7 +189,13 @@ async fn reconcile(
     let changed = upsert_condition(&mut conditions, installed_condition);
     if changed {
         let status = TrustedExecutionClusterStatus { conditions };
-        update_status!(clusters, name, status)?;
+        update_status!(
+            clusters,
+            name,
+            status,
+            TrustedExecutionCluster,
+            trusted_cluster_operator_lib::FIELD_MANAGER
+        )?;
     }
     Ok(Action::await_change())
 }
@@ -180,7 +204,7 @@ async fn install_trustee_configuration(
     client: Client,
     cluster: &TrustedExecutionCluster,
 ) -> Result<()> {
-    let owner_reference = generate_owner_reference(cluster)?;
+    let owner_reference = generate_owner_controller_reference(cluster)?;
 
     let trustee_secret = &cluster.spec.trustee_secret;
     match trustee::generate_trustee_data(client.clone(), owner_reference.clone(), trustee_secret)
@@ -222,7 +246,7 @@ async fn install_trustee_configuration(
 }
 
 async fn install_register_server(client: Client, cluster: &TrustedExecutionCluster) -> Result<()> {
-    let owner_reference = generate_owner_reference(cluster)?;
+    let owner_reference = generate_owner_controller_reference(cluster)?;
 
     let register_server_image = get_image_or_env(
         &cluster.spec.register_server_image,
@@ -256,7 +280,7 @@ async fn install_attestation_key_register(
     client: Client,
     cluster: &TrustedExecutionCluster,
 ) -> Result<()> {
-    let owner_reference = generate_owner_reference(cluster)?;
+    let owner_reference = generate_owner_controller_reference(cluster)?;
 
     let attestation_key_register_image = get_image_or_env(
         &cluster.spec.attestation_key_register_image,

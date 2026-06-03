@@ -30,13 +30,31 @@ use conditions::*;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, OwnerReference, Time};
 use kube::Resource;
 
+pub const FIELD_MANAGER: &str = "trusted-cluster-operator";
+
+// 2 arms for updating status, one for normal updates and one for force updates.
 #[macro_export]
 macro_rules! update_status {
-    ($api:ident, $name:expr, $status:expr) => {{
-        let patch = kube::api::Patch::Merge(serde_json::json!({"status": $status}));
-        $api.patch_status($name, &Default::default(), &patch).await
+    ($api:ident, $name:expr, $status:expr, $type:ty, $field_manager:expr) => {{
+        let patch = kube::api::Patch::Apply(serde_json::json!({
+            "apiVersion": <$type as kube::Resource>::api_version(&()),
+            "kind": <$type as kube::Resource>::kind(&()),
+            "status": $status
+        }));
+        let params = kube::api::PatchParams::apply($field_manager);
+        $api.patch_status($name, &params, &patch).await
             .map_err(Into::<anyhow::Error>::into)
-    }}
+    }};
+    ($api:ident, $name:expr, $status:expr, $type:ty, $field_manager:expr, force) => {{
+        let patch = kube::api::Patch::Apply(serde_json::json!({
+            "apiVersion": <$type as kube::Resource>::api_version(&()),
+            "kind": <$type as kube::Resource>::kind(&()),
+            "status": $status
+        }));
+        let params = kube::api::PatchParams::apply($field_manager).force();
+        $api.patch_status($name, &params, &patch).await
+            .map_err(Into::<anyhow::Error>::into)
+    }};
 }
 
 pub fn condition_status(status: bool) -> String {
@@ -108,8 +126,8 @@ pub fn committed_condition(
     }
 }
 
-/// Generate an OwnerReference for any Kubernetes resource
-pub fn generate_owner_reference<T: Resource<DynamicType = ()>>(
+/// OwnerReference with `controller: true` for lifecycle and garbage collection.
+pub fn generate_owner_controller_reference<T: Resource<DynamicType = ()>>(
     object: &T,
 ) -> anyhow::Result<OwnerReference> {
     let name = object.meta().name.clone();

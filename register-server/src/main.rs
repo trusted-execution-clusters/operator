@@ -24,8 +24,10 @@ use uuid::Uuid;
 
 use trusted_cluster_operator_lib::endpoints::*;
 use trusted_cluster_operator_lib::{
-    generate_owner_reference, get_trusted_execution_cluster, Machine, MachineSpec,
+    generate_owner_controller_reference, get_trusted_execution_cluster, Machine, MachineSpec,
 };
+
+const FIELD_MANAGER: &str = "register-server";
 
 #[derive(Parser)]
 #[command(name = "register-server")]
@@ -179,18 +181,20 @@ async fn register_handler() -> impl IntoResponse {
         Err(e) => return internal_error(e.into()),
     };
 
-    // Get the TrustedExecutionCluster to use as owner reference for the Machine
+    // Get the TrustedExecutionCluster to use as owner controller reference for the Machine
     let cluster = match get_trusted_execution_cluster(kube_client.clone()).await {
         Ok(c) => c,
         Err(e) => return internal_error(e.context("Failed to get TrustedExecutionCluster")),
     };
 
-    let owner_reference = match generate_owner_reference(&cluster) {
+    let owner_controller_reference = match generate_owner_controller_reference(&cluster) {
         Ok(o) => o,
-        Err(e) => return internal_error(e.context("Failed to generate owner reference")),
+        Err(e) => {
+            return internal_error(e.context("Failed to generate owner controller reference"))
+        }
     };
 
-    match create_machine(kube_client.clone(), &id, owner_reference).await {
+    match create_machine(kube_client.clone(), &id, owner_controller_reference).await {
         Ok(_) => info!("Machine created successfully: machine-{id}"),
         Err(e) => return internal_error(e.context("Failed to create machine")),
     }
@@ -219,13 +223,13 @@ async fn register_handler() -> impl IntoResponse {
 async fn create_machine(
     client: Client,
     uuid: &str,
-    owner_reference: OwnerReference,
+    owner_controller_reference: OwnerReference,
 ) -> anyhow::Result<()> {
     let machine_name = format!("machine-{uuid}");
     let machine = Machine {
         metadata: ObjectMeta {
             name: Some(machine_name.clone()),
-            owner_references: Some(vec![owner_reference]),
+            owner_references: Some(vec![owner_controller_reference]),
             ..Default::default()
         },
         spec: MachineSpec {
@@ -235,7 +239,13 @@ async fn create_machine(
     };
 
     let machines: Api<Machine> = Api::default_namespaced(client);
-    machines.create(&Default::default(), &machine).await?;
+    let params = kube::api::PostParams {
+        field_manager: Some(FIELD_MANAGER.to_string()),
+        ..Default::default()
+    };
+
+    // Client side apply, as this is a one time operation for each machine (no reconciliation loop), and SSA is mainly used for patching. Setting field manager, so that we can identify the source of the creation later for reconciliation by operator.
+    machines.create(&params, &machine).await?;
     info!("Created Machine: {machine_name} with UUID: {uuid}");
     Ok(())
 }

@@ -9,6 +9,7 @@ executables := 3 if {
   input.tpm.pcr04 in query_reference_value("tpm_pcr4")
   input.tpm.pcr14 in query_reference_value("tpm_pcr14")
 
+  input.tpm.ak_public in query_reference_value("trusted_aks")
 }
 # Azure SNP vTPM validation
 executables := 3 if {

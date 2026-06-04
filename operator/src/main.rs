@@ -27,8 +27,8 @@ mod register_server;
 #[cfg(test)]
 mod test_utils;
 mod trustee;
-
 use crate::conditions::*;
+use jsonwebtoken::crypto::CryptoProvider;
 use operator::*;
 
 /// Default version tag for operator-managed component images
@@ -200,6 +200,12 @@ async fn install_trustee_configuration(
         Err(e) => error!("Failed to create the attestation policy configmap: {e}"),
     }
 
+    match trustee::generate_trustee_auth_keys_secret(client.clone(), owner_reference.clone()).await
+    {
+        Ok(_) => info!("Generate auth keys for the KBS API",),
+        Err(e) => error!("Failed to create the auth keys: {e}"),
+    }
+
     let kbs_port = cluster.spec.trustee_kbs_port;
     match trustee::generate_kbs_service(client.clone(), owner_reference.clone(), kbs_port).await {
         Ok(_) => info!("Generate the KBS service"),
@@ -293,7 +299,8 @@ async fn install_attestation_key_register(
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
-
+    // Prevent conflict issues with AWS-LC provider and rust crypto by installing the default provider explicitly
+    let _ = CryptoProvider::install_default(&jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER);
     let kube_client = Client::try_default().await?;
     info!("trusted execution clusters operator",);
     let cl: Api<TrustedExecutionCluster> = Api::default_namespaced(kube_client.clone());
@@ -303,6 +310,7 @@ async fn main() -> Result<()> {
     attestation_key_register::launch_ak_controller(kube_client.clone()).await;
     attestation_key_register::launch_machine_ak_controller(kube_client.clone()).await;
     attestation_key_register::launch_secret_ak_controller(kube_client.clone()).await;
+    trustee::launch_trustee_sync_controller(kube_client.clone()).await;
 
     let ctx = Arc::new(ClusterContext {
         client: kube_client,

@@ -8,28 +8,40 @@ use anyhow::{Context, Result};
 use base64::{Engine as _, engine::general_purpose};
 use chrono::{DateTime, Utc};
 use clevis_pin_trustee_lib::Key as ClevisKey;
+use futures_util::StreamExt;
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
     ConfigMap, ConfigMapVolumeSource, Container, ContainerPort, EmptyDirVolumeSource, EnvVar,
-    KeyToPath, PodSpec, PodTemplateSpec, ProjectedVolumeSource, Secret, SecretProjection,
-    SecretVolumeSource, Service, ServicePort, ServiceSpec, Volume, VolumeMount, VolumeProjection,
+    KeyToPath, PodSpec, PodTemplateSpec, Secret, SecretVolumeSource, Service, ServicePort,
+    ServiceSpec, Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::{
     apis::meta::v1::{LabelSelector, OwnerReference},
     util::intstr::IntOrString,
 };
+
 use kube::{
     Api, Client, Resource,
-    api::{ObjectMeta, Patch, PatchParams},
+    api::ObjectMeta,
+    runtime::{
+        controller::{Action, Controller},
+        watcher,
+    },
 };
-use log::info;
-use operator::{RvContextData, TLS_DIR, create_or_info_if_exists, read_certificate};
+use log::{info, warn};
+use operator::{
+    ControllerError, RvContextData, TLS_DIR, controller_error_policy, controller_info,
+    create_or_info_if_exists, read_certificate,
+};
+
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use serde::{Serialize, Serializer};
 use serde_json::{Value::String as JsonString, json};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-use trusted_cluster_operator_lib::endpoints::*;
 use trusted_cluster_operator_lib::reference_values::*;
+use trusted_cluster_operator_lib::{Machine, endpoints::*};
 
 const TRUSTEE_DATA_DIR: &str = "/opt/trustee";
 pub const TRUSTEE_SECRETS_PATH: &str = "/opt/trustee/kbs-repository/default";
@@ -38,8 +50,8 @@ pub(crate) const REFERENCE_VALUES_FILE: &str = "reference-values.json";
 
 pub(crate) const TRUSTEE_DATA_MAP: &str = "trustee-data";
 const ATT_POLICY_MAP: &str = "attestation-policy";
-const TRUSTED_AK_KEYS_VOLUME: &str = "trusted-ak-keys";
-const TRUSTED_AK_KEYS_DIR: &str = "/etc/tpm/trusted_ak_keys";
+const TRUSTEE_AUTH_SECRET: &str = "trustee-auth";
+const TRUSTEE_AUTH_KEY_DIR: &str = "/key";
 
 fn primitive_date_time_to_str<S>(d: &DateTime<Utc>, s: S) -> Result<S::Ok, S::Error>
 where
@@ -109,6 +121,21 @@ pub async fn update_reference_values(ctx: RvContextData) -> Result<()> {
     Ok(())
 }
 
+pub struct Ed25519KeyPair {
+    pub private_key_pem: Vec<u8>,
+    pub public_key_pem: Vec<u8>,
+}
+
+fn generate_ed25519_key_pair() -> Result<Ed25519KeyPair> {
+    let key = openssl::pkey::PKey::generate_ed25519()?;
+    let private_key_pem = key.private_key_to_pem_pkcs8()?;
+    let public_key_pem = key.public_key_to_pem()?;
+    Ok(Ed25519KeyPair {
+        private_key_pem,
+        public_key_pem,
+    })
+}
+
 fn generate_luks_key() -> Result<Vec<u8>> {
     // Constraint: 32 bytes b64-encoded, thus 24
     let mut pass = [0; 24];
@@ -120,74 +147,163 @@ fn generate_luks_key() -> Result<Vec<u8>> {
     };
     serde_json::to_vec(&jwk).map_err(Into::into)
 }
+async fn get_auth_key_token(client: &Client) -> Result<String> {
+    let secret_api: Api<Secret> = Api::default_namespaced(client.clone());
+    let auth_secret = secret_api.get(TRUSTEE_AUTH_SECRET).await?;
+    let auth_data = auth_secret.data.context("Auth secret has no data")?;
+    let auth_key_bytes = auth_data
+        .get("private.key")
+        .context("Auth secret missing private.key")?;
 
-fn generate_secret_volume(id: &str) -> (Volume, VolumeMount) {
-    (
-        Volume {
-            name: id.to_string(),
-            secret: Some(SecretVolumeSource {
-                secret_name: Some(id.to_string()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        },
-        VolumeMount {
-            name: id.to_string(),
-            mount_path: format!("{TRUSTEE_SECRETS_PATH}/{id}"),
-            ..Default::default()
-        },
-    )
+    let claims = json!({
+        "role": "admin",
+        "exp": 2147483647 // Set to Jan 19, 2038
+    });
+
+    let encoding_key = EncodingKey::from_ed_pem(auth_key_bytes.0.as_slice())?;
+
+    let token = encode(&Header::new(Algorithm::EdDSA), &claims, &encoding_key)?;
+    Ok(token)
 }
+async fn get_kbs_connection(client: &Client) -> Result<(String, Vec<String>)> {
+    let tec = trusted_cluster_operator_lib::get_trusted_execution_cluster(client.clone()).await?;
+    let secret_api: Api<Secret> = Api::default_namespaced(client.clone());
 
-pub async fn mount_secret(client: Client, id: &str) -> Result<()> {
-    let result = do_mount_secret(client, id, true).await;
-    info!("Mounted secret {id} to {TRUSTEE_DEPLOYMENT}");
-    result
-}
-
-pub async fn unmount_secret(client: Client, id: &str) -> Result<()> {
-    let result = do_mount_secret(client, id, false).await;
-    info!("Unmounted secret {id} from {TRUSTEE_DEPLOYMENT}");
-    result
-}
-
-pub async fn do_mount_secret(client: Client, id: &str, add: bool) -> Result<()> {
-    let deployments: Api<Deployment> = Api::default_namespaced(client);
-    let mut deployment = deployments.get(TRUSTEE_DEPLOYMENT).await?;
-
-    let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no spec");
-    let depl_spec = deployment.spec.as_mut().context(err)?;
-    let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no pod spec");
-    let pod_spec = depl_spec.template.spec.as_mut().context(err)?;
-    let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no containers");
-    let container = pod_spec.containers.get_mut(0).context(err)?;
-    let vol_mounts = container.volume_mounts.get_or_insert_default();
-
-    if add {
-        let (volume, volume_mount) = generate_secret_volume(id);
-        pod_spec.volumes.get_or_insert_default().push(volume);
-        vol_mounts.push(volume_mount);
-    } else {
-        let vol_result = pod_spec.volumes.as_mut().and_then(|vs| {
-            let pos = vs.iter().position(|v| v.name == id);
-            pos.map(|p| vs.swap_remove(p))
-        });
-        if vol_result.is_none() {
-            info!("Secret {id} was to be dropped, but volume had already been removed");
-        }
-        let vol_mount_result = container.volume_mounts.as_mut().and_then(|vms| {
-            let pos = vms.iter().position(|v| v.name == id);
-            pos.map(|p| vms.swap_remove(p))
-        });
-        if vol_mount_result.is_none() {
-            info!("Secret {id} was to be dropped, but volume mount had already been removed");
+    if let Some(secret_name) = &tec.spec.trustee_secret {
+        if let Ok(secret) = secret_api.get(secret_name).await {
+            if let Some(ca_crt) = secret.data.as_ref().and_then(|d| d.get("ca.crt")) {
+                let ca_pem = String::from_utf8(ca_crt.0.clone())
+                    .context("ca certificate is not valid UTF-8")?;
+                let trustee_addr = format!(
+                    "https://{}",
+                    tec.spec
+                        .public_trustee_addr
+                        .as_ref()
+                        .context("TrustedExecutionCluster missing public_trustee_addr HTTPS")?
+                );
+                return Ok((trustee_addr, vec![ca_pem]));
+            }
         }
     }
 
-    deployments
-        .replace(TRUSTEE_DEPLOYMENT, &Default::default(), &deployment)
-        .await?;
+    Ok((
+        format!(
+            "http://{}",
+            tec.spec
+                .public_trustee_addr
+                .as_ref()
+                .context("TrustedExecutionCluster missing public_trustee_addr HTTP")?
+        ),
+        vec![],
+    ))
+}
+
+pub fn secret_path(id: &str) -> String {
+    format!("default/{id}/root")
+}
+
+pub async fn send_secret(client: Client, id: &str) -> Result<()> {
+    let secret_api: Api<Secret> = Api::default_namespaced(client.clone());
+    let auth_key_token = get_auth_key_token(&client).await?;
+    let (url, certs) = get_kbs_connection(&client).await?;
+    let secret = secret_api.get(id).await?;
+    let secret_data = secret.data.context("Secret has no data")?;
+    let resource_bytes = secret_data
+        .get("root")
+        .context("Secret missing root key")?
+        .0
+        .clone();
+    let path = secret_path(id);
+    info!("Sending secret {id} to KBS API...");
+    kbs_client::set_resource(&url, Some(auth_key_token), resource_bytes, &path, certs).await?;
+    info!("Secret {id} sent successfully");
     Ok(())
+}
+
+pub async fn delete_secret(client: Client, id: &str) -> Result<()> {
+    let auth_key_token = get_auth_key_token(&client).await?;
+    let (url, certs) = get_kbs_connection(&client).await?;
+    let path = secret_path(id);
+    info!("Deleting secret {id} to KBS API...");
+    kbs_client::delete_resource(&url, Some(auth_key_token), &path, certs).await?;
+    info!("Secret {id} deleted successfully");
+    Ok(())
+}
+
+pub async fn register_ak(client: Client, ak: &str) -> Result<()> {
+    let auth_key_token = get_auth_key_token(&client).await?;
+    let (url, certs) = get_kbs_connection(&client).await?;
+    info!("Registering AK to KBS API...");
+    kbs_client::set_sample_rv(
+        url.to_string(),
+        "trusted_aks".to_string(),
+        JsonString(ak.to_string()),
+        Some(auth_key_token),
+        certs,
+    )
+    .await?;
+    info!("AK registered successfully");
+    Ok(())
+}
+
+pub async fn sync_all_machine_luks_key(client: Client) -> Result<()> {
+    let machine_api: Api<Machine> = Api::default_namespaced(client.clone());
+    let machine_list = machine_api.list(&Default::default()).await?;
+
+    let machine_ids: Vec<String> = machine_list
+        .items
+        .iter()
+        .map(|machine| machine.spec.id.clone())
+        .collect();
+
+    info!("Syncing {} machine luks key to KBS", machine_ids.len());
+    for id in &machine_ids {
+        if let Err(e) = send_secret(client.clone(), id).await {
+            warn!("Failed to sync secret {id} to KBS: {e}");
+        }
+    }
+    Ok(())
+}
+
+async fn trustee_deployment_reconcile(
+    deployment: Arc<Deployment>,
+    client: Arc<Client>,
+) -> Result<Action, ControllerError> {
+    if let Some(status) = &deployment.status {
+        let desired = deployment
+            .spec
+            .as_ref()
+            .and_then(|s| s.replicas)
+            .unwrap_or(1);
+        let ready = status.ready_replicas.unwrap_or(0);
+        if ready >= desired && desired > 0 {
+            info!("{TRUSTEE_DEPLOYMENT} is ready, syncing machine secrets");
+            sync_all_machine_luks_key(Arc::unwrap_or_clone(client.clone()))
+                .await
+                .map_err(ControllerError::Anyhow)?;
+            update_attestation_keys(Arc::unwrap_or_clone(client))
+                .await
+                .map_err(ControllerError::Anyhow)?;
+        }
+    }
+    Ok(Action::await_change())
+}
+
+pub async fn launch_trustee_sync_controller(client: Client) {
+    let deployments: Api<Deployment> = Api::default_namespaced(client.clone());
+    let watcher_config = watcher::Config {
+        label_selector: Some(format!("app={TRUSTEE_APP_LABEL}")),
+        ..Default::default()
+    };
+    tokio::spawn(
+        Controller::new(deployments, watcher_config)
+            .run(
+                trustee_deployment_reconcile,
+                controller_error_policy,
+                Arc::new(client),
+            )
+            .for_each(controller_info),
+    );
 }
 
 pub async fn update_attestation_keys(client: Client) -> Result<()> {
@@ -213,113 +329,10 @@ pub async fn update_attestation_keys(client: Client) -> Result<()> {
         .filter_map(|secret| secret.metadata.name.clone())
         .collect();
 
-    let deployments: Api<Deployment> = Api::default_namespaced(client);
-    let deployment = deployments.get(TRUSTEE_DEPLOYMENT).await?;
-    let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no spec");
-    let depl_spec = deployment.spec.as_ref().context(err)?;
-    let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no pod spec");
-    let pod_spec = depl_spec.template.spec.as_ref().context(err)?;
-
-    // Get existing volumes and volumeMounts, filtering out the attestation key volume
-    let mut volumes: Vec<Volume> = pod_spec
-        .volumes
-        .as_ref()
-        .map(|v| {
-            v.iter()
-                .filter(|vol| vol.name != TRUSTED_AK_KEYS_VOLUME)
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no containers");
-    let container = pod_spec.containers.first().context(err)?;
-    let mut vol_mounts: Vec<VolumeMount> = container
-        .volume_mounts
-        .as_ref()
-        .map(|vm| {
-            vm.iter()
-                .filter(|mount| mount.name != TRUSTED_AK_KEYS_VOLUME)
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
-
-    if ak_secrets.is_empty() {
-        info!(
-            "No AttestationKey secrets found, removing projected volume from {TRUSTEE_DEPLOYMENT}"
-        );
-    } else {
-        // Build the projected volume with all AttestationKey secrets
-        let projections: Vec<VolumeProjection> = ak_secrets
-            .iter()
-            .map(|secret_name| VolumeProjection {
-                secret: Some(SecretProjection {
-                    name: secret_name.to_string(),
-                    items: Some(vec![KeyToPath {
-                        key: "public_key".to_string(),
-                        path: format!("{secret_name}.pub"),
-                        ..Default::default()
-                    }]),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            })
-            .collect();
-
-        let projected_volume = Volume {
-            name: TRUSTED_AK_KEYS_VOLUME.to_string(),
-            projected: Some(ProjectedVolumeSource {
-                sources: Some(projections),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        volumes.push(projected_volume);
-
-        vol_mounts.push(VolumeMount {
-            name: TRUSTED_AK_KEYS_VOLUME.to_string(),
-            mount_path: TRUSTED_AK_KEYS_DIR.to_string(),
-            ..Default::default()
-        });
-    }
-
-    // Check if volumes or volumeMounts have changed
-    let volumes_changed = pod_spec.volumes.as_ref() != Some(&volumes);
-    let vol_mounts_changed = container.volume_mounts.as_ref() != Some(&vol_mounts);
-
-    if volumes_changed || vol_mounts_changed {
-        // Patch the deployment with updated volumes and volumeMounts
-        let patch = json!({
-            "apiVersion": "apps/v1",
-            "kind": "Deployment",
-            "metadata": {
-                "name": TRUSTEE_DEPLOYMENT
-            },
-            "spec": {
-                "template": {
-                    "spec": {
-                        "volumes": volumes,
-                        "containers": [{
-                            "name": "kbs",
-                            "volumeMounts": vol_mounts
-                        }]
-                    }
-                }
-            }
-        });
-
-        deployments
-            .patch(
-                TRUSTEE_DEPLOYMENT,
-                &PatchParams::apply("trusted-cluster-operator").force(),
-                &Patch::Apply(&patch),
-            )
-            .await?;
-        info!("Successfully patched {TRUSTEE_DEPLOYMENT} with attestation key volumes");
-    } else {
-        info!("No changes to attestation key volumes, skipping deployment update");
+    for ak in ak_secrets {
+        if let Err(e) = register_ak(client.clone(), &ak).await {
+            warn!("Failed to register AK {ak} to KBS: {e}");
+        }
     }
 
     Ok(())
@@ -336,6 +349,35 @@ pub async fn generate_secret(
     let secret = Secret {
         metadata: ObjectMeta {
             name: Some(id.to_string()),
+            owner_references: Some(vec![owner_reference]),
+            ..Default::default()
+        },
+        data: Some(data),
+        ..Default::default()
+    };
+    create_or_info_if_exists!(client, Secret, secret);
+    Ok(())
+}
+
+pub async fn generate_trustee_auth_keys_secret(
+    client: Client,
+    owner_reference: OwnerReference,
+) -> Result<()> {
+    let key_pair = generate_ed25519_key_pair()?;
+    let data = BTreeMap::from([
+        (
+            "private.key".to_string(),
+            k8s_openapi::ByteString(key_pair.private_key_pem),
+        ),
+        (
+            "public.pub".to_string(),
+            k8s_openapi::ByteString(key_pair.public_key_pem),
+        ),
+    ]);
+
+    let secret = Secret {
+        metadata: ObjectMeta {
+            name: Some(TRUSTEE_AUTH_SECRET.to_string()),
             owner_references: Some(vec![owner_reference]),
             ..Default::default()
         },
@@ -449,7 +491,7 @@ pub async fn generate_kbs_service(
     Ok(())
 }
 
-fn generate_kbs_volume_templates() -> [(&'static str, &'static str, Volume); 3] {
+fn generate_kbs_volume_templates() -> [(&'static str, &'static str, Volume); 4] {
     [
         (
             ATT_POLICY_MAP,
@@ -479,6 +521,22 @@ fn generate_kbs_volume_templates() -> [(&'static str, &'static str, Volume); 3] 
             Volume {
                 empty_dir: Some(EmptyDirVolumeSource {
                     medium: Some("Memory".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ),
+        (
+            TRUSTEE_AUTH_SECRET,
+            TRUSTEE_AUTH_KEY_DIR,
+            Volume {
+                secret: Some(SecretVolumeSource {
+                    secret_name: Some(TRUSTEE_AUTH_SECRET.to_string()),
+                    items: Some(vec![KeyToPath {
+                        key: "public.pub".to_string(),
+                        path: "public.pub".to_string(),
+                        ..Default::default()
+                    }]),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -543,7 +601,10 @@ pub async fn generate_kbs_deployment(
     image: &str,
     secret: &Option<String>,
 ) -> Result<()> {
-    let selector = Some(BTreeMap::from([("app".to_string(), "kbs".to_string())]));
+    let selector = Some(BTreeMap::from([(
+        "app".to_string(),
+        TRUSTEE_APP_LABEL.to_string(),
+    )]));
     let tls_volumes = read_certificate(client.clone(), secret).await?;
     let pod_spec = generate_kbs_pod_spec(image, tls_volumes);
 
@@ -551,6 +612,7 @@ pub async fn generate_kbs_deployment(
     let deployment = Deployment {
         metadata: ObjectMeta {
             name: Some(TRUSTEE_DEPLOYMENT.to_string()),
+            labels: selector.clone(),
             owner_references: Some(vec![owner_reference]),
             ..Default::default()
         },
@@ -580,7 +642,6 @@ mod tests {
     use super::*;
     use crate::test_utils::*;
     use http::{Method, Request, StatusCode};
-    use kube::client::Body;
     use trusted_cluster_operator_test_utils::mock_client::*;
 
     #[test]
@@ -698,115 +759,21 @@ mod tests {
         assert_eq!(jwk.key.len(), 32);
     }
 
-    fn dummy_deployment() -> Deployment {
-        Deployment {
-            spec: Some(DeploymentSpec {
-                replicas: Some(1),
-                template: PodTemplateSpec {
-                    spec: Some(PodSpec {
-                        containers: vec![Container::default()],
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-            ..Default::default()
-        }
+    #[test]
+    fn test_generate_ed25519_key_pair() {
+        let pair = generate_ed25519_key_pair().unwrap();
+        let priv_pem = String::from_utf8(pair.private_key_pem).unwrap();
+        let pub_pem = String::from_utf8(pair.public_key_pem).unwrap();
+        assert!(priv_pem.starts_with("-----BEGIN PRIVATE KEY-----"));
+        assert!(pub_pem.starts_with("-----BEGIN PUBLIC KEY-----"));
     }
 
-    #[tokio::test]
-    async fn test_mount_secret_success() {
-        let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
-            (0, &Method::GET) | (1, &Method::PUT) => {
-                Ok(serde_json::to_string(&dummy_deployment()).unwrap())
-            }
-            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
-        };
-        count_check!(2, clos, |client| {
-            assert!(mount_secret(client, "id").await.is_ok());
-        });
-    }
-
-    #[tokio::test]
-    async fn test_mount_secret_no_depl() {
-        let clos = async |_, _| Err(StatusCode::NOT_FOUND);
-        count_check!(1, clos, |client| {
-            assert!(mount_secret(client, "id").await.is_err());
-        });
-    }
-
-    #[tokio::test]
-    async fn test_mount_secret_no_spec() {
-        let clos = async |_, _| {
-            let mut depl = dummy_deployment();
-            depl.spec = None;
-            Ok(serde_json::to_string(&depl).unwrap())
-        };
-        count_check!(1, clos, |client| {
-            let err = mount_secret(client, "id").await.err().unwrap();
-            assert!(err.to_string().contains("but had no spec"));
-        });
-    }
-
-    #[tokio::test]
-    async fn test_mount_secret_no_pod_spec() {
-        let clos = async |_, _| {
-            let mut depl = dummy_deployment();
-            let spec = depl.spec.as_mut().unwrap();
-            spec.template.spec = None;
-            Ok(serde_json::to_string(&depl).unwrap())
-        };
-        count_check!(1, clos, |client| {
-            let err = mount_secret(client, "id").await.err().unwrap();
-            assert!(err.to_string().contains("but had no pod spec"));
-        });
-    }
-
-    #[tokio::test]
-    async fn test_mount_secret_no_containers() {
-        let clos = async |_, _| {
-            let mut depl = dummy_deployment();
-            let spec = depl.spec.as_mut().unwrap();
-            let pod_spec = spec.template.spec.as_mut().unwrap();
-            pod_spec.containers = vec![];
-            Ok(serde_json::to_string(&depl).unwrap())
-        };
-        count_check!(1, clos, |client| {
-            let err = mount_secret(client, "id").await.err().unwrap();
-            assert!(err.to_string().contains("but had no containers"));
-        });
-    }
-
-    #[tokio::test]
-    async fn test_unmount_secret() {
-        let clos = async |req: Request<Body>, ctr| match (ctr, req.method()) {
-            (0, &Method::GET) => {
-                let mut depl = dummy_deployment();
-                let spec = depl.spec.as_mut().unwrap();
-                let pod_spec = spec.template.spec.as_mut().unwrap();
-                pod_spec.volumes = Some(vec![Volume {
-                    name: "id".to_string(),
-                    ..Default::default()
-                }]);
-                let container = pod_spec.containers.get_mut(0).unwrap();
-                container.volume_mounts = Some(vec![VolumeMount {
-                    name: "id".to_string(),
-                    ..Default::default()
-                }]);
-                Ok(serde_json::to_string(&depl).unwrap())
-            }
-            (1, &Method::PUT) => {
-                let bytes = req.into_body().collect_bytes().await.unwrap().to_vec();
-                let body = String::from_utf8_lossy(&bytes);
-                assert!(!body.contains("id"));
-                Ok(serde_json::to_string(&dummy_deployment()).unwrap())
-            }
-            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
-        };
-        count_check!(2, clos, |client| {
-            assert!(unmount_secret(client, "id").await.is_ok());
-        });
+    #[test]
+    fn test_generate_ed25519_key_pair_unique() {
+        let pair1 = generate_ed25519_key_pair().unwrap();
+        let pair2 = generate_ed25519_key_pair().unwrap();
+        assert_ne!(pair1.private_key_pem, pair2.private_key_pem);
+        assert_ne!(pair1.public_key_pem, pair2.public_key_pem);
     }
 
     #[tokio::test]

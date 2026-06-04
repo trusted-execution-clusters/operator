@@ -12,8 +12,8 @@ use futures_util::StreamExt;
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
     ConfigMap, ConfigMapVolumeSource, Container, ContainerPort, EmptyDirVolumeSource, EnvVar,
-    KeyToPath, PodSpec, PodTemplateSpec, ProjectedVolumeSource, Secret, SecretProjection,
-    SecretVolumeSource, Service, ServicePort, ServiceSpec, Volume, VolumeMount, VolumeProjection,
+    KeyToPath, PodSpec, PodTemplateSpec, Secret, SecretVolumeSource, Service, ServicePort,
+    ServiceSpec, Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::{
     apis::meta::v1::{LabelSelector, OwnerReference},
@@ -22,7 +22,7 @@ use k8s_openapi::apimachinery::pkg::{
 
 use kube::{
     Api, Client, Resource,
-    api::{ObjectMeta, Patch, PatchParams},
+    api::ObjectMeta,
     runtime::{
         controller::{Action, Controller},
         watcher,
@@ -50,8 +50,6 @@ pub(crate) const REFERENCE_VALUES_FILE: &str = "reference-values.json";
 
 pub(crate) const TRUSTEE_DATA_MAP: &str = "trustee-data";
 const ATT_POLICY_MAP: &str = "attestation-policy";
-const TRUSTED_AK_KEYS_VOLUME: &str = "trusted-ak-keys";
-const TRUSTED_AK_KEYS_DIR: &str = "/etc/tpm/trusted_ak_keys";
 const TRUSTEE_AUTH_SECRET: &str = "trustee-auth";
 const TRUSTEE_AUTH_KEY_DIR: &str = "/key";
 
@@ -232,6 +230,22 @@ pub async fn delete_secret(client: Client, id: &str) -> Result<()> {
     Ok(())
 }
 
+pub async fn register_ak(client: Client, ak: &str) -> Result<()> {
+    let auth_key_token = get_auth_key_token(&client).await?;
+    let (url, certs) = get_kbs_connection(&client).await?;
+    info!("Registering AK to KBS API...");
+    kbs_client::set_sample_rv(
+        url.to_string(),
+        "trusted_aks".to_string(),
+        JsonString(ak.to_string()),
+        Some(auth_key_token),
+        certs,
+    )
+    .await?;
+    info!("AK registered successfully");
+    Ok(())
+}
+
 pub async fn sync_all_machine_luks_key(client: Client) -> Result<()> {
     let machine_api: Api<Machine> = Api::default_namespaced(client.clone());
     let machine_list = machine_api.list(&Default::default()).await?;
@@ -265,6 +279,9 @@ async fn trustee_deployment_reconcile(
         if ready >= desired && desired > 0 {
             info!("{TRUSTEE_DEPLOYMENT} is ready, syncing machine secrets");
             sync_all_machine_luks_key(Arc::unwrap_or_clone(client.clone()))
+                .await
+                .map_err(ControllerError::Anyhow)?;
+            update_attestation_keys(Arc::unwrap_or_clone(client))
                 .await
                 .map_err(ControllerError::Anyhow)?;
         }
@@ -312,113 +329,10 @@ pub async fn update_attestation_keys(client: Client) -> Result<()> {
         .filter_map(|secret| secret.metadata.name.clone())
         .collect();
 
-    let deployments: Api<Deployment> = Api::default_namespaced(client);
-    let deployment = deployments.get(TRUSTEE_DEPLOYMENT).await?;
-    let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no spec");
-    let depl_spec = deployment.spec.as_ref().context(err)?;
-    let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no pod spec");
-    let pod_spec = depl_spec.template.spec.as_ref().context(err)?;
-
-    // Get existing volumes and volumeMounts, filtering out the attestation key volume
-    let mut volumes: Vec<Volume> = pod_spec
-        .volumes
-        .as_ref()
-        .map(|v| {
-            v.iter()
-                .filter(|vol| vol.name != TRUSTED_AK_KEYS_VOLUME)
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no containers");
-    let container = pod_spec.containers.first().context(err)?;
-    let mut vol_mounts: Vec<VolumeMount> = container
-        .volume_mounts
-        .as_ref()
-        .map(|vm| {
-            vm.iter()
-                .filter(|mount| mount.name != TRUSTED_AK_KEYS_VOLUME)
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
-
-    if ak_secrets.is_empty() {
-        info!(
-            "No AttestationKey secrets found, removing projected volume from {TRUSTEE_DEPLOYMENT}"
-        );
-    } else {
-        // Build the projected volume with all AttestationKey secrets
-        let projections: Vec<VolumeProjection> = ak_secrets
-            .iter()
-            .map(|secret_name| VolumeProjection {
-                secret: Some(SecretProjection {
-                    name: secret_name.to_string(),
-                    items: Some(vec![KeyToPath {
-                        key: "public_key".to_string(),
-                        path: format!("{secret_name}.pub"),
-                        ..Default::default()
-                    }]),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            })
-            .collect();
-
-        let projected_volume = Volume {
-            name: TRUSTED_AK_KEYS_VOLUME.to_string(),
-            projected: Some(ProjectedVolumeSource {
-                sources: Some(projections),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        volumes.push(projected_volume);
-
-        vol_mounts.push(VolumeMount {
-            name: TRUSTED_AK_KEYS_VOLUME.to_string(),
-            mount_path: TRUSTED_AK_KEYS_DIR.to_string(),
-            ..Default::default()
-        });
-    }
-
-    // Check if volumes or volumeMounts have changed
-    let volumes_changed = pod_spec.volumes.as_ref() != Some(&volumes);
-    let vol_mounts_changed = container.volume_mounts.as_ref() != Some(&vol_mounts);
-
-    if volumes_changed || vol_mounts_changed {
-        // Patch the deployment with updated volumes and volumeMounts
-        let patch = json!({
-            "apiVersion": "apps/v1",
-            "kind": "Deployment",
-            "metadata": {
-                "name": TRUSTEE_DEPLOYMENT
-            },
-            "spec": {
-                "template": {
-                    "spec": {
-                        "volumes": volumes,
-                        "containers": [{
-                            "name": "kbs",
-                            "volumeMounts": vol_mounts
-                        }]
-                    }
-                }
-            }
-        });
-
-        deployments
-            .patch(
-                TRUSTEE_DEPLOYMENT,
-                &PatchParams::apply("trusted-cluster-operator").force(),
-                &Patch::Apply(&patch),
-            )
-            .await?;
-        info!("Successfully patched {TRUSTEE_DEPLOYMENT} with attestation key volumes");
-    } else {
-        info!("No changes to attestation key volumes, skipping deployment update");
+    for ak in ak_secrets {
+        if let Err(e) = register_ak(client.clone(), &ak).await {
+            warn!("Failed to register AK {ak} to KBS: {e}");
+        }
     }
 
     Ok(())

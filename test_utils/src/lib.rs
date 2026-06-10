@@ -32,6 +32,8 @@ pub mod virt;
 
 use compute_pcrs_lib::Pcr;
 
+const TEST_TIMEOUT_MULTIPLIER_ENV: &str = "TEST_TIMEOUT_MULTIPLIER";
+
 const PLATFORM_ENV: &str = "PLATFORM";
 const CLUSTER_URL_ENV: &str = "CLUSTER_URL";
 const SET_CLUSTER_ERR: &str = "Set $CLUSTER_URL when $PLATFORM is none of: kind, openshift";
@@ -59,6 +61,22 @@ pub fn compare_pcrs(actual: &[Pcr], expected: &[Pcr]) -> bool {
     }
 
     true
+}
+
+fn timeout_multiplier() -> f64 {
+    env::var(TEST_TIMEOUT_MULTIPLIER_ENV)
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|v| v.clamp(0.1, 100.0))
+        .unwrap_or(1.0)
+}
+
+pub fn scaled_timeout(secs: u64) -> u64 {
+    (secs as f64 * timeout_multiplier()).ceil() as u64
+}
+
+pub fn scaled_duration(secs: u64) -> Duration {
+    Duration::from_secs(scaled_timeout(secs))
 }
 
 // Large warning frame, e.g. for paid cloud resources that may not have been shut down correctly
@@ -450,7 +468,7 @@ impl TestContext {
                 tec_api.delete(name, &dp).await?;
 
                 // Wait for the resource to be deleted
-                wait_for_resource_deleted(&tec_api, name, 120, 5).await?;
+                wait_for_resource_deleted(&tec_api, name, scaled_timeout(120), 5).await?;
                 test_info!(
                     &self.test_name,
                     "TrustedExecutionCluster {} has been deleted",
@@ -488,7 +506,13 @@ impl TestContext {
         match namespace_api.get(&self.test_namespace).await {
             Ok(_) => {
                 namespace_api.delete(&self.test_namespace, &dp).await?;
-                wait_for_resource_deleted(&namespace_api, &self.test_namespace, 300, 5).await?;
+                wait_for_resource_deleted(
+                    &namespace_api,
+                    &self.test_namespace,
+                    scaled_timeout(300),
+                    5,
+                )
+                .await?;
                 test_info!(&self.test_name, "Deleted namespace {}", self.test_namespace);
             }
             Err(kube::Error::Api(ae)) if ae.code == 404 => {
@@ -658,9 +682,9 @@ impl TestContext {
             .await?;
 
         let secrets: Api<Secret> = Api::namespaced(self.client.clone(), &self.test_namespace);
-        wait_for_resource_created(&secrets, REG_SECRET, 15, 1).await?;
-        wait_for_resource_created(&secrets, TRUSTEE_SECRET, 15, 1).await?;
-        wait_for_resource_created(&secrets, ATT_REG_SECRET, 15, 1).await?;
+        wait_for_resource_created(&secrets, REG_SECRET, scaled_timeout(15), 1).await?;
+        wait_for_resource_created(&secrets, TRUSTEE_SECRET, scaled_timeout(15), 1).await?;
+        wait_for_resource_created(&secrets, ATT_REG_SECRET, scaled_timeout(15), 1).await?;
         Ok(())
     }
 
@@ -910,14 +934,26 @@ impl TestContext {
 
         let deployments_api: Api<Deployment> = Api::namespaced(self.client.clone(), ns);
 
-        self.wait_for_deployment_ready(&deployments_api, "trusted-cluster-operator", 120)
+        self.wait_for_deployment_ready(
+            &deployments_api,
+            "trusted-cluster-operator",
+            scaled_timeout(120),
+        )
+        .await?;
+        self.wait_for_deployment_ready(
+            &deployments_api,
+            REGISTER_SERVER_DEPLOYMENT,
+            scaled_timeout(300),
+        )
+        .await?;
+        self.wait_for_deployment_ready(&deployments_api, TRUSTEE_DEPLOYMENT, scaled_timeout(180))
             .await?;
-        self.wait_for_deployment_ready(&deployments_api, REGISTER_SERVER_DEPLOYMENT, 300)
-            .await?;
-        self.wait_for_deployment_ready(&deployments_api, TRUSTEE_DEPLOYMENT, 180)
-            .await?;
-        self.wait_for_deployment_ready(&deployments_api, ATTESTATION_KEY_REGISTER_DEPLOYMENT, 120)
-            .await?;
+        self.wait_for_deployment_ready(
+            &deployments_api,
+            ATTESTATION_KEY_REGISTER_DEPLOYMENT,
+            scaled_timeout(120),
+        )
+        .await?;
 
         let platform = get_k8s_platform();
         let ak_port = ATTESTATION_KEY_REGISTER_PORT;
@@ -939,7 +975,7 @@ impl TestContext {
 
         let err = format!("image-pcrs ConfigMap in the namespace {ns} not found");
         let poller = Poller::new()
-            .with_timeout(Duration::from_secs(60))
+            .with_timeout(scaled_duration(60))
             .with_interval(Duration::from_secs(5))
             .with_error_message(err);
 

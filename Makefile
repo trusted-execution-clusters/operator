@@ -209,11 +209,18 @@ test: crds-rs
 test-release: crds-rs
 	cargo test --workspace --bins --release
 
+INTEGRATION_TEST_ENV = RUST_LOG=info REGISTRY=$(REGISTRY) TAG=$(TAG) \
+	TRUSTEE_IMAGE=$(TRUSTEE_IMAGE) APPROVED_IMAGE=$(APPROVED_IMAGE) TEST_IMAGE=$(TEST_IMAGE)
+INTEGRATION_TEST_FLAGS = --features virtualization -- --nocapture --test-threads=$(INTEGRATION_TEST_THREADS)
+
+attestation-tests: generate trusted-cluster-gen crds-rs
+	$(INTEGRATION_TEST_ENV) cargo test --test attestation $(INTEGRATION_TEST_FLAGS)
+
+trusted_execution_cluster-tests: generate trusted-cluster-gen crds-rs
+	$(INTEGRATION_TEST_ENV) cargo test --test trusted_execution_cluster $(INTEGRATION_TEST_FLAGS)
+
 integration-tests: generate trusted-cluster-gen crds-rs
-	RUST_LOG=info REGISTRY=$(REGISTRY) TAG=$(TAG) \
-		TRUSTEE_IMAGE=$(TRUSTEE_IMAGE) APPROVED_IMAGE=$(APPROVED_IMAGE) TEST_IMAGE=$(TEST_IMAGE) \
-		cargo test --test trusted_execution_cluster --test attestation \
-		--features virtualization -- --nocapture --test-threads=$(INTEGRATION_TEST_THREADS)
+	$(INTEGRATION_TEST_ENV) cargo test --test trusted_execution_cluster --test attestation $(INTEGRATION_TEST_FLAGS)
 
 $(LOCALBIN):
 	mkdir -p $(LOCALBIN)

@@ -79,7 +79,7 @@ named_test!(
 
         // Wait for the AttestationKey to be approved (operator should match Machine IP and approve it)
         let poller = Poller::new()
-            .with_timeout(Duration::from_secs(30))
+            .with_timeout(scaled_duration(30))
             .with_interval(Duration::from_millis(500))
             .with_error_message("AttestationKey was not approved".to_string());
 
@@ -121,20 +121,27 @@ named_test!(
         api.delete(name, &dp).await?;
 
         // Wait until it disappears
-        wait_for_resource_deleted(&api, name, 120, 5).await?;
+        wait_for_resource_deleted(&api, name, scaled_timeout(120), 5).await?;
 
         let deployments_api: Api<Deployment> = Api::namespaced(client.clone(), namespace);
-        wait_for_resource_deleted(&deployments_api, "trustee-deployment", 120, 1).await?;
-        wait_for_resource_deleted(&deployments_api, "register-server", 120, 1).await?;
-        wait_for_resource_deleted(&configmap_api, "image-pcrs", 120, 1).await?;
+        wait_for_resource_deleted(
+            &deployments_api,
+            "trustee-deployment",
+            scaled_timeout(120),
+            1,
+        )
+        .await?;
+        wait_for_resource_deleted(&deployments_api, "register-server", scaled_timeout(120), 1)
+            .await?;
+        wait_for_resource_deleted(&configmap_api, "image-pcrs", scaled_timeout(120), 1).await?;
 
         let images_api: Api<ApprovedImage> = Api::namespaced(client.clone(), namespace);
-        wait_for_resource_deleted(&images_api, "coreos", 120, 1).await?;
+        wait_for_resource_deleted(&images_api, "coreos", scaled_timeout(120), 1).await?;
 
-        wait_for_resource_deleted(&machines, &machine_name, 120, 1).await?;
-        wait_for_resource_deleted(&attestation_keys, &ak_name, 120, 1).await?;
+        wait_for_resource_deleted(&machines, &machine_name, scaled_timeout(120), 1).await?;
+        wait_for_resource_deleted(&attestation_keys, &ak_name, scaled_timeout(120), 1).await?;
         let secrets_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
-        wait_for_resource_deleted(&secrets_api, &ak_name, 120, 1).await?;
+        wait_for_resource_deleted(&secrets_api, &ak_name, scaled_timeout(120), 1).await?;
 
         test_ctx.cleanup().await?;
 
@@ -151,7 +158,7 @@ async fn test_image_pcrs_configmap_updates() -> anyhow::Result<()> {
     let configmap_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
 
     let poller = Poller::new()
-        .with_timeout(Duration::from_secs(180))
+        .with_timeout(scaled_duration(180))
         .with_interval(Duration::from_secs(5))
         .with_error_message("image-pcrs ConfigMap not populated with data".to_string());
 
@@ -259,7 +266,7 @@ async fn test_image_disallow() -> anyhow::Result<()> {
 
     let configmap_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
     let poller = Poller::new()
-        .with_timeout(Duration::from_secs(180))
+        .with_timeout(scaled_duration(180))
         .with_interval(Duration::from_secs(5))
         .with_error_message("Reference value not removed".to_string());
     poller.poll_async(|| {
@@ -342,7 +349,7 @@ async fn test_attestation_key_lifecycle() -> anyhow::Result<()> {
     // Poll for the AttestationKey to be approved, have owner reference, and have a Secret created
     let secrets_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
     let poller = Poller::new()
-        .with_timeout(Duration::from_secs(30))
+        .with_timeout(scaled_duration(30))
         .with_interval(Duration::from_millis(500))
         .with_error_message("AttestationKey was not approved with owner reference and secret".to_string());
 
@@ -424,11 +431,11 @@ async fn test_attestation_key_lifecycle() -> anyhow::Result<()> {
     machines.delete(&machine_name, &dp).await?;
     test_ctx.info(format!("Deleted Machine: {machine_name}"));
 
-    wait_for_resource_deleted(&machines, &machine_name, 120, 1).await?;
+    wait_for_resource_deleted(&machines, &machine_name, scaled_timeout(120), 1).await?;
     test_ctx.info("Machine successfully deleted");
-    wait_for_resource_deleted(&attestation_keys, &ak_name, 120, 1).await?;
+    wait_for_resource_deleted(&attestation_keys, &ak_name, scaled_timeout(120), 1).await?;
     test_ctx.info("AttestationKey successfully deleted");
-    wait_for_resource_deleted(&secrets_api, &ak_name, 120, 1).await?;
+    wait_for_resource_deleted(&secrets_api, &ak_name, scaled_timeout(120), 1).await?;
     test_ctx.info("Secret successfully deleted");
 
     test_ctx.cleanup().await?;
@@ -457,7 +464,7 @@ async fn test_nonexistent_approved_image() -> anyhow::Result<()> {
     }).await?;
 
     let poller = Poller::new()
-        .with_timeout(Duration::from_secs(30))
+        .with_timeout(scaled_duration(30))
         .with_interval(Duration::from_millis(500))
         .with_error_message("ApprovedImage not created".to_string());
     poller.poll_async(|| {

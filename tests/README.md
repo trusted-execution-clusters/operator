@@ -21,7 +21,14 @@ export REGISTRY=localhost:5000/trusted-execution-clusters
 make push
 make install-kubevirt
 # Set $INTEGRATION_TEST_THREADS to multi-thread (>4G memory per test)
+# Set $TEST_TIMEOUT_MULTIPLIER to increase timeouts on slow systems (e.g. 2, 1.5)
 make integration-tests
+```
+
+To run only one test set:
+```bash
+make attestation-tests
+make trusted_execution_cluster-tests
 ```
 
 Each test can also be run independently using cargo test. \

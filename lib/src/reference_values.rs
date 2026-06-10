@@ -29,6 +29,9 @@ macro_rules! update_image_pcrs {
         let map = (PCR_CONFIG_FILE.to_string(), image_pcrs_json.to_string());
         let data = std::collections::BTreeMap::from([map]);
         $map.data = Some(data);
+
+        // Operator and compute-pcr's both write to this configmap, hence client-side apply makes sense here.
+        // TODO: Simplify ownership of this field.
         $api.replace(PCR_CONFIG_MAP, &Default::default(), &$map)
             .await?
     };

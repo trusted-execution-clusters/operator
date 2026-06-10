@@ -5,12 +5,16 @@
 use compute_pcrs_lib::{Part, Pcr};
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{ConfigMap, Secret};
-use kube::{Api, api::DeleteParams};
+use kube::{
+    Api,
+    api::{DeleteParams, PostParams},
+};
 use std::time::Duration;
 use trusted_cluster_operator_lib::conditions::NOT_COMMITTED_REASON_PENDING;
 use trusted_cluster_operator_lib::reference_values::ImagePcrs;
 use trusted_cluster_operator_lib::{
-    ApprovedImage, AttestationKey, Machine, TrustedExecutionCluster, generate_owner_reference,
+    ApprovedImage, AttestationKey, FIELD_MANAGER, Machine, TrustedExecutionCluster,
+    generate_owner_controller_reference,
 };
 use trusted_cluster_operator_test_utils::*;
 
@@ -28,10 +32,9 @@ named_test!(
         let tec_api: Api<TrustedExecutionCluster> = Api::namespaced(client.clone(), namespace);
         let tec = tec_api.get(name).await?;
 
-        let owner_reference = generate_owner_reference(&tec)?;
+        let owner_controller_reference = generate_owner_controller_reference(&tec)?;
 
-        // Create a test Machine with TEC as owner reference. We need to set the owner reference
-        // manually since the machine is not created directly by the operator.
+        // Create a test Machine with TEC as owner-controller reference. We need to set the owner reference manually since the machine is not created directly by the operator, but by register-server.
         let machine_uuid = uuid::Uuid::new_v4().to_string();
         let machine_name = format!("test-machine-{}", &machine_uuid[..8]);
 
@@ -40,7 +43,7 @@ named_test!(
             metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
                 name: Some(machine_name.clone()),
                 namespace: Some(namespace.to_string()),
-                owner_references: Some(vec![owner_reference.clone()]),
+                owner_references: Some(vec![owner_controller_reference.clone()]),
                 ..Default::default()
             },
             spec: trusted_cluster_operator_lib::MachineSpec {
@@ -49,7 +52,11 @@ named_test!(
             status: None,
         };
 
-        machines.create(&Default::default(), &machine).await?;
+        let pp = PostParams {
+            field_manager: Some(FIELD_MANAGER.to_string()),
+            ..Default::default()
+        };
+        machines.create(&pp, &machine).await?;
         test_ctx.info(format!("Created test Machine: {machine_name}"));
 
         // Create an AttestationKey with the same uuid as the Machine
@@ -70,9 +77,11 @@ named_test!(
             status: None,
         };
 
-        attestation_keys
-            .create(&Default::default(), &attestation_key)
-            .await?;
+        let pp = PostParams {
+            field_manager: Some(FIELD_MANAGER.to_string()),
+            ..Default::default()
+        };
+        attestation_keys.create(&pp, &attestation_key).await?;
         test_ctx.info(format!(
             "Created test AttestationKey: {ak_name} with uuid: {machine_uuid}",
         ));
@@ -87,6 +96,8 @@ named_test!(
             .poll_async(|| {
                 let ak_api = attestation_keys.clone();
                 let ak_name_clone = ak_name.clone();
+                let machine_name_clone = machine_name.clone();
+
                 async move {
                     let ak = ak_api.get(&ak_name_clone).await?;
 
@@ -105,6 +116,26 @@ named_test!(
                     if !has_approved_condition {
                         return Err(anyhow::anyhow!(
                             "AttestationKey does not have Approved condition yet"
+                        ));
+                    }
+
+                    // On approval of attestation key, the operator transfers ownership and control of the AttestationKey to the Machine. Validating that it happens below.
+                    let has_machine_controller = ak
+                        .metadata
+                        .owner_references
+                        .as_ref()
+                        .map(|refs| {
+                            refs.iter().any(|r| {
+                                r.kind == "Machine"
+                                    && r.name == machine_name_clone
+                                    && r.controller == Some(true)
+                            })
+                        })
+                        .unwrap_or(false);
+
+                    if !has_machine_controller {
+                        return Err(anyhow::anyhow!(
+                            "AttestationKey does not have Machine as controller yet"
                         ));
                     }
 
@@ -290,7 +321,7 @@ async fn test_attestation_key_lifecycle() -> anyhow::Result<()> {
 
     let tec_api: Api<TrustedExecutionCluster> = Api::namespaced(client.clone(), namespace);
     let tec = tec_api.get(tec_name).await?;
-    let owner_reference = generate_owner_reference(&tec)?;
+    let owner_controller_reference = generate_owner_controller_reference(&tec)?;
 
     let machine_uuid = uuid::Uuid::new_v4().to_string();
 
@@ -302,7 +333,7 @@ async fn test_attestation_key_lifecycle() -> anyhow::Result<()> {
         metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
             name: Some(ak_name.clone()),
             namespace: Some(namespace.to_string()),
-            owner_references: Some(vec![owner_reference.clone()]),
+            owner_references: Some(vec![owner_controller_reference.clone()]),
             ..Default::default()
         },
         spec: trusted_cluster_operator_lib::AttestationKeySpec {
@@ -312,9 +343,8 @@ async fn test_attestation_key_lifecycle() -> anyhow::Result<()> {
         status: None,
     };
 
-    attestation_keys
-        .create(&Default::default(), &attestation_key)
-        .await?;
+    let pp = PostParams { field_manager: Some(FIELD_MANAGER.to_string()), ..Default::default() };
+    attestation_keys.create(&pp, &attestation_key).await?;
     test_ctx.info(format!(
         "Created test AttestationKey: {ak_name} with uuid: {machine_uuid}",
     ));
@@ -325,7 +355,7 @@ async fn test_attestation_key_lifecycle() -> anyhow::Result<()> {
         metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
             name: Some(machine_name.clone()),
             namespace: Some(namespace.to_string()),
-            owner_references: Some(vec![owner_reference.clone()]),
+            owner_references: Some(vec![owner_controller_reference.clone()]),
             ..Default::default()
         },
         spec: trusted_cluster_operator_lib::MachineSpec {
@@ -334,7 +364,8 @@ async fn test_attestation_key_lifecycle() -> anyhow::Result<()> {
         status: None,
     };
 
-    machines.create(&Default::default(), &machine).await?;
+    let pp = PostParams { field_manager: Some(FIELD_MANAGER.to_string()), ..Default::default() };
+    machines.create(&pp, &machine).await?;
     test_ctx.info(format!(
         "Created test Machine: {machine_name} with uuid: {machine_uuid}",
     ));
@@ -373,40 +404,44 @@ async fn test_attestation_key_lifecycle() -> anyhow::Result<()> {
                     ));
                 }
 
-                // Check for owner reference to the Machine
-                let has_machine_owner_ref = ak
+                // Check for owner-controller reference to the Machine
+                let has_machine_owner_controller_ref = ak
                     .metadata
                     .owner_references
                     .as_ref()
-                    .map(|owner_refs| {
-                        owner_refs.iter().any(|owner_ref| {
-                            owner_ref.kind == "Machine" && owner_ref.name == machine_name_clone
+                    .map(|owner_controller_refs| {
+                        owner_controller_refs.iter().any(|owner_ref| {
+                            owner_ref.kind == "Machine"
+                                && owner_ref.name == machine_name_clone
+                                && owner_ref.controller == Some(true)
                         })
                     })
                     .unwrap_or(false);
 
-                if !has_machine_owner_ref {
+                if !has_machine_owner_controller_ref {
                     return Err(anyhow::anyhow!(
-                        "AttestationKey does not have owner reference to Machine yet"
+                        "AttestationKey does not have Machine as owner-controller yet"
                     ));
                 }
 
-                // Check that a Secret with the same name exists and has the AttestationKey as owner
+                // Check that a Secret with the same name exists and has the AttestationKey as owner-controller
                 let secret = secrets.get(&ak_name_clone).await?;
-                let has_ak_owner_ref = secret
+                let has_ak_owner_controller_ref = secret
                     .metadata
                     .owner_references
                     .as_ref()
-                    .map(|owner_refs| {
-                        owner_refs.iter().any(|owner_ref| {
-                            owner_ref.kind == "AttestationKey" && owner_ref.name == ak_name_clone
+                    .map(|owner_controller_refs| {
+                        owner_controller_refs.iter().any(|owner_ref| {
+                            owner_ref.kind == "AttestationKey"
+                                && owner_ref.name == ak_name_clone
+                                && owner_ref.controller == Some(true)
                         })
                     })
                     .unwrap_or(false);
 
-                if !has_ak_owner_ref {
+                if !has_ak_owner_controller_ref {
                     return Err(anyhow::anyhow!(
-                        "Secret does not have owner reference to AttestationKey yet"
+                        "Secret does not have AttestationKey as owner-controller yet"
                     ));
                 }
 
@@ -415,9 +450,9 @@ async fn test_attestation_key_lifecycle() -> anyhow::Result<()> {
         })
         .await?;
 
-    test_ctx.info(format!(
-        "AttestationKey successfully approved with owner reference to Machine: {machine_name} and Secret created"
-    ));
+    test_ctx.info(
+        "AttestationKey successfully approved with Machine as owner-controller and Secret created",
+    );
 
     // Delete the Machine
     let dp = DeleteParams::default();
@@ -444,7 +479,7 @@ async fn test_nonexistent_approved_image() -> anyhow::Result<()> {
     let namespace = test_ctx.namespace();
 
     let images: Api<ApprovedImage> = Api::namespaced(client.clone(), namespace);
-    images.create(&Default::default(), &ApprovedImage {
+    images.create(&PostParams { field_manager: Some(FIELD_MANAGER.to_string()), ..Default::default() }, &ApprovedImage {
         metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
             name: Some("coreos1".to_string()),
             namespace: Some(namespace.to_string()),

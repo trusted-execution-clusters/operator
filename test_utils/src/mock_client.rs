@@ -129,21 +129,6 @@ pub async fn test_create_success<
     });
 }
 
-pub async fn test_create_already_exists<
-    F: Fn(Client) -> S,
-    S: Future<Output = anyhow::Result<()>>,
->(
-    create: F,
-) {
-    let clos = async |req: Request<_>, _| match req {
-        r if r.method() == Method::POST => Err(StatusCode::CONFLICT),
-        _ => panic!("unexpected API interaction: {req:?}"),
-    };
-    count_check!(1, clos, |client| {
-        assert!(create(client).await.is_ok());
-    });
-}
-
 async fn test_error<
     F: Fn(Client) -> S,
     S: Future<Output = anyhow::Result<T>>,
@@ -165,7 +150,7 @@ pub async fn test_create_error<F: Fn(Client) -> S, S: Future<Output = anyhow::Re
     create: F,
 ) {
     let clos = async |req: Request<_>, _| match req.method() {
-        &Method::POST => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        &Method::POST | &Method::PATCH => Err(StatusCode::INTERNAL_SERVER_ERROR),
         _ => panic!("unexpected API interaction: {req:?}"),
     };
     test_error(create, clos).await;

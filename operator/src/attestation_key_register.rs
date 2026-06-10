@@ -14,7 +14,7 @@ use k8s_openapi::apimachinery::pkg::{
     util::intstr::IntOrString,
 };
 use kube::{
-    Api, Client, Resource,
+    Api, Client,
     api::{ListParams, ObjectList, Patch, PatchParams},
     runtime::{Controller, controller::Action, finalizer, finalizer::Event, watcher},
 };
@@ -29,7 +29,7 @@ use trusted_cluster_operator_lib::{AttestationKey, AttestationKeyStatus, Machine
 use crate::conditions::attestation_key_approved_condition;
 use crate::trustee;
 use operator::{
-    ControllerError, TLS_DIR, controller_error_policy, create_or_info_if_exists, read_certificate,
+    ControllerError, TLS_DIR, apply_resource, controller_error_policy, read_certificate,
     upsert_condition,
 };
 
@@ -97,7 +97,7 @@ pub async fn create_attestation_key_register_deployment(
         ..Default::default()
     };
 
-    create_or_info_if_exists!(client, Deployment, deployment);
+    apply_resource!(client, Deployment, deployment);
     info!("Attestation key register deployment created successfully");
     Ok(())
 }
@@ -133,7 +133,7 @@ pub async fn create_attestation_key_register_service(
         ..Default::default()
     };
 
-    create_or_info_if_exists!(client, Service, service);
+    apply_resource!(client, Service, service);
     info!("Attestation key register service created successfully");
     Ok(())
 }
@@ -209,35 +209,45 @@ async fn approve_ak(ak: &AttestationKey, machine: &Machine, client: Client) -> R
 
     if changed {
         let status = AttestationKeyStatus { conditions };
-        update_status!(aks, &name, status)?;
+        update_status!(
+            aks,
+            &name,
+            status,
+            AttestationKey,
+            trusted_cluster_operator_lib::FIELD_MANAGER
+        )?;
         info!("Approved attestation key {name}");
     }
 
     let machine_name = machine.metadata.name.clone().unwrap_or_default();
-    let has_machine_owner = ak
+    let has_machine_owner_controller = ak
         .metadata
         .owner_references
         .as_ref()
         .map(|owners| {
-            owners
-                .iter()
-                .any(|owner| owner.kind == "Machine" && owner.name == machine_name)
+            owners.iter().any(|owner| {
+                owner.kind == "Machine"
+                    && owner.name == machine_name
+                    && owner.controller == Some(true)
+            })
         })
         .unwrap_or(false);
 
-    if !has_machine_owner {
-        let machine_owner_reference =
-            trusted_cluster_operator_lib::generate_owner_reference(machine)?;
+    if !has_machine_owner_controller {
+        let owner_controller_reference =
+            trusted_cluster_operator_lib::generate_owner_controller_reference(machine)?;
 
+        // Replacing the owner of the AttestationKey to the Machine controller, as now the AttestationKey is tied to the Machine.
         let patch = json!({
             "metadata": {
-                "ownerReferences": [machine_owner_reference]
+                "ownerReferences": [owner_controller_reference]
             }
         });
 
+        // This requires a client-side patch since merge patches replaces entire owners field. SSA would upsert, and cause issues where we might not cleanly remove the TEC owner reference.
         aks.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
             .await?;
-        info!("Set Machine as owner of AttestationKey {name}");
+        info!("Set Machine as owner-controller of AttestationKey {name}");
     }
 
     let secret_name = name.clone();
@@ -248,12 +258,13 @@ async fn approve_ak(ak: &AttestationKey, machine: &Machine, client: Client) -> R
         let public_key_data = ByteString(ak.spec.public_key.as_bytes().to_vec());
         let data = BTreeMap::from([("public_key".to_string(), public_key_data)]);
 
-        let owner_reference = trusted_cluster_operator_lib::generate_owner_reference(ak)?;
+        let owner_controller_reference =
+            trusted_cluster_operator_lib::generate_owner_controller_reference(ak)?;
 
         let secret = Secret {
             metadata: ObjectMeta {
                 name: Some(secret_name.clone()),
-                owner_references: Some(vec![owner_reference]),
+                owner_references: Some(vec![owner_controller_reference]),
                 finalizers: Some(vec![ATTESTATION_KEY_SECRET_FINALIZER.to_string()]),
                 ..Default::default()
             },
@@ -261,7 +272,7 @@ async fn approve_ak(ak: &AttestationKey, machine: &Machine, client: Client) -> R
             ..Default::default()
         };
 
-        create_or_info_if_exists!(client.clone(), Secret, secret);
+        apply_resource!(client.clone(), Secret, secret);
         info!("Created secret {secret_name} for attestation key {name} with finalizer");
     }
 
@@ -274,13 +285,16 @@ async fn secret_reconcile(
 ) -> Result<Action, ControllerError> {
     let secret_name = secret.metadata.name.clone().unwrap_or_default();
 
-    // Only handle secrets owned by AttestationKey
+    // Only handle secrets controlled by an AttestationKey
     let is_ak_secret = secret
         .metadata
         .owner_references
         .as_ref()
-        .map(|owners| owners.iter().any(|owner| owner.kind == "AttestationKey"))
-        .unwrap_or(false);
+        .is_some_and(|owners| {
+            owners
+                .iter()
+                .any(|owner| owner.kind == "AttestationKey" && owner.controller == Some(true))
+        });
 
     if !is_ak_secret {
         return Ok(Action::await_change());
@@ -374,6 +388,7 @@ pub async fn launch_secret_ak_controller(client: Client) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http::{Method, Request};
     use trusted_cluster_operator_test_utils::mock_client::*;
 
     #[tokio::test]
@@ -404,5 +419,244 @@ mod tests {
         let clos =
             |client| create_attestation_key_register_service(client, Default::default(), Some(80));
         test_create_error(clos).await;
+    }
+
+    fn dummy_ak() -> AttestationKey {
+        AttestationKey {
+            metadata: ObjectMeta {
+                name: Some("ak-test".to_string()),
+                uid: Some("ak-uid".to_string()),
+                generation: Some(1),
+                ..Default::default()
+            },
+            spec: trusted_cluster_operator_lib::AttestationKeySpec {
+                public_key: "test-key".to_string(),
+                uuid: Some("machine-uuid".to_string()),
+            },
+            status: None,
+        }
+    }
+
+    fn dummy_machine() -> Machine {
+        Machine {
+            metadata: ObjectMeta {
+                name: Some("machine-test".to_string()),
+                uid: Some("machine-uid".to_string()),
+                ..Default::default()
+            },
+            spec: trusted_cluster_operator_lib::MachineSpec {
+                id: "machine-uuid".to_string(),
+            },
+            status: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_approve_ak_full_flow() {
+        // approve_ak with no prior status, no Machine owner, and secret not existing:
+        // 1. PATCH /status (SSA status update). AttestationKey is approved.
+        // 2. PATCH owner transfer (Merge). Ownership transfered to Machine.
+        // 3. GET secret (check existence)
+        // 4. PATCH secret (apply_resource! SSA create)
+        let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
+            (0, &Method::PATCH) => {
+                assert!(req.uri().path().contains("/status"));
+                Ok(serde_json::to_string(&dummy_ak()).unwrap())
+            }
+            (1, &Method::PATCH) => {
+                assert!(!req.uri().path().contains("/status"));
+                Ok(serde_json::to_string(&dummy_ak()).unwrap())
+            }
+            (2, &Method::GET) => Err(http::StatusCode::NOT_FOUND),
+            (3, &Method::PATCH) => {
+                let body = get_body_string(req).await;
+                let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+                let owners = v["metadata"]["ownerReferences"]
+                    .as_array()
+                    .expect("Secret must have ownerReferences");
+                assert_eq!(
+                    owners[0]["kind"], "AttestationKey",
+                    "Secret must be owned by AttestationKey"
+                );
+                assert_eq!(
+                    owners[0]["controller"], true,
+                    "AttestationKey must be controller of Secret"
+                );
+                assert_eq!(
+                    owners[0]["uid"], "ak-uid",
+                    "Secret owner UID must match AK UID"
+                );
+
+                // Asserting finalizers
+                let finalizers = v["metadata"]["finalizers"]
+                    .as_array()
+                    .expect("Secret must have finalizers");
+                assert!(
+                    finalizers.iter().any(|f| f
+                        .as_str()
+                        .unwrap()
+                        .contains("attestationkey-secret-finalizer")),
+                    "Secret must have the attestation key secret finalizer"
+                );
+                let data = v["data"].as_object().expect("Secret must have data");
+                assert!(
+                    data.contains_key("public_key"),
+                    "Secret data must contain public_key"
+                );
+                Ok(serde_json::to_string(&Secret::default()).unwrap())
+            }
+
+            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        };
+        count_check!(4, clos, |client| {
+            let ak = dummy_ak();
+            let machine = dummy_machine();
+            assert!(approve_ak(&ak, &machine, client).await.is_ok());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_approve_ak_already_approved_and_owned() {
+        // Building a pre-populated AttestationKey with the approved condition. This would prevent upsert from changing the status field, preventing the initial status PATCH.
+        // Further-more, we set owner of AttestationKey to the Machine, so that no owner transfer PATCH is needed.
+        // Further, get secret returns valid secret, so no secret PATCH is needed.
+        // Only 1 GET call to fetch secret is needed.
+        let mut ak = dummy_ak();
+        let approve_reason =
+            trusted_cluster_operator_lib::conditions::ATTESTATION_KEY_MACHINE_APPROVE;
+        let existing_condition = crate::conditions::attestation_key_approved_condition(
+            approve_reason,
+            ak.metadata.generation,
+            &ak.status,
+        );
+        ak.status = Some(AttestationKeyStatus {
+            conditions: Some(vec![existing_condition]),
+        });
+        ak.metadata.owner_references = Some(vec![OwnerReference {
+            kind: "Machine".to_string(),
+            name: "machine-test".to_string(),
+            uid: "machine-uid".to_string(),
+            api_version: "trusted-execution-clusters.io/v1alpha1".to_string(),
+            controller: Some(true),
+            block_owner_deletion: Some(true),
+        }]);
+
+        // No status or owner PATCH needed; only GET secret (exists)
+        let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
+            (0, &Method::GET) => Ok(serde_json::to_string(&Secret::default()).unwrap()),
+            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        };
+        count_check!(1, clos, |client| {
+            let machine = dummy_machine();
+            assert!(approve_ak(&ak, &machine, client).await.is_ok());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_approve_ak_status_update_error() {
+        let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
+            (0, &Method::PATCH) => Err(http::StatusCode::INTERNAL_SERVER_ERROR),
+            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        };
+        count_check!(1, clos, |client| {
+            let ak = dummy_ak();
+            let machine = dummy_machine();
+            assert!(approve_ak(&ak, &machine, client).await.is_err());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_approve_ak_status_patch_contains_approved_condition() {
+        use kube::client::Body;
+        let clos = async |req: Request<Body>, ctr| match (ctr, req.method()) {
+            // Validates whether attestation key is immediately approved as per TOFU (Trust on first use) principles.
+            // Also makes sure that the approved condition is set to True, and the reason is MachineCreated.
+            (0, &Method::PATCH) => {
+                assert!(
+                    req.uri().path().contains("/status"),
+                    "First PATCH must target /status subresource"
+                );
+                let body = get_body_string(req).await;
+                let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+                let conditions = v["status"]["conditions"]
+                    .as_array()
+                    .expect("Status body must contain conditions array");
+                let approved_type =
+                    trusted_cluster_operator_lib::conditions::ATTESTATION_KEY_APPROVED_CONDITION;
+                let approved = conditions.iter().find(|c| c["type"] == approved_type);
+                assert!(
+                    approved.is_some(),
+                    "Must contain the '{approved_type}' condition"
+                );
+                let cond = approved.unwrap();
+                assert_eq!(cond["status"], "True", "Approved condition must be True");
+                assert_eq!(
+                    cond["reason"], ATTESTATION_KEY_MACHINE_APPROVE,
+                    "Reason must be MachineCreated"
+                );
+                Ok(serde_json::to_string(&dummy_ak()).unwrap())
+            }
+            (1, &Method::PATCH) => Ok(serde_json::to_string(&dummy_ak()).unwrap()),
+            (2, &Method::GET) => Err(http::StatusCode::NOT_FOUND),
+            (3, &Method::PATCH) => Ok(serde_json::to_string(&Secret::default()).unwrap()),
+            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        };
+        count_check!(4, clos, |client| {
+            let ak = dummy_ak();
+            let machine = dummy_machine();
+            assert!(approve_ak(&ak, &machine, client).await.is_ok());
+        });
+    }
+
+    // Makes sure that the owner transfer patch uses merge patch, and not SSA patch.
+    // SSA can't transfer ownership, and would cause issues where we might not cleanly remove the TEC owner reference.
+    #[tokio::test]
+    async fn test_approve_ak_owner_transfer_uses_merge_patch() {
+        use kube::client::Body;
+        let clos = async |req: Request<Body>, ctr| match (ctr, req.method()) {
+            (0, &Method::PATCH) => Ok(serde_json::to_string(&dummy_ak()).unwrap()),
+            (1, &Method::PATCH) => {
+                assert!(
+                    !req.uri().path().contains("/status"),
+                    "Owner transfer must not target /status"
+                );
+                let query = req.uri().query().unwrap_or("");
+                assert!(
+                    !query.contains("fieldManager"),
+                    "Merge patch must NOT use a field manager (not SSA): {query}"
+                );
+                let content_type = req
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                assert!(
+                    content_type.contains("merge-patch"),
+                    "Owner transfer must use Merge patch, got content-type: {content_type}"
+                );
+                let body = get_body_string(req).await;
+                let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+                let owners = v["metadata"]["ownerReferences"]
+                    .as_array()
+                    .expect("Merge patch must set ownerReferences");
+                assert_eq!(
+                    owners.len(),
+                    1,
+                    "Must replace entire ownerReferences (not append)"
+                );
+                assert_eq!(owners[0]["kind"], "Machine", "New owner must be Machine");
+                assert_eq!(owners[0]["name"], "machine-test");
+                assert_eq!(owners[0]["controller"], true, "Machine must be controller");
+                Ok(serde_json::to_string(&dummy_ak()).unwrap())
+            }
+            (2, &Method::GET) => Err(http::StatusCode::NOT_FOUND),
+            (3, &Method::PATCH) => Ok(serde_json::to_string(&Secret::default()).unwrap()),
+            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        };
+        count_check!(4, clos, |client| {
+            let ak = dummy_ak();
+            let machine = dummy_machine();
+            assert!(approve_ak(&ak, &machine, client).await.is_ok());
+        });
     }
 }

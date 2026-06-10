@@ -16,7 +16,8 @@ use uuid::Uuid;
 
 use trusted_cluster_operator_lib::endpoints::ATTESTATION_KEY_REGISTER_RESOURCE;
 use trusted_cluster_operator_lib::{
-    generate_owner_reference, get_trusted_execution_cluster, AttestationKey, AttestationKeySpec,
+    self, generate_owner_controller_reference, get_trusted_execution_cluster, AttestationKey,
+    AttestationKeySpec,
 };
 
 #[derive(Parser)]
@@ -64,15 +65,17 @@ async fn handle_registration(
 
     let api: Api<AttestationKey> = Api::default_namespaced(client.clone());
 
-    // Get the TrustedExecutionCluster to use as owner reference
+    // TEC is owner-controller of the AttestationKey until the operator approves the key and transfers control to Machine, which then becomes the controller and manages lifecycle of the AttestationKey.
     let cluster = match get_trusted_execution_cluster(client.clone()).await {
         Ok(c) => c,
         Err(e) => return internal_error(e.context("Failed to get TrustedExecutionCluster")),
     };
 
-    let owner_reference = match generate_owner_reference(&cluster) {
+    let owner_controller_reference = match generate_owner_controller_reference(&cluster) {
         Ok(o) => o,
-        Err(e) => return internal_error(e.context("Failed to generate owner reference")),
+        Err(e) => {
+            return internal_error(e.context("Failed to generate owner-controller reference"))
+        }
     };
 
     match api.list(&Default::default()).await {
@@ -104,7 +107,7 @@ async fn handle_registration(
     let attestation_key = AttestationKey {
         metadata: ObjectMeta {
             name: Some(name.clone()),
-            owner_references: Some(vec![owner_reference]),
+            owner_references: Some(vec![owner_controller_reference]),
             ..Default::default()
         },
         spec: AttestationKeySpec {
@@ -114,7 +117,17 @@ async fn handle_registration(
         status: None,
     };
 
-    match api.create(&Default::default(), &attestation_key).await {
+    // Client side apply, as this is a one time operation (no reconciliation loop) for each attestation key, and one owner. SSA is mainly used for patching. Setting field manager, so that we can identify the source of the creation later for reconciliation by operator.
+    match api
+        .create(
+            &kube::api::PostParams {
+                field_manager: Some(trusted_cluster_operator_lib::FIELD_MANAGER.to_string()),
+                ..Default::default()
+            },
+            &attestation_key,
+        )
+        .await
+    {
         Ok(created) => {
             let name = created.metadata.name.unwrap_or_default();
             info!("Successfully created AttestationKey: {name}",);

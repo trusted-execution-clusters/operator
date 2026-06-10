@@ -19,11 +19,11 @@ use k8s_openapi::apimachinery::pkg::{
     util::intstr::IntOrString,
 };
 use kube::{
-    Api, Client, Resource,
+    Api, Client,
     api::{ObjectMeta, Patch, PatchParams},
 };
 use log::info;
-use operator::{RvContextData, TLS_DIR, create_or_info_if_exists, read_certificate};
+use operator::{RvContextData, TLS_DIR, apply_resource, read_certificate};
 use serde::{Serialize, Serializer};
 use serde_json::{Value::String as JsonString, json};
 use std::collections::BTreeMap;
@@ -102,8 +102,18 @@ pub async fn update_reference_values(ctx: RvContextData) -> Result<()> {
     let trustee_data = trustee_map.data.as_mut().context(err)?;
     trustee_data.insert(REFERENCE_VALUES_FILE.to_string(), rv_json);
 
+    let body = json!({
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {"name": TRUSTEE_DATA_MAP},
+        "data": trustee_data
+    });
     config_maps
-        .replace(TRUSTEE_DATA_MAP, &Default::default(), &trustee_map)
+        .patch(
+            TRUSTEE_DATA_MAP,
+            &PatchParams::apply(trusted_cluster_operator_lib::FIELD_MANAGER),
+            &Patch::Apply(&body),
+        )
         .await?;
     info!("Recomputed reference values");
     Ok(())
@@ -163,10 +173,17 @@ pub async fn do_mount_secret(client: Client, id: &str, add: bool) -> Result<()> 
     let container = pod_spec.containers.get_mut(0).context(err)?;
     let vol_mounts = container.volume_mounts.get_or_insert_default();
 
+    // Additional check to prevent duplicate mounts. Volume and volume mounts are added atomically, so a volume check suffices.
     if add {
-        let (volume, volume_mount) = generate_secret_volume(id);
-        pod_spec.volumes.get_or_insert_default().push(volume);
-        vol_mounts.push(volume_mount);
+        let already_mounted = pod_spec
+            .volumes
+            .as_ref()
+            .is_some_and(|vs| vs.iter().any(|v| v.name == id));
+        if !already_mounted {
+            let (volume, volume_mount) = generate_secret_volume(id);
+            pod_spec.volumes.get_or_insert_default().push(volume);
+            vol_mounts.push(volume_mount);
+        }
     } else {
         let vol_result = pod_spec.volumes.as_mut().and_then(|vs| {
             let pos = vs.iter().position(|v| v.name == id);
@@ -203,22 +220,27 @@ pub async fn update_attestation_keys(client: Client) -> Result<()> {
                 return false;
             }
 
+            // Removing secrets that don't have an AttestationKey as owner-controller.
             secret
                 .metadata
                 .owner_references
                 .as_ref()
-                .map(|owners| owners.iter().any(|owner| owner.kind == "AttestationKey"))
-                .unwrap_or(false)
+                .is_some_and(|owners| {
+                    owners.iter().any(|owner| {
+                        owner.kind == "AttestationKey" && owner.controller == Some(true)
+                    })
+                })
         })
         .filter_map(|secret| secret.metadata.name.clone())
         .collect();
 
+    // specs should be mutable, as we are patching the deployment.
     let deployments: Api<Deployment> = Api::default_namespaced(client);
-    let deployment = deployments.get(TRUSTEE_DEPLOYMENT).await?;
+    let mut deployment = deployments.get(TRUSTEE_DEPLOYMENT).await?;
     let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no spec");
-    let depl_spec = deployment.spec.as_ref().context(err)?;
+    let depl_spec = deployment.spec.as_mut().context(err)?;
     let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no pod spec");
-    let pod_spec = depl_spec.template.spec.as_ref().context(err)?;
+    let pod_spec = depl_spec.template.spec.as_mut().context(err)?;
 
     // Get existing volumes and volumeMounts, filtering out the attestation key volume
     let mut volumes: Vec<Volume> = pod_spec
@@ -233,7 +255,7 @@ pub async fn update_attestation_keys(client: Client) -> Result<()> {
         .unwrap_or_default();
 
     let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no containers");
-    let container = pod_spec.containers.first().context(err)?;
+    let container = pod_spec.containers.first_mut().context(err)?;
     let mut vol_mounts: Vec<VolumeMount> = container
         .volume_mounts
         .as_ref()
@@ -290,31 +312,21 @@ pub async fn update_attestation_keys(client: Client) -> Result<()> {
     let vol_mounts_changed = container.volume_mounts.as_ref() != Some(&vol_mounts);
 
     if volumes_changed || vol_mounts_changed {
-        // Patch the deployment with updated volumes and volumeMounts
-        let patch = json!({
+        pod_spec.volumes = Some(volumes);
+        container.volume_mounts = Some(vol_mounts);
+
+        let body = json!({
             "apiVersion": "apps/v1",
             "kind": "Deployment",
-            "metadata": {
-                "name": TRUSTEE_DEPLOYMENT
-            },
-            "spec": {
-                "template": {
-                    "spec": {
-                        "volumes": volumes,
-                        "containers": [{
-                            "name": "kbs",
-                            "volumeMounts": vol_mounts
-                        }]
-                    }
-                }
-            }
+            "metadata": {"name": TRUSTEE_DEPLOYMENT},
+            "spec": deployment.spec
         });
 
         deployments
             .patch(
                 TRUSTEE_DEPLOYMENT,
-                &PatchParams::apply("trusted-cluster-operator").force(),
-                &Patch::Apply(&patch),
+                &PatchParams::apply(trusted_cluster_operator_lib::FIELD_MANAGER),
+                &Patch::Apply(&body),
             )
             .await?;
         info!("Successfully patched {TRUSTEE_DEPLOYMENT} with attestation key volumes");
@@ -342,7 +354,7 @@ pub async fn generate_secret(
         data: Some(data),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, Secret, secret);
+    apply_resource!(client, Secret, secret);
     Ok(())
 }
 
@@ -366,7 +378,7 @@ pub async fn generate_attestation_policy(
         data: Some(data),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, ConfigMap, config_map);
+    apply_resource!(client, ConfigMap, config_map);
     Ok(())
 }
 
@@ -415,7 +427,7 @@ pub async fn generate_trustee_data(
         data: Some(data),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, ConfigMap, config_map);
+    apply_resource!(client, ConfigMap, config_map);
     Ok(())
 }
 
@@ -445,7 +457,7 @@ pub async fn generate_kbs_service(
         }),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, Service, service);
+    apply_resource!(client, Service, service);
     Ok(())
 }
 
@@ -571,7 +583,7 @@ pub async fn generate_kbs_deployment(
         }),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, Deployment, deployment);
+    apply_resource!(client, Deployment, deployment);
     Ok(())
 }
 
@@ -635,7 +647,7 @@ mod tests {
                 assert!(req.uri().path().contains(PCR_CONFIG_MAP));
                 Ok(serde_json::to_string(&dummy_pcrs_map()).unwrap())
             }
-            (1, &Method::GET) | (2, &Method::PUT) => {
+            (1, &Method::GET) | (2, &Method::PATCH) => {
                 assert!(req.uri().path().contains(TRUSTEE_DATA_MAP));
                 Ok(serde_json::to_string(&dummy_trustee_map()).unwrap())
             }
@@ -816,12 +828,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_generate_att_policy_already_exists() {
-        let clos = |client| generate_attestation_policy(client, Default::default());
-        test_create_already_exists(clos).await;
-    }
-
-    #[tokio::test]
     async fn test_generate_att_policy_error() {
         let clos = |client| generate_attestation_policy(client, Default::default());
         test_create_error(clos).await;
@@ -834,12 +840,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_generate_secret_already_exists() {
-        let clos = |client| generate_secret(client, "id", Default::default());
-        test_create_already_exists(clos).await;
-    }
-
-    #[tokio::test]
     async fn test_generate_secret_error() {
         let clos = |client| generate_secret(client, "id", Default::default());
         test_create_error(clos).await;
@@ -849,12 +849,6 @@ mod tests {
     async fn test_generate_trustee_data_success() {
         let clos = |client| generate_trustee_data(client, Default::default(), &None);
         test_create_success::<_, _, ConfigMap>(clos).await;
-    }
-
-    #[tokio::test]
-    async fn test_generate_trustee_data_already_exists() {
-        let clos = |client| generate_trustee_data(client, Default::default(), &None);
-        test_create_already_exists(clos).await;
     }
 
     #[tokio::test]
@@ -885,5 +879,190 @@ mod tests {
     async fn test_generate_kbs_depl_error() {
         let clos = |client| generate_kbs_deployment(client, Default::default(), "image", &None);
         test_create_error(clos).await;
+    }
+
+    // SSA related unit tests.
+
+    // No configmap keys are lost when updating the attestation keys.
+    #[tokio::test]
+    async fn test_update_rvs_preserves_all_configmap_keys() {
+        fn full_trustee_map() -> ConfigMap {
+            let mut m = dummy_trustee_map();
+            m.data
+                .as_mut()
+                .unwrap()
+                .insert("kbs-config.toml".to_string(), "config-content".to_string());
+            m.data
+                .as_mut()
+                .unwrap()
+                .insert("policy.rego".to_string(), "rego-content".to_string());
+            m
+        }
+
+        let clos = async |req: Request<Body>, ctr| match (ctr, req.method()) {
+            (0, &Method::GET) => Ok(serde_json::to_string(&dummy_pcrs_map()).unwrap()),
+            (1, &Method::GET) => Ok(serde_json::to_string(&full_trustee_map()).unwrap()),
+            (2, &Method::PATCH) => {
+                let body = get_body_string(req).await;
+                let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+                let data = v["data"].as_object().unwrap();
+                assert!(
+                    data.contains_key("kbs-config.toml"),
+                    "SSA patch must retain kbs-config.toml"
+                );
+                assert!(
+                    data.contains_key("policy.rego"),
+                    "SSA patch must retain policy.rego"
+                );
+                assert!(
+                    data.contains_key(REFERENCE_VALUES_FILE),
+                    "SSA patch must contain reference-values.json"
+                );
+                Ok(serde_json::to_string(&full_trustee_map()).unwrap())
+            }
+            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        };
+        count_check!(3, clos, |client| {
+            let ctx = generate_rv_ctx(client);
+            assert!(update_reference_values(ctx).await.is_ok());
+        });
+    }
+
+    // If a volume is already mounted, it is not duplicated when mounting again.
+    #[tokio::test]
+    async fn test_mount_secret_idempotent_skips_duplicate() {
+        fn depl_with_existing_mount() -> Deployment {
+            let mut depl = dummy_deployment();
+            let spec = depl.spec.as_mut().unwrap();
+            let pod_spec = spec.template.spec.as_mut().unwrap();
+            let (volume, volume_mount) = generate_secret_volume("already-there");
+            pod_spec.volumes = Some(vec![volume]);
+            pod_spec.containers[0].volume_mounts = Some(vec![volume_mount]);
+            depl
+        }
+
+        let clos = async |req: Request<Body>, ctr| match (ctr, req.method()) {
+            (0, &Method::GET) => Ok(serde_json::to_string(&depl_with_existing_mount()).unwrap()),
+            (1, &Method::PUT) => {
+                let body = get_body_string(req).await;
+                let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+                let volumes = v["spec"]["template"]["spec"]["volumes"].as_array().unwrap();
+                let count = volumes
+                    .iter()
+                    .filter(|vol| vol["name"] == "already-there")
+                    .count();
+                assert_eq!(count, 1, "Volume must not be duplicated on re-mount");
+                Ok(serde_json::to_string(&depl_with_existing_mount()).unwrap())
+            }
+            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        };
+        count_check!(2, clos, |client| {
+            assert!(mount_secret(client, "already-there").await.is_ok());
+        });
+    }
+
+    fn dummy_ak_secret(name: &str) -> Secret {
+        Secret {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                owner_references: Some(vec![OwnerReference {
+                    kind: "AttestationKey".to_string(),
+                    controller: Some(true),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn dummy_deployment_with_volumes() -> Deployment {
+        let pod_spec = generate_kbs_pod_spec("test-image", None);
+        Deployment {
+            metadata: ObjectMeta {
+                name: Some(TRUSTEE_DEPLOYMENT.to_string()),
+                ..Default::default()
+            },
+            spec: Some(DeploymentSpec {
+                template: PodTemplateSpec {
+                    spec: Some(pod_spec),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn ak_secrets_json(names: &[&str]) -> String {
+        let list: kube::api::ObjectList<Secret> = kube::api::ObjectList {
+            types: Default::default(),
+            metadata: Default::default(),
+            items: names.iter().map(|n| dummy_ak_secret(n)).collect(),
+        };
+        serde_json::to_string(&list).unwrap()
+    }
+
+    fn deployment_with_volumes_json() -> String {
+        serde_json::to_string(&dummy_deployment_with_volumes()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_update_attestation_keys_ssa_body() {
+        let clos = async |req: Request<Body>, ctr| match (ctr, req.method()) {
+            // Return dummy AK secrets.
+            (0, &Method::GET) => Ok(ak_secrets_json(&["ak-secret-1", "ak-secret-2"])),
+            (1, &Method::GET) => Ok(deployment_with_volumes_json()),
+            // The final patch should aggregate the AK secrets into one single projected volume.
+            (2, &Method::PATCH) => {
+                let body = get_body_string(req).await;
+                let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+                // Projected volume aggregates all AK secrets
+                let volumes = v["spec"]["template"]["spec"]["volumes"].as_array().unwrap();
+                let projected = volumes
+                    .iter()
+                    .find(|vol| vol["name"] == TRUSTED_AK_KEYS_VOLUME)
+                    .expect("Must contain projected volume for AK keys");
+                let sources = projected["projected"]["sources"].as_array().unwrap();
+                assert_eq!(
+                    sources.len(),
+                    2,
+                    "Projected volume must aggregate both AK secrets"
+                ); // ak-secret-1 and ak-secret-2
+
+                // Base volumes are preserved (full-object SSA)
+                // Make sure the trustee-data and attestation-policy volumes are still present, in the process of updating the attestation keys and creating the projected volume.
+                let vol_names: Vec<_> = volumes.iter().filter_map(|v| v["name"].as_str()).collect();
+                assert!(
+                    vol_names.contains(&TRUSTEE_DATA_MAP),
+                    "Must retain trustee-data volume"
+                );
+                assert!(
+                    vol_names.contains(&ATT_POLICY_MAP),
+                    "Must retain attestation-policy volume"
+                );
+                assert!(
+                    vol_names.contains(&"resource-dir"),
+                    "Must retain resource-dir volume"
+                );
+
+                // No server-populated metadata that would cause 400. Server populated metada should not be passed to the server client-side.
+                assert!(
+                    v["metadata"].get("managedFields").is_none(),
+                    "Must not contain managedFields"
+                );
+                assert!(
+                    v["metadata"].get("resourceVersion").is_none(),
+                    "Must not contain resourceVersion"
+                );
+
+                Ok(deployment_with_volumes_json())
+            }
+            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        };
+        count_check!(3, clos, |client| {
+            assert!(update_attestation_keys(client).await.is_ok());
+        });
     }
 }

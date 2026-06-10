@@ -18,7 +18,7 @@ use kube::runtime::{
     finalizer,
     finalizer::Event,
 };
-use kube::{Api, Client, Resource};
+use kube::{Api, Client};
 use log::info;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -85,7 +85,7 @@ pub async fn create_register_server_deployment(
         ..Default::default()
     };
 
-    create_or_info_if_exists!(client, Deployment, deployment);
+    apply_resource!(client, Deployment, deployment);
     info!("Register server deployment created successfully");
     Ok(())
 }
@@ -120,7 +120,7 @@ pub async fn create_register_server_service(
         ..Default::default()
     };
 
-    create_or_info_if_exists!(client, Service, service);
+    apply_resource!(client, Service, service);
     info!("Register server service created successfully");
     Ok(())
 }
@@ -137,7 +137,8 @@ async fn keygen_reconcile(
                 let kube_client = Arc::unwrap_or_clone(client);
                 let id = &machine.spec.id.clone();
                 async {
-                    let owner_reference = generate_owner_reference(&Arc::unwrap_or_clone(machine))?;
+                    let owner_reference =
+                        generate_owner_controller_reference(&Arc::unwrap_or_clone(machine))?;
                     trustee::generate_secret(kube_client.clone(), id, owner_reference).await?;
                     trustee::mount_secret(kube_client, id).await
                 }

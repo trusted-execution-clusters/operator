@@ -12,6 +12,8 @@ use std::{fs::File, io::Read};
 
 use trusted_cluster_operator_lib::{conditions::INSTALLED_REASON, reference_values::*, *};
 
+const FIELD_MANAGER: &str = "compute-pcrs";
+
 #[derive(Parser)]
 #[command(version, about)]
 struct Args {
@@ -77,6 +79,16 @@ async fn main() -> Result<()> {
     let committed = committed_condition(INSTALLED_REASON, image.metadata.generation, &None);
     let conditions = Some(vec![committed]);
     let status = ApprovedImageStatus { conditions };
-    update_status!(approved_images, &args.resource_name, status)?;
+
+    // As operator also updates the status field, while requeuing every 10 seconds, we need to force this update to avoid race condition.
+    // TODO: Simplify ownership of this field.
+    update_status!(
+        approved_images,
+        &args.resource_name,
+        status,
+        ApprovedImage,
+        FIELD_MANAGER,
+        force
+    )?;
     Ok(())
 }

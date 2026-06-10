@@ -9,14 +9,19 @@
 // Use in other crates is not an intended purpose.
 
 use anyhow::Result;
+use futures_util::StreamExt;
 use k8s_openapi::api::core::v1::{Secret, SecretVolumeSource, Volume, VolumeMount};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
 use k8s_openapi::jiff::Timestamp;
+use kube::Resource;
+use kube::runtime::reflector::{self, Store};
+use kube::runtime::watcher::watcher;
 use kube::{Api, Client, runtime::controller::Action};
 use log::{info, warn};
 use std::fmt::{Debug, Display};
 use std::{sync::Arc, time::Duration};
+use tokio::time::timeout;
 
 // Re-export common functions from the lib
 pub use trusted_cluster_operator_lib::generate_owner_reference;
@@ -95,6 +100,37 @@ pub async fn read_certificate(
         ..Default::default()
     };
     Ok(Some((volume, volume_mount)))
+}
+
+pub fn spawn_reflector<K>(writer: reflector::store::Writer<K>, client: Client, name: &'static str)
+where
+    K: Resource<Scope = k8s_openapi::NamespaceResourceScope>,
+    K: Clone + serde::de::DeserializeOwned + std::fmt::Debug + Send + Sync + 'static,
+    K::DynamicType: Default + Eq + std::hash::Hash + Clone,
+{
+    let watcher = watcher(Api::<K>::default_namespaced(client), Default::default());
+    let reflector = reflector::reflector(writer, watcher).for_each(move |res| async move {
+        if let Err(e) = res {
+            warn!("{name} reflector error: {e}");
+        }
+    });
+    tokio::spawn(reflector);
+}
+
+pub async fn sync_cache<K>(store: &Store<K>, name: &str, sync_timeout: Duration) -> Result<()>
+where
+    K: 'static + Clone + reflector::Lookup,
+    K::DynamicType: Eq + std::hash::Hash + Clone,
+{
+    let err = anyhow::anyhow!(
+        "Timed out after {sync_timeout:?} waiting for {name} cache to sync. \
+         Ensure the CRD is installed and the API server is reachable."
+    );
+    timeout(sync_timeout, store.wait_until_ready())
+        .await
+        .map_err(|_| err)?
+        .map_err(|e| anyhow::anyhow!("Cache writer for {name} was dropped: {e}"))?;
+    Ok(())
 }
 
 // TODO: Port this functionality to kube-rs API.

@@ -28,7 +28,7 @@ OPERATOR_IMAGE=$(REGISTRY)/trusted-cluster-operator:$(TAG)
 COMPUTE_PCRS_IMAGE=$(REGISTRY)/compute-pcrs:$(TAG)
 REG_SERVER_IMAGE=$(REGISTRY)/registration-server:$(TAG)
 ATTESTATION_KEY_REGISTER_IMAGE=$(REGISTRY)/attestation-key-register:$(TAG)
-TRUSTEE_IMAGE ?= quay.io/trusted-execution-clusters/key-broker-service:v0.17.0
+TRUSTEE_IMAGE ?= quay.io/trusted-execution-clusters/key-broker-service:v0.20.0
 TEST_IMAGE ?= quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:20260225
 # tagged as 42.20251012.2.0
 APPROVED_IMAGE ?= quay.io/trusted-execution-clusters/fedora-coreos@sha256:6997f51fd27d1be1b5fc2e6cc3ebf16c17eb94d819b5d44ea8d6cf5f826ee773
@@ -65,7 +65,7 @@ $(CRD_RS_PATH):
 	mkdir $(CRD_RS_PATH)
 
 $(CRD_RS_PATH)/%.rs: $(CRD_YAML_PATH)/*_%.yaml $(KOPIUM) $(CRD_RS_PATH)
-	$(KOPIUM) -f $< $$(grep -Eq '(certificates|issuers)' <<< $< && echo --derive Default) > $@
+	$(KOPIUM) -f $< $$(echo $< | grep -Eq '(certificates|issuers)' && echo --derive Default) > $@
 	sed -i 'N; s/, Default)\]\n\(pub struct CertificateAdditionalOutputFormats\)/)]\n\1/; P; D' $@
 	rustfmt $@
 

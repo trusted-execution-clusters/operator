@@ -500,7 +500,7 @@ impl TestContext {
         Ok(())
     }
 
-    async fn wait_for_deployment_ready(
+    pub async fn wait_for_deployment_ready(
         &self,
         deployments_api: &Api<Deployment>,
         deployment_name: &str,

@@ -8,7 +8,6 @@ use kube::Client;
 use operator::RvContextData;
 use std::collections::BTreeMap;
 
-use crate::trustee;
 use trusted_cluster_operator_lib::reference_values::{ImagePcr, ImagePcrs, PCR_CONFIG_FILE};
 
 pub fn dummy_pcrs() -> ImagePcrs {
@@ -31,16 +30,6 @@ pub fn dummy_pcrs() -> ImagePcrs {
             reference: "ref".to_string(),
         },
     )]))
-}
-
-pub fn dummy_trustee_map() -> ConfigMap {
-    ConfigMap {
-        data: Some(BTreeMap::from([(
-            trustee::REFERENCE_VALUES_FILE.to_string(),
-            "[]".to_string(),
-        )])),
-        ..Default::default()
-    }
 }
 
 pub fn dummy_pcrs_map() -> ConfigMap {

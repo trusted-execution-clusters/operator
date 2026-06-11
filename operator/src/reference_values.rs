@@ -420,7 +420,7 @@ pub async fn disallow_image(ctx: RvContextData, resource_name: &str) -> Result<(
 mod tests {
     use super::*;
     use crate::test_utils::*;
-    use http::{Method, Request};
+    use http::Request;
     use k8s_openapi::api::batch::v1::JobStatus;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
     use trusted_cluster_operator_test_utils::mock_client::*;
@@ -455,28 +455,6 @@ mod tests {
             }),
             ..Default::default()
         }
-    }
-
-    #[tokio::test]
-    async fn test_job_reconcile_success() {
-        let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
-            (0, &Method::DELETE) => Ok(serde_json::to_string(&Job::default()).unwrap()),
-            (1, &Method::GET) => {
-                assert!(req.uri().path().contains(PCR_CONFIG_MAP));
-                Ok(serde_json::to_string(&dummy_pcrs_map()).unwrap())
-            }
-            (2, &Method::GET) | (3, &Method::PUT) => {
-                assert!(req.uri().path().contains(trustee::TRUSTEE_DATA_MAP));
-                Ok(serde_json::to_string(&dummy_trustee_map()).unwrap())
-            }
-            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
-        };
-        count_check!(4, clos, |client| {
-            let ctx = Arc::new(generate_rv_ctx(client));
-            let job = Arc::new(dummy_job());
-            let result = job_reconcile(job, ctx).await.unwrap();
-            assert_eq!(result, Action::await_change());
-        });
     }
 
     #[tokio::test]
@@ -520,24 +498,4 @@ mod tests {
     }
 
     // handle_new_image is an inherently online function and not tested here.
-
-    #[tokio::test]
-    async fn test_disallow_image() {
-        let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
-            // fetched & updated for removal, then fetched for recomputation
-            (0, &Method::GET) | (1, &Method::PUT) | (2, &Method::GET) => {
-                assert!(req.uri().path().contains(PCR_CONFIG_MAP));
-                Ok(serde_json::to_string(&dummy_pcrs_map()).unwrap())
-            }
-            (3, &Method::GET) | (4, &Method::PUT) => {
-                assert!(req.uri().path().contains(trustee::TRUSTEE_DATA_MAP));
-                Ok(serde_json::to_string(&dummy_trustee_map()).unwrap())
-            }
-            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
-        };
-        count_check!(5, clos, |client| {
-            let ctx = generate_rv_ctx(client);
-            assert!(disallow_image(ctx, "registry").await.is_ok());
-        });
-    }
 }

@@ -91,6 +91,7 @@ pub async fn read_certificate(
 
 // TODO: Port this functionality to kube-rs API.
 // Update condition if already present, otherwise append(insert) it into the conditions vector.
+// Inspired by k8s.io/apimachinery/pkg/api/meta.SetStatusCondition
 pub fn upsert_condition(
     existing_conditions: &mut Option<Vec<Condition>>,
     new_condition: Condition,

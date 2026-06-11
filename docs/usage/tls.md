@@ -105,7 +105,7 @@ spec:
 
 ### To the node
 
-Retrieve the root CA public key, percent-encode it and add it as a certifiate authority to the Ignition given to the node:
+Retrieve the root CA public key, percent-encode it and add it as a certificate authority to the Ignition given to the node:
 
 ```sh
 $ kubectl get secret root-secret -n trusted-execution-clusters -o json | jq -r '.data["ca.crt"]' | base64 -d | jq -sRr @uri

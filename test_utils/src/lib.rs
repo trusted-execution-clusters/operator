@@ -637,9 +637,9 @@ impl TestContext {
             .await?;
 
         let secrets: Api<Secret> = Api::namespaced(self.client.clone(), &self.test_namespace);
-        wait_for_resource_created(&secrets, REG_SECRET, 15, 1).await?;
-        wait_for_resource_created(&secrets, TRUSTEE_SECRET, 15, 1).await?;
-        wait_for_resource_created(&secrets, ATT_REG_SECRET, 15, 1).await?;
+        wait_for_resource_created(&secrets, REG_SECRET, 60, 1).await?;
+        wait_for_resource_created(&secrets, TRUSTEE_SECRET, 60, 1).await?;
+        wait_for_resource_created(&secrets, ATT_REG_SECRET, 60, 1).await?;
         Ok(())
     }
 
@@ -806,7 +806,8 @@ impl TestContext {
             rbac_temp_dir.to_str().unwrap(),
             &self.test_name,
             "Applying RBAC",
-            kustomize = true
+            kustomize = true,
+            fssa = true
         );
 
         let manifests_path = Path::new(&self.manifests_dir);

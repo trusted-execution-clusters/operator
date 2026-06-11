@@ -22,8 +22,13 @@ use kube::{
     Api, Client, Resource,
     api::{ObjectMeta, Patch, PatchParams},
 };
-use log::info;
-use operator::{RvContextData, TLS_DIR, create_or_info_if_exists, read_certificate};
+use log::{info, warn};
+use operator::{
+    ControllerError, RvContextData, TLS_DIR, controller_error_policy, controller_info,
+    create_or_info_if_exists, read_certificate,
+};
+
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use serde::{Serialize, Serializer};
 use serde_json::{Value::String as JsonString, json};
 use std::collections::BTreeMap;
@@ -139,23 +144,59 @@ fn generate_luks_key() -> Result<Vec<u8>> {
     };
     serde_json::to_vec(&jwk).map_err(Into::into)
 }
+async fn get_auth_key_token(client: &Client) -> Result<String> {
+    let secret_api: Api<Secret> = Api::default_namespaced(client.clone());
+    let auth_secret = secret_api.get(TRUSTEE_AUTH_SECRET).await?;
+    let auth_data = auth_secret.data.context("Auth secret has no data")?;
+    let auth_key_bytes = auth_data
+        .get("private.key")
+        .context("Auth secret missing private.key")?;
 
-fn generate_secret_volume(id: &str) -> (Volume, VolumeMount) {
-    (
-        Volume {
-            name: id.to_string(),
-            secret: Some(SecretVolumeSource {
-                secret_name: Some(id.to_string()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        },
-        VolumeMount {
-            name: id.to_string(),
-            mount_path: format!("{TRUSTEE_SECRETS_PATH}/{id}"),
-            ..Default::default()
-        },
-    )
+    let claims = json!({
+        "role": "admin",
+        "exp": i32::MAX
+    });
+
+    let encoding_key = EncodingKey::from_ed_pem(auth_key_bytes.0.as_slice())?;
+
+    let token = encode(&Header::new(Algorithm::EdDSA), &claims, &encoding_key)?;
+    Ok(token)
+}
+async fn get_kbs_connection(client: &Client) -> Result<(String, Vec<String>)> {
+    let tec = trusted_cluster_operator_lib::get_trusted_execution_cluster(client.clone()).await?;
+    let secret_api: Api<Secret> = Api::default_namespaced(client.clone());
+
+    if let Some(secret_name) = &tec.spec.trustee_secret {
+        if let Ok(secret) = secret_api.get(secret_name).await {
+            if let Some(ca_crt) = secret.data.as_ref().and_then(|d| d.get("ca.crt")) {
+                let ca_pem = String::from_utf8(ca_crt.0.clone())
+                    .context("ca certificate is not valid UTF-8")?;
+                let trustee_addr = format!(
+                    "https://{}",
+                    tec.spec
+                        .public_trustee_addr
+                        .as_ref()
+                        .context("TrustedExecutionCluster missing public_trustee_addr HTTPS")?
+                );
+                return Ok((trustee_addr, vec![ca_pem]));
+            }
+        }
+    }
+
+    Ok((
+        format!(
+            "http://{}",
+            tec.spec
+                .public_trustee_addr
+                .as_ref()
+                .context("TrustedExecutionCluster missing public_trustee_addr HTTP")?
+        ),
+        vec![],
+    ))
+}
+
+pub fn secret_path(id: &str) -> String {
+    format!("default/{id}/root")
 }
 
 pub async fn mount_secret(client: Client, id: &str) -> Result<()> {

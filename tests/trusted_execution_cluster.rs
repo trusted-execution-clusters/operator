@@ -676,6 +676,19 @@ async fn test_luks_key_sync() -> anyhow::Result<()> {
             }
         })
         .await?;
+    poller  
+        .poll_async(|| {  
+            let secrets_api = secrets_api.clone();  
+            let id1 = machine1_uuid.clone();  
+            async move {  
+                match secrets_api.get(&id1).await {  
+                    Ok(_) => Err(anyhow::anyhow!("Machine1 secret still exists")),  
+                    Err(kube::Error::Api(ae)) if ae.code == 404 => Ok(()),  
+                    Err(e) => Err(e.into()),  
+                }  
+        }
+    })  
+    .await?;
     test_ctx.info("Machine1 secret deleted from KBS");
 
     // Verify the K8s Secret for machine1 is also deleted

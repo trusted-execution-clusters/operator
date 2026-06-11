@@ -54,6 +54,8 @@ const TRUSTED_AK_KEYS_VOLUME: &str = "trusted-ak-keys";
 const TRUSTED_AK_KEYS_DIR: &str = "/etc/tpm/trusted_ak_keys";
 const TRUSTEE_AUTH_SECRET: &str = "trustee-auth";
 const TRUSTEE_AUTH_KEY_DIR: &str = "/key";
+const TRUSTEE_AUTH_PUB_KEY: &str = "public.pub";
+const TRUSTEE_AUTH_PRIV_KEY: &str = "private.key";
 
 fn primitive_date_time_to_str<S>(d: &DateTime<Utc>, s: S) -> Result<S::Ok, S::Error>
 where
@@ -159,7 +161,7 @@ async fn get_auth_key_token(client: &Client) -> Result<String> {
 
     let claims = json!({
         "role": "admin",
-        "exp": 2147483647 // Set to Jan 19, 2038
+        "exp": i32::MAX
     });
 
     let encoding_key = EncodingKey::from_ed_pem(auth_key_bytes.0.as_slice())?;
@@ -256,17 +258,16 @@ async fn trustee_deployment_reconcile(
     client: Arc<Client>,
 ) -> Result<Action, ControllerError> {
     if let Some(status) = &deployment.status {
-        let desired = deployment
-            .spec
-            .as_ref()
-            .and_then(|s| s.replicas)
-            .unwrap_or(1);
-        let ready = status.ready_replicas.unwrap_or(0);
-        if ready >= desired && desired > 0 {
-            info!("{TRUSTEE_DEPLOYMENT} is ready, syncing machine secrets");
-            sync_all_machine_luks_key(Arc::unwrap_or_clone(client.clone()))
-                .await
-                .map_err(ControllerError::Anyhow)?;
+        if let Some(is_available) = &status.conditions {
+            if is_available
+                .iter()
+                .any(|c| {
+                    c.type_ == "Available" && c.status == "True"
+                }) {
+                    sync_all_machine_luks_key(Arc::unwrap_or_clone(client.clone()))
+                        .await
+                        .map_err(ControllerError::Anyhow)?;
+                }
         }
     }
     Ok(Action::await_change())
@@ -452,11 +453,11 @@ pub async fn generate_trustee_auth_keys_secret(
     let key_pair = generate_ed25519_key_pair()?;
     let data = BTreeMap::from([
         (
-            "private.key".to_string(),
+            TRUSTEE_AUTH_PRIV_KEY.to_string(),
             k8s_openapi::ByteString(key_pair.private_key_pem),
         ),
         (
-            "public.pub".to_string(),
+            TRUSTEE_AUTH_PUB_KEY.to_string(),
             k8s_openapi::ByteString(key_pair.public_key_pem),
         ),
     ]);

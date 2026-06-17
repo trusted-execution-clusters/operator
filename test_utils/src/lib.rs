@@ -633,6 +633,35 @@ impl TestContext {
         Ok(())
     }
 
+    pub async fn wait_for_deployment_ready(
+        &self,
+        deployments_api: &Api<Deployment>,
+        deployment_name: &str,
+        timeout_secs: u64,
+    ) -> Result<()> {
+        test_info!(
+            &self.test_name,
+            "Waiting for deployment {} to be ready",
+            deployment_name
+        );
+        let has_available_replica = |d: Option<&Deployment>| {
+            d.and_then(|d| d.status.as_ref())
+                .and_then(|s| s.available_replicas)
+                .is_some_and(|r| r >= 1)
+        };
+        let done = await_condition(
+            deployments_api.clone(),
+            deployment_name,
+            has_available_replica,
+        );
+        timeout(Duration::from_secs(timeout_secs), done)
+            .await
+            .context(format!(
+            "{deployment_name} deployment does not have 1 available replica after {timeout_secs} seconds"
+        ))??;
+        Ok(())
+    }
+
     async fn create_certificate(
         &self,
         service_name: &str,

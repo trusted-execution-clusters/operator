@@ -12,6 +12,7 @@ use env_logger::Env;
 use futures_util::StreamExt;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use kube::runtime::controller::{Action, Controller};
+use kube::runtime::reflector::{self, Store};
 use kube::runtime::watcher;
 use kube::{Api, Client};
 use log::{error, info, warn};
@@ -38,6 +39,29 @@ const COMPONENT_VERSION: &str = "0.2.0";
 /// Default registry
 const TEC_REGISTRY: &str = "quay.io/trusted-execution-clusters";
 
+struct ClusterContext {
+    client: Client,
+    tec_store: Store<TrustedExecutionCluster>,
+}
+
+impl ClusterContext {
+    fn new(client: Client) -> Self {
+        let (tec_store, tec_writer) = reflector::store::<TrustedExecutionCluster>();
+
+        spawn_reflector::<TrustedExecutionCluster>(
+            tec_writer,
+            client.clone(),
+            "TrustedExecutionCluster",
+        );
+
+        Self { client, tec_store }
+    }
+
+    async fn sync_cache_tec(&self, timeout: Duration) -> Result<()> {
+        sync_cache(&self.tec_store, "TrustedExecutionCluster", timeout).await
+    }
+}
+
 fn is_installed(status: Option<TrustedExecutionClusterStatus>) -> bool {
     let chk = |c: &Condition| c.type_ == INSTALLED_CONDITION && c.status == "True";
     status
@@ -48,7 +72,7 @@ fn is_installed(status: Option<TrustedExecutionClusterStatus>) -> bool {
 
 async fn reconcile(
     cluster: Arc<TrustedExecutionCluster>,
-    client: Arc<Client>,
+    ctx: Arc<ClusterContext>,
 ) -> Result<Action, ControllerError> {
     let generation = cluster.metadata.generation;
     let known_address = cluster.spec.public_trustee_addr.is_some();
@@ -61,7 +85,7 @@ async fn reconcile(
     // Update or insert address condition to prevent rebuilding the status object from scratch every time the reconcile is called.
     let _ = upsert_condition(&mut conditions, address_condition);
 
-    let kube_client = Arc::unwrap_or_clone(client);
+    let kube_client = ctx.client.clone();
     let err = "trusted execution cluster had no name";
     let name = &cluster.metadata.name.clone().expect(err);
     let clusters: Api<TrustedExecutionCluster> = Api::default_namespaced(kube_client.clone());
@@ -82,9 +106,7 @@ async fn reconcile(
         return Ok(Action::await_change());
     }
 
-    let list = clusters.list(&Default::default()).await;
-    let cluster_list = list.map_err(Into::<anyhow::Error>::into)?;
-    if cluster_list.items.len() > 1 {
+    if ctx.tec_store.state().len() > 1 {
         let namespace = kube_client.default_namespace();
         warn!(
             "More than one TrustedExecutionCluster found in namespace {namespace}. \
@@ -232,18 +254,40 @@ async fn main() -> Result<()> {
 
     let kube_client = Client::try_default().await?;
     info!("trusted execution clusters operator",);
+
+    const CACHE_SYNC_TIMEOUT: Duration = Duration::from_secs(60);
+
+    // Launch controllers that do not depend on reflector caches first.
+    register_server::launch_keygen_controller(kube_client.clone()).await;
+
+    // Spawn reflectors (starts background list-watch immediately).
+    let ak_ctx = Arc::new(attestation_key_register::AkContextData::new(
+        kube_client.clone(),
+    ));
+    let ctx = Arc::new(ClusterContext::new(kube_client.clone()));
+
+    // Best-effort wait for caches; controllers will work with
+    // partially-filled stores if the sync times out.
+    if let Err(e) = ak_ctx.sync_caches(CACHE_SYNC_TIMEOUT).await {
+        warn!("AK cache sync incomplete, controllers will retry: {e}");
+    }
+    if let Err(e) = ctx.sync_cache_tec(CACHE_SYNC_TIMEOUT).await {
+        warn!("TEC cache sync incomplete, controller will retry: {e}");
+    }
+
+    info!("Starting controllers");
+
     let cl: Api<TrustedExecutionCluster> = Api::default_namespaced(kube_client.clone());
 
-    register_server::launch_keygen_controller(kube_client.clone()).await;
-    attestation_key_register::launch_ak_controller(kube_client.clone()).await;
-    attestation_key_register::launch_machine_ak_controller(kube_client.clone()).await;
-    attestation_key_register::launch_secret_ak_controller(kube_client.clone()).await;
+    attestation_key_register::launch_ak_controller(ak_ctx.clone()).await;
+    attestation_key_register::launch_machine_ak_controller(ak_ctx.clone()).await;
+    attestation_key_register::launch_secret_ak_controller(ak_ctx).await;
     reference_values::create_pcrs_config_map(kube_client.clone()).await?;
     reference_values::launch_rv_image_controller(kube_client.clone()).await;
     reference_values::launch_rv_job_controller(kube_client.clone()).await;
 
     Controller::new(cl, watcher::Config::default())
-        .run(reconcile, controller_error_policy, Arc::new(kube_client))
+        .run(reconcile, controller_error_policy, ctx)
         .for_each(controller_info)
         .await;
 
@@ -261,6 +305,25 @@ mod tests {
     use super::*;
     use trusted_cluster_operator_test_utils::mock_client::*;
 
+    fn dummy_cluster_ctx(client: Client) -> ClusterContext {
+        ClusterContext {
+            client,
+            tec_store: reflector::store::<TrustedExecutionCluster>().0,
+        }
+    }
+
+    /// Build a Store pre-populated with two distinct TrustedExecutionCluster objects.
+    fn two_cluster_tec_store() -> Store<TrustedExecutionCluster> {
+        let (store, mut writer) = reflector::store::<TrustedExecutionCluster>();
+        let mut second = dummy_cluster();
+        second.metadata.name = Some("test2".to_string());
+        writer.apply_watcher_event(&watcher::Event::Init);
+        writer.apply_watcher_event(&watcher::Event::InitApply(dummy_cluster()));
+        writer.apply_watcher_event(&watcher::Event::InitApply(second));
+        writer.apply_watcher_event(&watcher::Event::InitDone);
+        store
+    }
+
     #[tokio::test]
     async fn test_reconcile_uninstalling() {
         let clos = async |req: Request<Body>, ctr| match req.method() {
@@ -274,7 +337,7 @@ mod tests {
         count_check!(1, clos, |client| {
             let mut cluster = dummy_cluster();
             cluster.metadata.deletion_timestamp = Some(Time(Timestamp::now()));
-            let result = reconcile(Arc::new(cluster), Arc::new(client)).await;
+            let result = reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client))).await;
             assert_eq!(result.unwrap(), Action::await_change());
         });
     }
@@ -282,14 +345,7 @@ mod tests {
     #[tokio::test]
     async fn test_reconcile_non_unique() {
         let clos = async |req: Request<_>, ctr| {
-            if ctr == 0 && req.method() == Method::GET {
-                let object_list = ObjectList::<TrustedExecutionCluster> {
-                    items: vec![dummy_cluster(), dummy_cluster()],
-                    types: Default::default(),
-                    metadata: Default::default(),
-                };
-                Ok(serde_json::to_string(&object_list).unwrap())
-            } else if ctr == 1 && req.method() == Method::PATCH {
+            if ctr == 0 && req.method() == Method::PATCH {
                 let body = get_body_string(req).await;
                 assert!(body.contains(NOT_INSTALLED_REASON_NON_UNIQUE));
                 Ok(serde_json::to_string(&dummy_cluster()).unwrap())
@@ -297,9 +353,14 @@ mod tests {
                 panic!("unexpected API interaction: {req:?}, counter {ctr}");
             }
         };
-        count_check!(2, clos, |client| {
+        let store = two_cluster_tec_store();
+        count_check!(1, clos, |client| {
             let cluster = Arc::new(dummy_cluster());
-            let result = reconcile(cluster, Arc::new(client)).await;
+            let ctx = Arc::new(ClusterContext {
+                client,
+                tec_store: store,
+            });
+            let result = reconcile(cluster, ctx).await;
             assert_eq!(result.unwrap(), Action::requeue(Duration::from_secs(60)));
         });
     }
@@ -307,12 +368,17 @@ mod tests {
     #[tokio::test]
     async fn test_reconcile_error() {
         let clos = async |req: Request<_>, _| match req {
-            r if r.method() == Method::GET => Err(StatusCode::INTERNAL_SERVER_ERROR),
+            r if r.method() == Method::PATCH => Err(StatusCode::INTERNAL_SERVER_ERROR),
             _ => panic!("unexpected API interaction: {req:?}"),
         };
+        let store = two_cluster_tec_store();
         count_check!(1, clos, |client| {
             let cluster = Arc::new(dummy_cluster());
-            let result = reconcile(cluster, Arc::new(client)).await;
+            let ctx = Arc::new(ClusterContext {
+                client,
+                tec_store: store,
+            });
+            let result = reconcile(cluster, ctx).await;
             assert!(result.is_err());
         });
     }
@@ -351,7 +417,7 @@ mod tests {
             cluster.status = Some(TrustedExecutionClusterStatus {
                 conditions: Some(vec![foreign_condition]),
             });
-            let result = reconcile(Arc::new(cluster), Arc::new(client)).await;
+            let result = reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client))).await;
             assert_eq!(result.unwrap(), Action::await_change());
         });
     }
@@ -372,23 +438,16 @@ mod tests {
         };
 
         let clos = async |req: Request<Body>, ctr| {
-            if ctr == 0 && req.method() == Method::GET {
-                let object_list = ObjectList::<TrustedExecutionCluster> {
-                    items: vec![dummy_cluster()],
-                    types: Default::default(),
-                    metadata: Default::default(),
-                };
-                Ok(serde_json::to_string(&object_list).unwrap())
-            } else if (0 < ctr && ctr < 9 || ctr == 11) && req.method() == Method::POST {
+            if ctr < 8 && req.method() == Method::POST {
                 Ok(serde_json::to_string(&dummy_cluster()).unwrap())
-            } else if ctr == 9 && req.method() == Method::GET {
+            } else if ctr == 8 && req.method() == Method::GET {
                 let object_list = ObjectList::<ApprovedImage> {
                     items: Vec::new(),
                     types: Default::default(),
                     metadata: Default::default(),
                 };
                 Ok(serde_json::to_string(&object_list).unwrap())
-            } else if ctr == 10 && req.method() == Method::PATCH {
+            } else if ctr == 9 && req.method() == Method::PATCH {
                 let body = req.into_body().collect_bytes().await.unwrap().to_vec();
                 let body = String::from_utf8_lossy(&body);
                 assert!(body.contains("ForeignCondition"),);
@@ -419,8 +478,8 @@ mod tests {
         cluster.status = Some(TrustedExecutionClusterStatus {
             conditions: Some(vec![pre_existing_installed, foreign_condition]),
         });
-        count_check!(11, clos, |client| {
-            let result = reconcile(Arc::new(cluster), Arc::new(client)).await;
+        count_check!(10, clos, |client| {
+            let result = reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client))).await;
             assert_eq!(result.unwrap(), Action::await_change());
         });
     }
@@ -437,8 +496,9 @@ mod tests {
         count_check!(1, clos1, |client| {
             let mut cluster = dummy_cluster();
             cluster.metadata.deletion_timestamp = Some(Time(Timestamp::now()));
-            let kube_client = Arc::new(client);
-            reconcile(Arc::new(cluster), kube_client).await.unwrap();
+            reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client)))
+                .await
+                .unwrap();
         });
 
         // Building the uninstalling cluster state.
@@ -470,8 +530,9 @@ mod tests {
             let mut cluster = dummy_cluster();
             cluster.metadata.deletion_timestamp = Some(Time(Timestamp::now()));
             cluster.status = Some(TrustedExecutionClusterStatus { conditions });
-            let kube_client = Arc::new(client);
-            reconcile(Arc::new(cluster), kube_client).await.unwrap();
+            reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client)))
+                .await
+                .unwrap();
         });
     }
 }

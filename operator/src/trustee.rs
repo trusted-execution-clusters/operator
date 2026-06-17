@@ -4,6 +4,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+use crate::attestation_key_register::AkContextData;
 use anyhow::{Context, Result};
 use base64::{Engine as _, engine::general_purpose};
 use chrono::{DateTime, Utc};
@@ -21,6 +22,7 @@ use k8s_openapi::apimachinery::pkg::{
 use kube::{
     Api, Client, Resource,
     api::{ObjectMeta, Patch, PatchParams},
+    runtime::reflector::ObjectRef,
 };
 use log::info;
 use operator::{TLS_DIR, create_or_info_if_exists, read_certificate};
@@ -190,13 +192,12 @@ pub async fn do_mount_secret(client: Client, id: &str, add: bool) -> Result<()> 
     Ok(())
 }
 
-pub async fn update_attestation_keys(client: Client) -> Result<()> {
-    let secrets: Api<Secret> = Api::default_namespaced(client.clone());
-    let secret_list = secrets.list(&Default::default()).await?;
-
-    let ak_secrets: Vec<String> = secret_list
-        .items
-        .iter()
+pub async fn update_attestation_keys(ctx: &AkContextData) -> Result<()> {
+    let client = &ctx.client;
+    let ak_secrets: Vec<String> = ctx
+        .secret_store
+        .state()
+        .into_iter()
         .filter(|secret| {
             // Filter out secrets that are being deleted
             if secret.metadata.deletion_timestamp.is_some() {
@@ -213,8 +214,17 @@ pub async fn update_attestation_keys(client: Client) -> Result<()> {
         .filter_map(|secret| secret.metadata.name.clone())
         .collect();
 
-    let deployments: Api<Deployment> = Api::default_namespaced(client);
-    let deployment = deployments.get(TRUSTEE_DEPLOYMENT).await?;
+    let ns = client.default_namespace().to_string();
+    let Some(deployment) = ctx
+        .deployment_store
+        .get(&ObjectRef::new(TRUSTEE_DEPLOYMENT).within(&ns))
+        .map(std::sync::Arc::unwrap_or_clone)
+    else {
+        // Trustee deployment is not (yet or no longer) present — nothing to patch.
+        info!("{TRUSTEE_DEPLOYMENT} not found in cache, skipping attestation key volume update");
+        return Ok(());
+    };
+    let deployments: Api<Deployment> = Api::default_namespaced(client.clone());
     let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no spec");
     let depl_spec = deployment.spec.as_ref().context(err)?;
     let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no pod spec");

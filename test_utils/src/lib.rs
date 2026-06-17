@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use fs_extra::dir;
-use k8s_openapi::api::apps::v1::{Deployment, DeploymentCondition, DeploymentStatus};
+use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{
     ConfigMap, LoadBalancerStatus, Namespace, Secret, Service, ServicePort, ServiceSpec,
     ServiceStatus,
@@ -633,6 +633,35 @@ impl TestContext {
         Ok(())
     }
 
+    pub async fn wait_for_deployment_ready(
+        &self,
+        deployments_api: &Api<Deployment>,
+        deployment_name: &str,
+        timeout_secs: u64,
+    ) -> Result<()> {
+        test_info!(
+            &self.test_name,
+            "Waiting for deployment {} to be ready",
+            deployment_name
+        );
+        let has_available_replica = |d: Option<&Deployment>| {
+            d.and_then(|d| d.status.as_ref())
+                .and_then(|s| s.available_replicas)
+                .is_some_and(|r| r >= 1)
+        };
+        let done = await_condition(
+            deployments_api.clone(),
+            deployment_name,
+            has_available_replica,
+        );
+        timeout(Duration::from_secs(timeout_secs), done)
+            .await
+            .context(format!(
+            "{deployment_name} deployment does not have 1 available replica after {timeout_secs} seconds"
+        ))??;
+        Ok(())
+    }
+
     async fn create_certificate(
         &self,
         service_name: &str,
@@ -963,14 +992,6 @@ impl TestContext {
             "Applying ApprovedImage manifest"
         );
 
-        let depl_ready = |depl: Option<&Deployment>| {
-            let chk_cond = |c: &DeploymentCondition| c.type_ == "Available" && c.status == "True";
-            let chk_status =
-                |st: &DeploymentStatus| st.conditions.as_ref().map(|cs| cs.iter().any(chk_cond));
-            let chk = |depl: &Deployment| depl.status.as_ref().and_then(chk_status);
-            depl.and_then(chk).unwrap_or(false)
-        };
-
         let depls: Api<Deployment> = Api::namespaced(self.client.clone(), ns);
         for depl in [
             "trusted-cluster-operator",
@@ -978,11 +999,8 @@ impl TestContext {
             TRUSTEE_DEPLOYMENT,
             ATTESTATION_KEY_REGISTER_DEPLOYMENT,
         ] {
-            let info = format!("Waiting for deployment {depl} to be ready");
-            test_info!(&self.test_name, "{info}");
-            let done = await_condition(depls.clone(), depl, depl_ready);
-            let ctx = format!("waiting for deployment {depl} to be ready");
-            timeout(scaled_duration(300), done).await.context(ctx)??;
+            self.wait_for_deployment_ready(&depls, depl, scaled_timeout(300))
+                .await?;
         }
 
         let svc = ATTESTATION_KEY_REGISTER_SERVICE;

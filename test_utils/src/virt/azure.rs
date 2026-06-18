@@ -110,7 +110,7 @@ impl VmBackend for AzureBackend {
         args.extend(["--storage-sku", "StandardSSD_LRS"]);
         args.extend(["--admin-username", "core"]);
         args.extend(["--ssh-key-values", &self.config.ssh_public_key]);
-        args.extend(["--custom-data", &custom_data]);
+        args.extend(["--user-data", &custom_data]);
         args.extend(["--security-type", "ConfidentialVM"]);
         args.extend(["--enable-secure-boot", "true", "--enable-vtpm", "true"]);
         args.extend(["--os-disk-security-encryption-type", "VMGuestStateOnly"]);

@@ -45,3 +45,6 @@ updates:
       - dependency-name: "rand_core"
         # Block newer versions of rand_core, incompatible
         versions: [">=0.7"]
+      - dependency-name: "kopium"
+        # Block newer versions of kopium until we bump to k8s 1.36
+        versions: [">=0.23.0"]

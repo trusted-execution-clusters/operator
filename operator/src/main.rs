@@ -7,7 +7,7 @@ use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use env_logger::Env;
 use futures_util::StreamExt;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
@@ -15,7 +15,7 @@ use kube::runtime::controller::{Action, Controller};
 use kube::runtime::reflector::{self, Store};
 use kube::runtime::watcher;
 use kube::{Api, Client};
-use log::{error, info, warn};
+use log::{info, warn};
 
 use operator::{generate_owner_reference, upsert_condition};
 use trusted_cluster_operator_lib::{TrustedExecutionCluster, TrustedExecutionClusterStatus};
@@ -132,9 +132,11 @@ async fn reconcile(
         update_status!(clusters, name, status)?;
     }
 
-    install_trustee_configuration(kube_client.clone(), &cluster).await?;
-    install_register_server(kube_client.clone(), &cluster).await?;
-    install_attestation_key_register(kube_client.clone(), &cluster).await?;
+    if let Err(e) = install_components(&kube_client, &cluster).await {
+        // warn with `:?` to also get context
+        warn!("Installation of a component failed: {e:?}\nRequeueing...");
+        return Ok(Action::requeue(Duration::from_secs(60)));
+    }
     reference_values::adopt_approved_images(kube_client, &cluster).await?;
 
     let installed_condition = installed_condition(INSTALLED_REASON, generation, existing_status);
@@ -146,6 +148,13 @@ async fn reconcile(
     Ok(Action::await_change())
 }
 
+async fn install_components(client: &Client, cluster: &TrustedExecutionCluster) -> Result<()> {
+    install_trustee_configuration(client.clone(), cluster).await?;
+    install_register_server(client.clone(), cluster).await?;
+    install_attestation_key_register(client.clone(), cluster).await?;
+    Ok(())
+}
+
 async fn install_trustee_configuration(
     client: Client,
     cluster: &TrustedExecutionCluster,
@@ -153,32 +162,28 @@ async fn install_trustee_configuration(
     let owner_reference = generate_owner_reference(cluster)?;
 
     let trustee_secret = &cluster.spec.trustee_secret;
-    match trustee::generate_trustee_data(client.clone(), owner_reference.clone(), trustee_secret)
+    trustee::generate_trustee_data(client.clone(), owner_reference.clone(), trustee_secret)
         .await
-    {
-        Ok(_) => info!("Generate configmap for the KBS configuration",),
-        Err(e) => error!("Failed to create the KBS configuration configmap: {e}"),
-    }
+        .context("Failed to create the KBS configuration configmap")?;
+    info!("Generated configmap for the KBS configuration");
 
-    match trustee::generate_attestation_policy(client.clone(), owner_reference.clone()).await {
-        Ok(_) => info!("Generate configmap for the attestation policy",),
-        Err(e) => error!("Failed to create the attestation policy configmap: {e}"),
-    }
+    trustee::generate_attestation_policy(client.clone(), owner_reference.clone())
+        .await
+        .context("Failed to create the attestation policy configmap")?;
+    info!("Generated configmap for the attestation policy");
 
     let kbs_port = cluster.spec.trustee_kbs_port;
-    match trustee::generate_kbs_service(client.clone(), owner_reference.clone(), kbs_port).await {
-        Ok(_) => info!("Generate the KBS service"),
-        Err(e) => error!("Failed to create the KBS service: {e}"),
-    }
+    trustee::generate_kbs_service(client.clone(), owner_reference.clone(), kbs_port)
+        .await
+        .context("Failed to create the KBS service")?;
+    info!("Generated the KBS service");
 
     let default = format!("{TEC_REGISTRY}/key-broker-service:{TRUSTEE_VERSION}");
     let trustee_image = env::var(RELATED_IMAGE_TRUSTEE).ok().unwrap_or(default);
-    match trustee::generate_kbs_deployment(client, owner_reference, &trustee_image, trustee_secret)
+    trustee::generate_kbs_deployment(client, owner_reference, &trustee_image, trustee_secret)
         .await
-    {
-        Ok(_) => info!("Generate the KBS deployment"),
-        Err(e) => error!("Failed to create the KBS deployment: {e}"),
-    }
+        .context("Failed to create the KBS deployment")?;
+    info!("Generated the KBS deployment");
 
     Ok(())
 }
@@ -189,25 +194,21 @@ async fn install_register_server(client: Client, cluster: &TrustedExecutionClust
     let env = RELATED_IMAGE_REGISTRATION_SERVER;
     let default_image = format!("{TEC_REGISTRY}/registration-server:{COMPONENT_VERSION}");
     let register_server_image = env::var(env).ok().unwrap_or(default_image);
-    match register_server::create_register_server_deployment(
+    register_server::create_register_server_deployment(
         client.clone(),
         owner_reference.clone(),
         &register_server_image,
         &cluster.spec.register_server_secret,
     )
     .await
-    {
-        Ok(_) => info!("Register server deployment created/updated successfully"),
-        Err(e) => error!("Failed to create register server deployment: {e}"),
-    }
+    .context("Failed to create register server deployment")?;
+    info!("Register server deployment created/updated successfully");
 
     let port = cluster.spec.register_server_port;
-    match register_server::create_register_server_service(client.clone(), owner_reference, port)
+    register_server::create_register_server_service(client.clone(), owner_reference, port)
         .await
-    {
-        Ok(_) => info!("Register server service created/updated successfully"),
-        Err(e) => error!("Failed to create register server service: {e}"),
-    }
+        .context("Failed to create register server service")?;
+    info!("Register server service created/updated successfully");
 
     Ok(())
 }
@@ -221,29 +222,24 @@ async fn install_attestation_key_register(
     let env = RELATED_IMAGE_ATTESTATION_KEY_REGISTER;
     let default_image = format!("{TEC_REGISTRY}/attestation-key-register:{COMPONENT_VERSION}");
     let attestation_key_register_image = env::var(env).ok().unwrap_or(default_image);
-    match attestation_key_register::create_attestation_key_register_deployment(
+    attestation_key_register::create_attestation_key_register_deployment(
         client.clone(),
         owner_reference.clone(),
         &attestation_key_register_image,
         &cluster.spec.attestation_key_register_secret,
     )
     .await
-    {
-        Ok(_) => info!("Attestation key register deployment created/updated successfully"),
-        Err(e) => error!("Failed to create attestation key register deployment: {e}"),
-    }
+    .context("Failed to create attestation key register deployment")?;
+    info!("Attestation key register deployment created/updated successfully");
 
-    let port = cluster.spec.attestation_key_register_port;
-    match attestation_key_register::create_attestation_key_register_service(
+    attestation_key_register::create_attestation_key_register_service(
         client.clone(),
         owner_reference,
-        port,
+        cluster.spec.attestation_key_register_port,
     )
     .await
-    {
-        Ok(_) => info!("Attestation key register service created/updated successfully"),
-        Err(e) => error!("Failed to create attestation key register service: {e}"),
-    }
+    .context("Failed to create attestation key register service")?;
+    info!("Attestation key register service created/updated successfully");
 
     Ok(())
 }
@@ -297,6 +293,8 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use http::{Method, Request, StatusCode};
+    use k8s_openapi::api::apps::v1::Deployment;
+    use k8s_openapi::api::core::v1::{ConfigMap, Service};
     use k8s_openapi::{apimachinery::pkg::apis::meta::v1::Time, jiff::Timestamp};
     use kube::api::ObjectList;
     use kube::client::Body;
@@ -439,7 +437,22 @@ mod tests {
 
         let clos = async |req: Request<Body>, ctr| {
             if ctr < 8 && req.method() == Method::POST {
-                Ok(serde_json::to_string(&dummy_cluster()).unwrap())
+                use serde_json::to_string;
+                let resp = match ctr {
+                    // Trustee
+                    0 => to_string(&ConfigMap::default()),
+                    1 => to_string(&ConfigMap::default()),
+                    2 => to_string(&Service::default()),
+                    3 => to_string(&Deployment::default()),
+                    // Registration server
+                    4 => to_string(&Deployment::default()),
+                    5 => to_string(&Service::default()),
+                    // Attestation key register server
+                    6 => to_string(&Deployment::default()),
+                    7 => to_string(&Service::default()),
+                    _ => unreachable!("unexpected counter {ctr}"),
+                };
+                Ok(resp.unwrap())
             } else if ctr == 8 && req.method() == Method::GET {
                 let object_list = ObjectList::<ApprovedImage> {
                     items: Vec::new(),

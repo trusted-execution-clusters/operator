@@ -118,8 +118,7 @@ macro_rules! kube_apply {
                 args.extend_from_slice(&["--server-side", "--force-conflicts"])
             }
         )?
-        let mut cmd = get_k8s_platform().kubectl();
-        let apply_output = cmd.args(args).output().await?;
+        let apply_output = kubectl().args(args).output().await?;
         if !apply_output.status.success() {
             let stderr = String::from_utf8_lossy(&apply_output.stderr);
             return Err(anyhow!("{} failed: {}", $log, stderr));
@@ -159,6 +158,13 @@ pub fn ensure_command(name: &str) -> Result<()> {
     result.map_err(|_| anyhow!("Command {name} not found. Please install {name} first."))
 }
 
+fn kubectl() -> Command {
+    match env::var(PLATFORM_ENV).as_deref().unwrap_or("kind") {
+        "openshift" => Command::new("oc"),
+        _ => Command::new("kubectl"),
+    }
+}
+
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(Box)]
 trait K8sPlatform: Send + Sync {
@@ -178,7 +184,6 @@ trait K8sPlatform: Send + Sync {
         service: &str,
         port: Option<i32>,
     ) -> Result<String>;
-    fn kubectl(&self) -> Command;
 }
 
 struct Kind {
@@ -261,10 +266,6 @@ impl K8sPlatform for Kind {
             None => url,
         })
     }
-
-    fn kubectl(&self) -> Command {
-        Command::new("kubectl")
-    }
 }
 
 #[async_trait::async_trait]
@@ -314,10 +315,6 @@ impl K8sPlatform for OpenShift {
         let domain = ingress.spec.domain.unwrap();
         Ok(format!("{service}-{namespace}.{domain}"))
     }
-
-    fn kubectl(&self) -> Command {
-        Command::new("oc")
-    }
 }
 
 #[async_trait::async_trait]
@@ -339,10 +336,6 @@ impl K8sPlatform for OtherK8s {
         _: Option<i32>,
     ) -> Result<String> {
         Err(anyhow!(SET_CLUSTER_ERR))
-    }
-
-    fn kubectl(&self) -> Command {
-        Command::new("kubectl")
     }
 }
 
@@ -727,8 +720,7 @@ impl TestContext {
         self.set_certificates().await?;
         let tec = "trustedexecutionclusters.trusted-execution-clusters.io";
         let args = ["get", "crd", tec];
-        let mut cmd = get_k8s_platform().kubectl();
-        let crd_check_output = cmd.args(args).output().await?;
+        let crd_check_output = kubectl().args(args).output().await?;
 
         if crd_check_output.status.success() {
             test_info!(

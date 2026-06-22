@@ -1552,7 +1552,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1883,9 +1883,9 @@ dependencies = [
 
 [[package]]
 name = "granit-parser"
-version = "0.0.3"
+version = "0.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f50ba32164f9e098d5da618776a32afbb32270adcbe3d3d006107dae11e37c91"
+checksum = "d03f81ad4732830d85cfd417a9f62cde6dadda4354d37d078a6084a19560aa2d"
 dependencies = [
  "arraydeque",
  "smallvec",
@@ -2291,7 +2291,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -2514,7 +2514,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2867,8 +2867,7 @@ dependencies = [
 [[package]]
 name = "kube"
 version = "4.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4bb9108095346a7096d11feeaff419c75dddcac1b2f59acb38d7bf3d13c3e146"
+source = "git+https://github.com/Jakob-Naucke/kube-rs?branch=finalizer-dbg#f0def010c46b3f5788662ec6f288a60025af757a"
 dependencies = [
  "k8s-openapi 0.28.0",
  "kube-client 4.0.0",
@@ -2915,11 +2914,11 @@ dependencies = [
 [[package]]
 name = "kube-client"
 version = "4.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0f628e05bc2264c21fe10d3d675117dc9b43ea3bf4fb07262a222679757537b"
+source = "git+https://github.com/Jakob-Naucke/kube-rs?branch=finalizer-dbg#f0def010c46b3f5788662ec6f288a60025af757a"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "chrono",
  "either",
  "futures",
  "http 1.4.2",
@@ -2968,8 +2967,7 @@ dependencies = [
 [[package]]
 name = "kube-core"
 version = "4.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1b02f5933ba06140d58c7d6727f6c319f0962ec6a344aa5e21e475e891deaa8"
+source = "git+https://github.com/Jakob-Naucke/kube-rs?branch=finalizer-dbg#f0def010c46b3f5788662ec6f288a60025af757a"
 dependencies = [
  "derive_more",
  "form_urlencoded",
@@ -3001,8 +2999,7 @@ dependencies = [
 [[package]]
 name = "kube-derive"
 version = "4.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe171898707dadf1818ef94e81ef57f6beb7edf9ba87b9e814c045dad356c7aa"
+source = "git+https://github.com/Jakob-Naucke/kube-rs?branch=finalizer-dbg#f0def010c46b3f5788662ec6f288a60025af757a"
 dependencies = [
  "darling 0.23.0",
  "proc-macro2",
@@ -3015,13 +3012,13 @@ dependencies = [
 [[package]]
 name = "kube-runtime"
 version = "4.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99ddec66c540c7cf29a5b41fe4a657a53687f95c346e03bdf00585b70a1bab21"
+source = "git+https://github.com/Jakob-Naucke/kube-rs?branch=finalizer-dbg#f0def010c46b3f5788662ec6f288a60025af757a"
 dependencies = [
  "ahash",
  "async-broadcast",
  "async-stream",
  "backon",
+ "chrono",
  "educe",
  "futures",
  "hashbrown 0.16.0",
@@ -3332,7 +3329,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4308,7 +4305,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4546,9 +4543,9 @@ dependencies = [
 
 [[package]]
 name = "serde-saphyr"
-version = "0.0.27"
+version = "0.0.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5897b4c3faadadd35fdb6689f015641f3bc481d5adaaac56231ea15aeb243db3"
+checksum = "7bd22781911de0ca6debda95f073c8f18bec65d1a94f1fa9573f3102e514cea4"
 dependencies = [
  "ahash",
  "annotate-snippets",
@@ -4558,7 +4555,7 @@ dependencies = [
  "granit-parser",
  "nohash-hasher",
  "num-traits",
- "serde",
+ "serde_core",
  "smallvec",
  "zmij",
 ]
@@ -4871,7 +4868,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5125,7 +5122,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

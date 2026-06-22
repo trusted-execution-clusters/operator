@@ -230,6 +230,7 @@ async fn image_reconcile(
     let cluster = get_opt_trusted_execution_cluster(kube_client.clone())
         .await
         .map_err(|e| -> ControllerError { e.into() })?;
+    info!("image {image:?}");
 
     let uid_owns = |uid: &String| {
         let refs = image.metadata.owner_references.as_ref();
@@ -249,7 +250,7 @@ async fn image_reconcile(
     }
 
     let images: Api<ApprovedImage> = Api::default_namespaced(kube_client.clone());
-    finalizer(&images, APPROVED_IMAGE_FINALIZER, image, |ev| async {
+    let result = finalizer(&images, APPROVED_IMAGE_FINALIZER, image, |ev| async {
         match ev {
             Event::Apply(image) => image_add_reconcile(kube_client, &image, cluster)
                 .await
@@ -259,8 +260,9 @@ async fn image_reconcile(
                 .map_err(|e| finalizer::Error::<ControllerError>::CleanupFailed(e.into())),
         }
     })
-    .await
-    .map_err(|e| anyhow!("failed to reconcile on image {name}: {e}").into())
+    .await;
+    info!("finalizer() for image {name} returned {result:?}");
+    result.map_err(|e| anyhow!("failed to reconcile on image {name}: {e}").into())
 }
 
 async fn image_add_reconcile(
@@ -306,6 +308,7 @@ async fn image_remove_reconcile(
 ) -> Result<Action> {
     let default = "<no name>".to_string();
     let name = image.metadata.name.as_ref().unwrap_or(&default);
+    info!("Cleanup for image {image:?}");
     if cluster.is_none() {
         info!("No TrustedExecutionCluster found, skipping disallow_image for {name}");
         return Ok(Action::await_change());

@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: MIT
 
 use anyhow::Context;
+use axum::extract::State;
 use axum::response::{IntoResponse, Json};
 use axum::{http::StatusCode, routing::get, Router};
 use axum_server::tls_openssl::OpenSSLConfig;
@@ -58,7 +59,7 @@ async fn get_ca(client: Client, secret_name: &str) -> anyhow::Result<String> {
     let secret = secrets.get(secret_name).await?;
     let err = format!("Secret {secret_name} does not contain ca.crt");
     let ca_data = secret.data.as_ref();
-    let ca_bytes = ca_data.and_then(|data| data.get("ca.crt")).expect(&err);
+    let ca_bytes = ca_data.and_then(|data| data.get("ca.crt")).context(err)?;
     let ca_pem = String::from_utf8(ca_bytes.0.clone())?;
     Ok(ca_pem)
 }
@@ -162,7 +163,7 @@ fn generate_ignition(id: &str, endpoint_info: &EndpointInfo) -> IgnitionConfig {
     }
 }
 
-async fn register_handler() -> impl IntoResponse {
+async fn register_handler(State(kube_client): State<Client>) -> impl IntoResponse {
     let id = Uuid::new_v4().to_string();
     let internal_error = |e: anyhow::Error| {
         let code = StatusCode::INTERNAL_SERVER_ERROR;
@@ -172,11 +173,6 @@ async fn register_handler() -> impl IntoResponse {
             "message": format!("{e:#}")
         });
         (code, Json(msg))
-    };
-
-    let kube_client = match Client::try_default().await {
-        Ok(c) => c,
-        Err(e) => return internal_error(e.into()),
     };
 
     // Get the TrustedExecutionCluster to use as owner reference for the Machine
@@ -246,15 +242,19 @@ async fn main() {
 
     let args = Args::parse();
     let endpoint = format!("/{REGISTER_SERVER_RESOURCE}");
-    let app = Router::new().route(&endpoint, get(register_handler));
+    let err = "failed to create Kubernetes client";
+    let app = Router::new()
+        .route(&endpoint, get(register_handler))
+        .with_state(Client::try_default().await.expect(err));
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     let service = app.into_make_service();
-    info!("Starting server on http://{addr}");
 
     let run = if let (Some(cert_path), Some(key_path)) = (args.cert_path, args.key_path) {
         let config = OpenSSLConfig::from_pem_file(cert_path, key_path).expect("invalid PEM files");
+        info!("Starting server on https://{addr}");
         axum_server::bind_openssl(addr, config).serve(service).await
     } else {
+        info!("Starting server on http://{addr}");
         axum_server::bind(addr).serve(service).await
     };
 

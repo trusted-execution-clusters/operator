@@ -75,14 +75,14 @@ pub fn generate_ssh_key_pair() -> Result<(String, PathBuf)> {
 }
 
 pub async fn generate_ignition(config: &VmConfig) -> Result<serde_json::Value> {
-    use ignition_config::v3_5::*;
+    use ignition_config::v3_6::*;
     let client = config.client.clone();
     let ns = &config.namespace;
     let port = Some(REGISTER_SERVER_PORT);
     let register_server_url = get_cluster_url(client, ns, REGISTER_SERVER_SERVICE, port).await?;
     let root_pem_encoded = utf8_percent_encode(&config.ca_pem, NON_ALPHANUMERIC);
     let ignition = Ignition {
-        version: "3.6.0-experimental".to_string(),
+        version: "3.6.0".to_string(),
         config: Some(IgnitionConfig {
             merge: Some(vec![Resource {
                 source: Some(format!(

@@ -1,0 +1,80 @@
+# SPDX-FileCopyrightText: Jakob Naucke <jnaucke@redhat.com>
+#
+# SPDX-License-Identifier: CC0-1.0
+
+name: "Integration tests"
+on:
+  pull_request:
+    branches:
+      - "main"
+  pull_request_target:
+    types: [labeled]
+    branches:
+      - "main"
+permissions:
+  contents: "read"
+
+# Don't waste job slots on superseded code
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUNTIME: docker
+  CONTAINER_CLI: docker
+  REGISTRY: localhost:5000/trusted-execution-clusters
+
+jobs:
+  integration-tests:
+    name: "KubeVirt integration tests"
+    if: >-
+      github.event.pull_request.author_association == 'MEMBER' ||
+      github.event.pull_request.author_association == 'OWNER' ||
+      github.event.pull_request.author_association == 'COLLABORATOR' ||
+      contains(github.event.pull_request.labels.*.name, 'ok-to-test')
+    runs-on: "ubuntu-24.04"
+    timeout-minutes: 120
+    steps:
+      - name: "Check out repository"
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: "Enable KVM"
+        run: sudo chmod 666 /dev/kvm
+      - name: "Install build dependencies"
+        run: sudo apt-get install -y libssl-dev pkg-config
+      - name: "Install Rust toolchain"
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: "Install Go toolchain"
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: "Cache build artifacts"
+        uses: Swatinem/rust-cache@v2
+      - name: "Install KinD"
+        uses: helm/kind-action@v1
+        with:
+          # TODO Dependabot cannot update action inputs, consider Renovate's regex manager
+          # This version defaults to API 1.35
+          version: v0.31.0
+          install_only: true
+      - name: "Install virtctl"
+        run: |
+          version=$(cd tools/virtctl && go list -m -f '{{.Version}}' kubevirt.io/kubevirt)
+          curl -Lo virtctl "https://github.com/kubevirt/kubevirt/releases/download/${version}/virtctl-${version}-linux-amd64"
+          chmod +x virtctl
+          sudo mv virtctl /usr/local/bin/
+      - name: "Create KinD cluster"
+        run: make cluster-up
+      - name: "Build and push images"
+        run: make push
+      - name: "Install KubeVirt"
+        run: make install-kubevirt
+      - name: "Run integration tests"
+        run: |
+          eval $(ssh-agent -s)
+          make integration-tests

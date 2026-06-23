@@ -32,7 +32,7 @@ mod trustee;
 use crate::conditions::*;
 use operator::*;
 
-/// Default tag for Trustee image
+/// The default tag for Trustee image
 const TRUSTEE_VERSION: &str = "v0.17.0";
 /// Default version tag for operator-managed component images
 const COMPONENT_VERSION: &str = "0.2.0";

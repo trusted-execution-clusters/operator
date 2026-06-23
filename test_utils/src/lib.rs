@@ -944,6 +944,14 @@ impl TestContext {
             timeout(scaled_duration(300), done).await.context(ctx)??;
         }
 
+        let svc = ATTESTATION_KEY_REGISTER_SERVICE;
+        let services: Api<Service> = Api::namespaced(self.client.clone(), ns);
+        for svc in [REGISTER_SERVER_SERVICE, TRUSTEE_SERVICE, svc] {
+            let done = await_condition(services.clone(), svc, |s: Option<&Service>| s.is_some());
+            let ctx = format!("waiting for service {svc} to exist");
+            timeout(scaled_duration(60), done).await.context(ctx)??;
+        }
+
         let platform = get_k8s_platform(&self.client, &self.test_namespace);
         let svc = REGISTER_SERVER_SERVICE;
         let depl = REGISTER_SERVER_DEPLOYMENT;

@@ -13,7 +13,7 @@ use clevis_pin_trustee_lib::{
     AttestationKey, Config as ClevisConfig, Registration, Server as ClevisServer,
 };
 use env_logger::Env;
-use ignition_config::v3_5::{
+use ignition_config::v3_6::{
     Clevis, ClevisCustom, Config as IgnitionConfig, Filesystem, Luks, Storage,
 };
 use k8s_openapi::api::core::v1::Secret;
@@ -196,18 +196,10 @@ async fn register_handler(State(kube_client): State<Client>) -> impl IntoRespons
     };
 
     let ignition_config = generate_ignition(&id, &endpoint_info);
-    let mut ignition_json = match serde_json::to_value(&ignition_config) {
+    let ignition_json = match serde_json::to_value(&ignition_config) {
         Ok(json) => json,
         Err(e) => return internal_error(e.into()),
     };
-
-    // Overwrite ignition version to 3.6-experimental
-    if let Some(obj) = ignition_json.as_object_mut() {
-        obj.insert(
-            "ignition".to_string(),
-            serde_json::json!({"version": "3.6.0-experimental"}),
-        );
-    }
 
     (StatusCode::OK, Json(ignition_json))
 }

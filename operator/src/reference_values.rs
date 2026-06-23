@@ -272,6 +272,11 @@ async fn image_add_reconcile(
         info!("No TrustedExecutionCluster found, deferring image processing for {name}");
         return Ok(Action::requeue(Duration::from_secs(5)));
     };
+    // If the cluster is being deleted, defer the image processing
+    if cluster.metadata.deletion_timestamp.is_some() {
+        info!("TrustedExecutionCluster is being deleted, deferring image processing for {name}");
+        return Ok(Action::requeue(Duration::from_secs(5)));
+    }
     let uid_owns = |uid: &String| {
         let refs = image.metadata.owner_references.as_ref();
         refs.map(|os| os.iter().any(|o| o.uid == *uid))

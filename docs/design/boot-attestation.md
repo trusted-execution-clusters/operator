@@ -65,7 +65,7 @@ This merge source contacts the registration service, which provides an Ignition 
 ```json
 {
   "ignition": {
-    "version": "3.5.0"
+    "version": "3.6.0"
   },
   "storage": {
     "luks": [

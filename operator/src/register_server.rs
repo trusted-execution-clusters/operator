@@ -139,7 +139,7 @@ async fn keygen_reconcile(
                 async {
                     let owner_reference = generate_owner_reference(&Arc::unwrap_or_clone(machine))?;
                     trustee::generate_secret(kube_client.clone(), id, owner_reference).await?;
-                    trustee::mount_secret(kube_client, id).await
+                    trustee::send_secret(kube_client, id).await
                 }
                 .await
                 .map(|_| Action::await_change())
@@ -185,10 +185,12 @@ async fn keygen_reconcile(
                     }
                 }
 
-                trustee::unmount_secret(kube_client, id)
-                    .await
-                    .map(|_| Action::await_change())
-                    .map_err(|e| finalizer::Error::<ControllerError>::CleanupFailed(e.into()))
+                trustee::delete_secret(kube_client, id).await.map_err(|e| {
+                    finalizer::Error::<ControllerError>::CleanupFailed(
+                        anyhow!("failed to delete secret for machine {id}: {e}").into(),
+                    )
+                })?;
+                Ok(Action::await_change())
             }
         }
     })

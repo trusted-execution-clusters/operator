@@ -2,36 +2,35 @@
 sockets = ["0.0.0.0:8080"]
 
 [admin]
-type = "DenyAll"
+authorization_mode = "AuthenticatedAuthorization"
+
+  [admin.authentication.bearer_jwt]
+  identity_providers = [
+    { public_key_uri = "/opt/trustee/keys/public.pub" }
+  ]
+
+  [admin.authorization.regex_acl]
+  acls = [{ role = "admin", allowed_endpoints = "^/kbs/.+$" }]
 
 [attestation_token]
-insecure_key = true
-attestation_token_type = "CoCo"
+insecure_header_jwk = true
 
 [attestation_service]
 type = "coco_as_builtin"
-work_dir = "/opt/trustee"
-policy_engine = "opa"
+timeout = 5
 
   [attestation_service.attestation_token_broker]
-  type = "Ear"
-  policy_dir = "/opt/trustee/policies"
-
-  [attestation_service.attestation_token_config]
   duration_min = 5
 
   [attestation_service.rvps_config]
   type = "BuiltIn"
 
-    [attestation_service.rvps_config.storage]
-    type = "LocalJson"
-    file_path = "/opt/trustee/reference-values.json"
-
-
 [[plugins]]
 name = "resource"
-type = "LocalFs"
-dir_path = "/opt/trustee/kbs-repository"
+storage_backend_type = "kvstorage"
 
-[policy_engine]
-policy_path = "/opt/trustee/policy.rego"
+[storage_backend]
+storage_type = "LocalJson"
+
+  [storage_backend.backends.local_json]
+  file_dir_path = "/opt/trustee/storage"

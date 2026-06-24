@@ -220,7 +220,6 @@ async fn adopt_approved_image(
     Ok(())
 }
 
-
 async fn image_reconcile(
     image: Arc<ApprovedImage>,
     client: Arc<Client>,
@@ -479,12 +478,13 @@ mod tests {
                 Ok(serde_json::to_string(&dummy_pcrs_map()).unwrap())
             }
             (2, &Method::GET) | (3, &Method::PUT) => {
-                assert!(req.uri().path().contains(trustee::TRUSTEE_DATA_MAP));
+                assert!(req.uri().path().contains(trustee::TRUSTEE_RV_MAP));
                 Ok(serde_json::to_string(&dummy_trustee_map()).unwrap())
             }
+            (4, &Method::GET) => Err(StatusCode::NOT_FOUND),
             _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
         };
-        count_check!(4, clos, |client| {
+        count_check!(5, clos, |client| {
             let job = Arc::new(dummy_job());
             let result = job_reconcile(job, Arc::new(client)).await.unwrap();
             assert_eq!(result, Action::await_change());
@@ -551,7 +551,6 @@ mod tests {
         test_error_method!(clos, Method::PATCH);
     }
 
-
     // handle_new_image and its caller image_add_reconcile are
     // inherently online functions and not tested here
 
@@ -566,12 +565,13 @@ mod tests {
                 Ok(serde_json::to_string(&dummy_pcrs_map()).unwrap())
             }
             (3, &Method::GET) | (4, &Method::PUT) => {
-                assert!(req.uri().path().contains(trustee::TRUSTEE_DATA_MAP));
+                assert!(req.uri().path().contains(trustee::TRUSTEE_RV_MAP));
                 Ok(serde_json::to_string(&dummy_trustee_map()).unwrap())
             }
+            (5, &Method::GET) => Err(StatusCode::NOT_FOUND),
             _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
         };
-        count_check!(5, clos, |client| {
+        count_check!(6, clos, |client| {
             assert!(image_remove_reconcile(client, image, cluster).await.is_ok());
         });
     }

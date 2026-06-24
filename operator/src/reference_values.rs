@@ -159,6 +159,7 @@ fn get_job_name(boot_image: &str) -> Result<String> {
     Ok(trimmed)
 }
 
+// If jobs running in a suboptimal order becomes a problem, consider work queues
 async fn compute_fresh_pcrs(client: Client, image: &ApprovedImage) -> anyhow::Result<()> {
     let job_name = get_job_name(&image.spec.image)?;
     let env = "RELATED_IMAGE_COMPUTE_PCRS";

@@ -31,6 +31,9 @@ serde_json.workspace = true
 thiserror = "2.0.18"
 tokio.workspace = true
 toml = "1.1.2"
+kbs-client = {git = "https://github.com/confidential-containers/trustee.git", rev = "e65897a9ad4eb3ac69fa2ec75ed831200eb2acd7", default-features = false, features = ["native-tls"] }
+jsonwebtoken = { version = "10.4.0", default-features = false, features = ["use_pem"] }
+jsonwebtoken-openssl = "1.0.0"
 
 [dev-dependencies]
 http.workspace = true

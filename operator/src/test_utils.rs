@@ -3,7 +3,10 @@
 // SPDX-License-Identifier: MIT
 
 use compute_pcrs_lib::Pcr;
-use k8s_openapi::{api::core::v1::ConfigMap, jiff::Timestamp};
+use k8s_openapi::{
+    api::core::v1::{ConfigMap, Secret},
+    jiff::Timestamp,
+};
 use std::collections::BTreeMap;
 
 use crate::trustee;
@@ -37,6 +40,26 @@ pub fn dummy_trustee_map() -> ConfigMap {
             trustee::REFERENCE_VALUES_FILE.to_string(),
             "[]".to_string(),
         )])),
+        ..Default::default()
+    }
+}
+
+pub fn dummy_trustee_auth() -> Secret {
+    let key_pair =
+        trustee::generate_ed25519_key_pair().expect("Failed to generate ed25519 key pair");
+    let data = BTreeMap::from([
+        (
+            trustee::TRUSTEE_AUTH_PRIV_KEY.to_string(),
+            k8s_openapi::ByteString(key_pair.private_key_pem),
+        ),
+        (
+            trustee::TRUSTEE_AUTH_PUB_KEY.to_string(),
+            k8s_openapi::ByteString(key_pair.public_key_pem),
+        ),
+    ]);
+
+    Secret {
+        data: Some(data),
         ..Default::default()
     }
 }

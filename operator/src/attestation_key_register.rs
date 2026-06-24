@@ -331,7 +331,7 @@ async fn secret_reconcile(
         match ev {
             Event::Apply(_secret) => {
                 // On creation/update, just update the trustee deployment volumes
-                trustee::update_attestation_keys(&ctx)
+                trustee::update_attestation_keys(ctx.client.clone())
                     .await
                     .map(|_| Action::await_change())
                     .map_err(|e| {
@@ -345,7 +345,7 @@ async fn secret_reconcile(
                     "AttestationKey secret {secret_name} is being deleted, updating trustee deployment volumes"
                 );
                 // Update trustee deployment - secrets with deletion_timestamp will be filtered out
-                trustee::update_attestation_keys(&ctx)
+                trustee::update_attestation_keys(ctx.client.clone())
                     .await
                     .map(|_| Action::await_change())
                     .map_err(|e| {

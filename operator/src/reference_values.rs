@@ -356,6 +356,19 @@ async fn is_pending(client: &Client, resource_name: &str) -> Result<bool> {
         .is_some_and(|phase| phase == "Pending"))
 }
 
+async fn update_image_pcrs(
+    api: &Api<ConfigMap>,
+    map: &mut ConfigMap,
+    pcrs: &ImagePcrs,
+) -> Result<()> {
+    let image_pcrs_json = serde_json::to_string(pcrs)?;
+    let entry = (PCR_CONFIG_FILE.to_string(), image_pcrs_json);
+    map.data = Some(BTreeMap::from([entry]));
+    api.replace(PCR_CONFIG_MAP, &Default::default(), map)
+        .await?;
+    Ok(())
+}
+
 pub async fn handle_new_image(client: Client, image: &ApprovedImage) -> Result<&'static str> {
     let resource_name = image.metadata.name.as_ref().unwrap();
     let boot_image = image.spec.image.as_ref();
@@ -405,7 +418,7 @@ pub async fn handle_new_image(client: Client, image: &ApprovedImage) -> Result<&
         reference: boot_image.to_string(),
     };
     image_pcrs.0.insert(resource_name.to_string(), image_pcr);
-    update_image_pcrs!(config_maps, image_pcrs_map, image_pcrs);
+    update_image_pcrs(&config_maps, &mut image_pcrs_map, &image_pcrs).await?;
     trustee::update_reference_values(client)
         .await
         .map(|_| COMMITTED_REASON)
@@ -418,7 +431,7 @@ pub async fn disallow_image(client: Client, resource_name: &str) -> Result<()> {
     if image_pcrs.0.remove(resource_name).is_none() {
         info!("Image {resource_name} was to be disallowed, but already was not allowed");
     }
-    update_image_pcrs!(config_maps, image_pcrs_map, image_pcrs);
+    update_image_pcrs(&config_maps, &mut image_pcrs_map, &image_pcrs).await?;
     trustee::update_reference_values(client).await
 }
 
@@ -616,6 +629,36 @@ mod tests {
         };
         count_check!(5, clos, |client| {
             assert!(image_remove_reconcile(client, image, cluster).await.is_ok());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_update_image_pcrs_success() {
+        let clos = async |req: Request<_>, _| match req.method() {
+            &Method::PUT => Ok(serde_json::to_string(&dummy_pcrs_map()).unwrap()),
+            _ => panic!("unexpected API interaction: {req:?}"),
+        };
+        count_check!(1, clos, |client| {
+            let config_maps: Api<ConfigMap> = Api::default_namespaced(client);
+            let mut map = dummy_pcrs_map();
+            let pcrs = dummy_pcrs();
+            let result = update_image_pcrs(&config_maps, &mut map, &pcrs).await;
+            assert!(result.is_ok());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_update_image_pcrs_error() {
+        let clos = async |req: Request<_>, _| match req.method() {
+            &Method::PUT => Err(StatusCode::INTERNAL_SERVER_ERROR),
+            _ => panic!("unexpected API interaction: {req:?}"),
+        };
+        count_check!(1, clos, |client| {
+            let config_maps: Api<ConfigMap> = Api::default_namespaced(client);
+            let mut map = dummy_pcrs_map();
+            let pcrs = dummy_pcrs();
+            let result = update_image_pcrs(&config_maps, &mut map, &pcrs).await;
+            assert!(result.is_err());
         });
     }
 }

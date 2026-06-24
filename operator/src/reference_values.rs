@@ -220,21 +220,6 @@ async fn adopt_approved_image(
     Ok(())
 }
 
-pub async fn adopt_approved_images(
-    client: Client,
-    cluster: &TrustedExecutionCluster,
-) -> Result<()> {
-    let images: Api<ApprovedImage> = Api::default_namespaced(client.clone());
-    let images_list = images.list(&Default::default()).await?;
-    for image in images_list.items.iter() {
-        if image.metadata.deletion_timestamp.is_none()
-            && let Some(name) = image.metadata.name.as_ref()
-        {
-            adopt_approved_image(client.clone(), name, cluster).await?;
-        }
-    }
-    Ok(())
-}
 
 async fn image_reconcile(
     image: Arc<ApprovedImage>,
@@ -246,6 +231,23 @@ async fn image_reconcile(
     let cluster = get_opt_trusted_execution_cluster(kube_client.clone())
         .await
         .map_err(|e| -> ControllerError { e.into() })?;
+
+    let uid_owns = |uid: &String| {
+        let refs = image.metadata.owner_references.as_ref();
+        refs.map(|os| os.iter().any(|o| o.uid == *uid))
+    };
+    let cluster_owns = |cluster: &TrustedExecutionCluster| {
+        let uid = cluster.metadata.uid.as_ref();
+        uid.and_then(uid_owns).unwrap_or(false)
+    };
+
+    if let Some(ref cluster) = cluster
+        && !cluster_owns(cluster)
+    {
+        adopt_approved_image(kube_client.clone(), &name, cluster)
+            .await
+            .map_err(|e| -> ControllerError { e.into() })?;
+    }
 
     let images: Api<ApprovedImage> = Api::default_namespaced(kube_client.clone());
     finalizer(&images, APPROVED_IMAGE_FINALIZER, image, |ev| async {
@@ -277,19 +279,6 @@ async fn image_add_reconcile(
         info!("TrustedExecutionCluster is being deleted, deferring image processing for {name}");
         return Ok(Action::requeue(Duration::from_secs(5)));
     }
-    let uid_owns = |uid: &String| {
-        let refs = image.metadata.owner_references.as_ref();
-        refs.map(|os| os.iter().any(|o| o.uid == *uid))
-    };
-    let cluster_owns = |cluster: &TrustedExecutionCluster| {
-        let uid = cluster.metadata.uid.as_ref();
-        uid.and_then(uid_owns).unwrap_or(false)
-    };
-    // Adopt the image by adding TEC as owner reference if not already owned
-    if !cluster_owns(&cluster) {
-        adopt_approved_image(client.clone(), name, &cluster).await?;
-    }
-
     let (action, reason) = match handle_new_image(client.clone(), image).await {
         Ok(reason) => (Action::await_change(), reason),
         Err(e) => {
@@ -428,7 +417,6 @@ mod tests {
     use http::{Method, Request, StatusCode};
     use k8s_openapi::api::batch::v1::JobStatus;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
-    use kube::api::ObjectList;
     use kube::client::Body;
     use trusted_cluster_operator_test_utils::mock_client::*;
     use trusted_cluster_operator_test_utils::test_error_method;
@@ -563,36 +551,6 @@ mod tests {
         test_error_method!(clos, Method::PATCH);
     }
 
-    #[tokio::test]
-    async fn test_adopt_approved_images() {
-        let cluster = dummy_cluster();
-        let clos = async |req: Request<_>, ctr| {
-            if ctr == 0 && req.method() == Method::GET {
-                let mut deleted = dummy_image();
-                deleted.metadata.deletion_timestamp = Some(Time(Timestamp::now()));
-                let list = ObjectList {
-                    items: vec![dummy_image(), deleted, dummy_image()],
-                    types: Default::default(),
-                    metadata: Default::default(),
-                };
-                Ok(serde_json::to_string(&list).unwrap())
-            } else if ctr < 3 && req.method() == Method::PATCH {
-                Ok(serde_json::to_string(&dummy_image()).unwrap())
-            } else {
-                panic!("unexpected API interaction: {req:?}, counter {ctr}")
-            }
-        };
-        count_check!(3, clos, |client| {
-            assert!(adopt_approved_images(client, &cluster).await.is_ok());
-        });
-    }
-
-    #[tokio::test]
-    async fn test_adopt_approved_images_error() {
-        let cluster = dummy_cluster();
-        let clos = |client| adopt_approved_images(client, &cluster);
-        test_error_method!(clos, Method::GET);
-    }
 
     // handle_new_image and its caller image_add_reconcile are
     // inherently online functions and not tested here

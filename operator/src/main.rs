@@ -132,12 +132,12 @@ async fn reconcile(
         update_status!(clusters, name, status)?;
     }
 
+
     if let Err(e) = install_components(&kube_client, &cluster).await {
         // warn with `:?` to also get context
         warn!("Installation of a component failed: {e:?}\nRequeueing...");
         return Ok(Action::requeue(Duration::from_secs(60)));
     }
-    reference_values::adopt_approved_images(kube_client, &cluster).await?;
 
     let installed_condition = installed_condition(INSTALLED_REASON, generation, existing_status);
     let changed = upsert_condition(&mut conditions, installed_condition);
@@ -302,9 +302,7 @@ mod tests {
     use k8s_openapi::api::apps::v1::Deployment;
     use k8s_openapi::api::core::v1::{ConfigMap, Service};
     use k8s_openapi::{apimachinery::pkg::apis::meta::v1::Time, jiff::Timestamp};
-    use kube::api::ObjectList;
     use kube::client::Body;
-    use trusted_cluster_operator_lib::ApprovedImage;
 
     use super::*;
     use trusted_cluster_operator_test_utils::mock_client::*;
@@ -459,14 +457,8 @@ mod tests {
                     _ => unreachable!("unexpected counter {ctr}"),
                 };
                 Ok(resp.unwrap())
-            } else if ctr == 8 && req.method() == Method::GET {
-                let object_list = ObjectList::<ApprovedImage> {
-                    items: Vec::new(),
-                    types: Default::default(),
-                    metadata: Default::default(),
-                };
-                Ok(serde_json::to_string(&object_list).unwrap())
-            } else if ctr == 9 && req.method() == Method::PATCH {
+
+            } else if ctr == 8 && req.method() == Method::PATCH {
                 let body = req.into_body().collect_bytes().await.unwrap().to_vec();
                 let body = String::from_utf8_lossy(&body);
                 assert!(body.contains("ForeignCondition"),);
@@ -497,7 +489,7 @@ mod tests {
         cluster.status = Some(TrustedExecutionClusterStatus {
             conditions: Some(vec![pre_existing_installed, foreign_condition]),
         });
-        count_check!(10, clos, |client| {
+        count_check!(9, clos, |client| {
             let result = reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client))).await;
             assert_eq!(result.unwrap(), Action::await_change());
         });

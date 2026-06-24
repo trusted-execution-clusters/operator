@@ -98,7 +98,7 @@ impl VmBackend for KubevirtBackend {
                                         "memory".to_string(),
                                         IntOrString::String("4096M".to_string()),
                                     ),
-                                    ("cpu".to_string(), IntOrString::Int(2)),
+                                    ("cpu".to_string(), IntOrString::String("500m".to_string())),
                                 ])),
                                 ..Default::default()
                             }),

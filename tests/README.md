@@ -22,6 +22,8 @@ make push
 make install-kubevirt
 # Set $INTEGRATION_TEST_THREADS to multi-thread (>4G memory per test)
 # Set $TEST_TIMEOUT_MULTIPLIER to increase timeouts on slow systems (e.g. 2, 1.5)
+# For KubeVirt tests, set $TEST_KV_CPU_RESOURCE_REQ to decrease CPU requests
+# for VMs on low-core systems (e.g. 1, 500m)
 make integration-tests
 ```
 

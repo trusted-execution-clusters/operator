@@ -387,7 +387,15 @@ async fn test_approved_image_readoption() -> anyhow::Result<()> {
     let cluster_spec = clusters.get(TEC_NAME).await?.spec;
     let image_spec = images.get(APPROVED_IMAGE_NAME).await?.spec;
 
-    test_ctx.info(format!("Deleting TrustedExecuctionCluster {TEC_NAME}"));
+    let owned = |img: Option<&ApprovedImage>| {
+        let refs = img.and_then(|img| img.metadata.owner_references.as_ref());
+        refs.is_some_and(|refs| refs.iter().any(|o| o.kind == "TrustedExecutionCluster"))
+    };
+    let done = await_condition(images.clone(), APPROVED_IMAGE_NAME, owned);
+    let ctx = "waiting for ApprovedImage to be owned by TrustedExecutionCluster";
+    timeout(scaled_duration(30), done).await.context(ctx)??;
+
+    test_ctx.info(format!("Deleting TrustedExecutionCluster {TEC_NAME}"));
     clusters.delete(TEC_NAME, &Default::default()).await?;
     wait_for_resource_deleted(&configmaps, TRUSTEE_CONFIG_MAP, scaled_timeout(60)).await?;
     wait_for_resource_deleted(&images, APPROVED_IMAGE_NAME, scaled_timeout(60)).await?;

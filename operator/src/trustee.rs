@@ -702,6 +702,7 @@ mod tests {
     use super::*;
     use crate::test_utils::*;
     use http::{Method, Request, StatusCode};
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
     use trusted_cluster_operator_test_utils::mock_client::*;
     use trusted_cluster_operator_test_utils::test_error_method;
 
@@ -931,5 +932,123 @@ mod tests {
         for rv in &result {
             assert_eq!(rv.version, "0.1.0");
         }
+    }
+
+    #[tokio::test]
+    async fn test_sync_all_machine_luks_key_empty() {
+        let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
+            (0, &Method::GET) => {
+                let list = kube::api::ObjectList {
+                    items: Vec::<Machine>::new(),
+                    types: Default::default(),
+                    metadata: Default::default(),
+                };
+                Ok(serde_json::to_string(&list).unwrap())
+            }
+            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        };
+        count_check!(1, clos, |client| {
+            assert!(sync_all_machine_luks_key(client).await.is_ok());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_sync_all_machine_luks_key_send_error() {
+        let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
+            (0, &Method::GET) => {
+                let list = kube::api::ObjectList {
+                    items: vec![dummy_machine("m1")],
+                    types: Default::default(),
+                    metadata: Default::default(),
+                };
+                Ok(serde_json::to_string(&list).unwrap())
+            }
+            (_, &Method::GET) => Err(StatusCode::NOT_FOUND),
+            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        };
+        count_check!(2, clos, |client| {
+            assert!(sync_all_machine_luks_key(client).await.is_err());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_update_attestation_keys_empty() {
+        let clos = async |_, ctr| match ctr {
+            0 => {
+                let list = kube::api::ObjectList {
+                    items: Vec::<Secret>::new(),
+                    types: Default::default(),
+                    metadata: Default::default(),
+                };
+                Ok(serde_json::to_string(&list).unwrap())
+            }
+            _ => Err(StatusCode::NOT_FOUND),
+        };
+        count_check!(2, clos, |client| {
+            assert!(update_attestation_keys(client).await.is_ok());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_update_attestation_keys_register_fails_gracefully() {
+        let clos = async |_, ctr| match ctr {
+            0 => {
+                let list = kube::api::ObjectList {
+                    items: vec![dummy_ak_secret("ak1"), dummy_ak_secret("ak2")],
+                    types: Default::default(),
+                    metadata: Default::default(),
+                };
+                Ok(serde_json::to_string(&list).unwrap())
+            }
+            _ => Err(StatusCode::NOT_FOUND),
+        };
+        count_check!(2, clos, |client| {
+            assert!(update_attestation_keys(client).await.is_ok());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_update_attestation_keys_register_success() {
+        let _ = jsonwebtoken_openssl::install_default();
+        let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
+            (0, &Method::GET) => {
+                let list = kube::api::ObjectList {
+                    items: vec![dummy_ak_secret("ak1")],
+                    types: Default::default(),
+                    metadata: Default::default(),
+                };
+                Ok(serde_json::to_string(&list).unwrap())
+            }
+            (1, &Method::GET) => {
+                assert!(req.uri().path().contains(TRUSTEE_AUTH_SECRET));
+                Ok(serde_json::to_string(&dummy_trustee_auth()).unwrap())
+            }
+            (2, &Method::GET) => Ok(serde_json::to_string(&dummy_cluster()).unwrap()),
+            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        };
+        count_check!(3, clos, |client| {
+            assert!(update_attestation_keys(client).await.is_ok());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_update_attestation_keys_filters_deleting() {
+        let clos = async |_, ctr| match ctr {
+            0 => {
+                let mut deleting = dummy_ak_secret("ak-deleting");
+                deleting.metadata.deletion_timestamp =
+                    Some(Time(k8s_openapi::jiff::Timestamp::now()));
+                let list = kube::api::ObjectList {
+                    items: vec![deleting],
+                    types: Default::default(),
+                    metadata: Default::default(),
+                };
+                Ok(serde_json::to_string(&list).unwrap())
+            }
+            _ => Err(StatusCode::NOT_FOUND),
+        };
+        count_check!(2, clos, |client| {
+            assert!(update_attestation_keys(client).await.is_ok());
+        });
     }
 }

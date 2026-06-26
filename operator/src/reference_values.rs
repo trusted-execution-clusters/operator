@@ -125,6 +125,19 @@ async fn job_reconcile(job: Arc<Job>, client: Arc<Client>) -> Result<Action, Con
         info!("Job {name} changed, but had not completed");
         return Ok(Action::requeue(Duration::from_secs(300)));
     }
+
+    let owner_refs = &job.meta().owner_references.as_ref();
+    let err = "Completed job had no owner reference";
+    let owner_ref = owner_refs.and_then(|rs| rs.first()).context(err)?;
+    let resource_name = &owner_ref.name;
+    let approved_images: Api<ApprovedImage> = Api::default_namespaced(kube_client.clone());
+    let try_image = approved_images.get(resource_name).await;
+    let image = try_image.map_err(Into::<anyhow::Error>::into)?;
+    let committed = committed_condition(INSTALLED_REASON, image.metadata.generation, &None);
+    let conditions = Some(vec![committed]);
+    let image_status = ApprovedImageStatus { conditions };
+    update_status!(approved_images, resource_name, image_status)?;
+
     let jobs: Api<Job> = Api::default_namespaced(kube_client.clone());
     // Foreground deletion: Delete the pod too
     let delete = jobs.delete(name, &DeleteParams::foreground()).await;
@@ -441,7 +454,7 @@ mod tests {
     use crate::test_utils::*;
     use http::{Method, Request, StatusCode};
     use k8s_openapi::api::batch::v1::JobStatus;
-    use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::{OwnerReference, Time};
     use kube::api::ObjectList;
     use kube::client::Body;
     use trusted_cluster_operator_test_utils::mock_client::*;
@@ -486,6 +499,10 @@ mod tests {
         Job {
             metadata: ObjectMeta {
                 name: Some("test".to_string()),
+                owner_references: Some(vec![OwnerReference {
+                    name: "test".to_string(),
+                    ..Default::default()
+                }]),
                 ..Default::default()
             },
             status: Some(JobStatus {
@@ -499,18 +516,20 @@ mod tests {
     #[tokio::test]
     async fn test_job_reconcile_success() {
         let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
-            (0, &Method::DELETE) => Ok(serde_json::to_string(&Job::default()).unwrap()),
-            (1, &Method::GET) => {
+            (0, &Method::GET) => Ok(serde_json::to_string(&dummy_image()).unwrap()),
+            (1, &Method::PATCH) => Ok(serde_json::to_string(&dummy_image()).unwrap()),
+            (2, &Method::DELETE) => Ok(serde_json::to_string(&Job::default()).unwrap()),
+            (3, &Method::GET) => {
                 assert!(req.uri().path().contains(PCR_CONFIG_MAP));
                 Ok(serde_json::to_string(&dummy_pcrs_map()).unwrap())
             }
-            (2, &Method::GET) | (3, &Method::PUT) => {
+            (4, &Method::GET) | (5, &Method::PUT) => {
                 assert!(req.uri().path().contains(trustee::TRUSTEE_DATA_MAP));
                 Ok(serde_json::to_string(&dummy_trustee_map()).unwrap())
             }
             _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
         };
-        count_check!(4, clos, |client| {
+        count_check!(6, clos, |client| {
             let job = Arc::new(dummy_job());
             let result = job_reconcile(job, Arc::new(client)).await.unwrap();
             assert_eq!(result, Action::await_change());

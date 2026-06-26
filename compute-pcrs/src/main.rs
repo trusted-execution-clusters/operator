@@ -12,7 +12,7 @@ use kube::{Api, Client};
 use log::info;
 use std::{fs::File, io::Read};
 
-use trusted_cluster_operator_lib::{conditions::INSTALLED_REASON, reference_values::*, *};
+use trusted_cluster_operator_lib::reference_values::*;
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
     ];
 
     let client = Client::try_default().await?;
-    let config_maps: Api<ConfigMap> = Api::default_namespaced(client.clone());
+    let config_maps: Api<ConfigMap> = Api::default_namespaced(client);
 
     let image_pcr = ImagePcr {
         first_seen: Timestamp::now(),
@@ -89,12 +89,5 @@ async fn main() -> Result<()> {
             Err(e) => return Err(e.into()),
         }
     }
-
-    let approved_images: Api<ApprovedImage> = Api::default_namespaced(client);
-    let image = approved_images.get(&args.resource_name).await?;
-    let committed = committed_condition(INSTALLED_REASON, image.metadata.generation, &None);
-    let conditions = Some(vec![committed]);
-    let status = ApprovedImageStatus { conditions };
-    update_status!(approved_images, &args.resource_name, status)?;
     Ok(())
 }

@@ -13,9 +13,7 @@ mod vendor_kopium;
 use k8s_openapi::jiff::Timestamp;
 pub use kopium::approvedimages::*;
 pub use kopium::attestationkeys::*;
-pub use kopium::ingresses as openshift_ingresses;
 pub use kopium::machines::*;
-pub use kopium::routes;
 pub use kopium::trustedexecutionclusters::*;
 
 pub use kopium::certificaterequests;

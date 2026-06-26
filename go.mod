@@ -9,7 +9,6 @@ go 1.25.0
 require (
 	github.com/cert-manager/cert-manager v1.20.2
 	github.com/mikefarah/yq/v4 v4.53.3
-	github.com/openshift/api v0.0.0-20260213204242-d34f11c515b3
 	github.com/projectcalico/api v0.0.0-20251022175904-f2ab03771208
 	k8s.io/api v0.35.3
 	k8s.io/apimachinery v0.35.3
@@ -40,7 +39,6 @@ require (
 	github.com/gobuffalo/flect v1.0.3 // indirect
 	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
-	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/pprof v0.0.0-20260115054156-294ebfa9ad83 // indirect

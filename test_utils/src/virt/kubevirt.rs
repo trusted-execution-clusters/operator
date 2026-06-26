@@ -5,12 +5,13 @@
 
 use anyhow::{Context, Result, anyhow};
 use k8s_openapi::{api::core::v1::Secret, apimachinery::pkg::util::intstr::IntOrString};
-use kube::{Api, api::ObjectMeta};
+use kube::{Api, api::ObjectMeta, runtime::wait::await_condition};
 use std::{collections::BTreeMap, time::Duration};
+use tokio::time::timeout;
 use trusted_cluster_operator_lib::virtualmachines::*;
 
 use super::{VmBackend, VmConfig, generate_ignition, ssh_exec};
-use crate::{Poller, ensure_command};
+use crate::ensure_command;
 
 pub struct KubevirtBackend(pub VmConfig);
 
@@ -141,29 +142,17 @@ impl VmBackend for KubevirtBackend {
 
     async fn wait_for_running(&self, timeout_secs: u64) -> Result<()> {
         let api: Api<VirtualMachine> = Api::namespaced(self.0.client.clone(), &self.0.namespace);
-
-        let poller = Poller::new()
-            .with_timeout(Duration::from_secs(timeout_secs))
-            .with_interval(Duration::from_secs(5))
-            .with_error_message(format!(
-                "VirtualMachine {} did not reach Running phase after {timeout_secs} seconds",
-                self.0.vm_name
-            ));
-
-        let check_fn = || {
-            let api = api.clone();
-            async move {
-                let vm = api.get(&self.0.vm_name).await?;
-                let status = vm.status.and_then(|p| p.printable_status);
-                if status.map(|s| s == "Running").unwrap_or(false) {
-                    return Ok(());
-                }
-                let vm_name = &self.0.vm_name;
-                let err = anyhow!("VirtualMachine {vm_name} is not in Running phase yet");
-                Err(err)
-            }
+        let machine_running = |m: Option<&VirtualMachine>| {
+            let status = m.as_ref().and_then(|m| m.status.as_ref());
+            let print_status = status.and_then(|s| s.printable_status.as_ref());
+            print_status.map(|s| s == "Running").unwrap_or(false)
         };
-        poller.poll_async(check_fn).await
+        let vm_name = &self.0.vm_name;
+        let done = await_condition(api, vm_name, machine_running);
+        let ctx = format!("waiting {timeout_secs} for VirtualMachine {vm_name} to be running");
+        let duration = Duration::from_secs(timeout_secs);
+        timeout(duration, done).await.context(ctx)??;
+        Ok(())
     }
 
     async fn ssh_exec(&self, command: &str) -> Result<String> {

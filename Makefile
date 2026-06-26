@@ -12,21 +12,19 @@ PLATFORM ?= kind
 
 KUBECTL=kubectl
 INTEGRATION_TEST_THREADS ?= 1
-# Azure CI only: which image to use as Kind host
-KIND_HOST_URN = RedHat:RHEL:10-lvm-gen2:10.1.2026022409
 
 LOCALBIN ?= $(shell pwd)/bin
 CONTROLLER_TOOLS_VERSION ?= $(shell go list -m -f '{{.Version}}' sigs.k8s.io/controller-tools)
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen-$(CONTROLLER_TOOLS_VERSION)
 YQ_VERSION ?= $(shell go list -m -f '{{.Version}}' github.com/mikefarah/yq/v4)
 YQ ?= $(LOCALBIN)/yq-$(YQ_VERSION)
-KOPIUM_VERSION ?= $(shell grep kopium lib/Cargo.toml | sed -E 's/.*"(.*)"/\1/')
+KOPIUM_VERSION ?= $(shell cargo metadata --format-version 1 | jq -r '.resolve.nodes[] | select(.deps[]?.name == "kopium") | .deps[] | select(.name == "kopium") | .pkg | split("@")[1]')
 KOPIUM ?= $(LOCALBIN)/kopium-$(KOPIUM_VERSION)
 
 REGISTRY ?= quay.io/trusted-execution-clusters
 TAG ?= latest
 PUSH_FLAGS ?=
-OPERATOR_IMAGE=$(REGISTRY)/trusted-cluster-operator:$(TAG)
+OPERATOR_IMAGE ?= $(REGISTRY)/trusted-cluster-operator:$(TAG)
 COMPUTE_PCRS_IMAGE=$(REGISTRY)/compute-pcrs:$(TAG)
 REG_SERVER_IMAGE=$(REGISTRY)/registration-server:$(TAG)
 ATTESTATION_KEY_REGISTER_IMAGE=$(REGISTRY)/attestation-key-register:$(TAG)
@@ -57,8 +55,6 @@ RBAC_YAML_PATH = config/rbac
 API_PATH = api/v1alpha1
 generate: $(CONTROLLER_GEN)
 	$(call controller-gen,./...,*)
-	$(call controller-gen,github.com/openshift/api/route/v1,*)
-	$(call controller-gen,github.com/openshift/api/config/v1,*_ingresses.yaml)
 	$(call controller-gen,github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1,*)
 
 RS_LIB_PATH = lib/src

@@ -204,7 +204,7 @@ async fn test_vm_reboot_delete_machine() -> anyhow::Result<()> {
     let list = machines.list(&Default::default()).await?;
     let name = list.items[0].metadata.name.as_ref().unwrap();
     machines.delete(name, &Default::default()).await?;
-    wait_for_resource_deleted(&machines, name, scaled_timeout(120), 5).await?;
+    wait_for_resource_deleted(&machines, name, scaled_timeout(120)).await?;
 
     test_ctx.info("Performing reboot, expecting missing resource");
     let _reboot_result = att_ctx.backend.ssh_exec("sudo systemctl reboot").await;

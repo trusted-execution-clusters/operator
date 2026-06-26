@@ -7,8 +7,6 @@ pub mod attestationkeys;
 pub mod certificaterequests;
 pub mod certificates;
 pub mod clusterissuers;
-pub mod ingresses;
 pub mod issuers;
 pub mod machines;
-pub mod routes;
 pub mod trustedexecutionclusters;

@@ -3,14 +3,18 @@
 //
 // SPDX-License-Identifier: MIT
 
-use anyhow::anyhow;
+use anyhow::Context;
 use compute_pcrs_lib::{Part, Pcr};
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{ConfigMap, Secret};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, OwnerReference};
 use kube::api::ObjectMeta;
+use kube::runtime::wait::await_condition;
 use kube::{Api, api::DeleteParams};
 use std::time::Duration;
+use tokio::time::timeout;
 use trusted_cluster_operator_lib::conditions::NOT_COMMITTED_REASON_PENDING;
+use trusted_cluster_operator_lib::endpoints::{REGISTER_SERVER_DEPLOYMENT, TRUSTEE_DEPLOYMENT};
 use trusted_cluster_operator_lib::reference_values::ImagePcrs;
 use trusted_cluster_operator_lib::{
     ApprovedImage, AttestationKey, Machine, TrustedExecutionCluster, generate_owner_reference,
@@ -22,6 +26,12 @@ const TEC_NAME: &str = "trusted-execution-cluster";
 const APPROVED_IMAGE_NAME: &str = "coreos";
 const TRUSTEE_CONFIG_MAP: &str = "trustee-data";
 const RV_JSON_KEY: &str = "reference-values.json";
+
+fn ak_approved(ak: Option<&AttestationKey>) -> bool {
+    let is_approved = |c: &Condition| c.type_ == "Approved" && c.status == "True";
+    let cs = ak.and_then(|ak| ak.status.as_ref().and_then(|s| s.conditions.as_ref()));
+    cs.map(|cs| cs.iter().any(is_approved)).unwrap_or(false)
+}
 
 named_test!(
     async fn test_trusted_execution_cluster_uninstall() -> anyhow::Result<()> {
@@ -82,40 +92,9 @@ named_test!(
         ));
 
         // Wait for the AttestationKey to be approved (operator should match Machine IP and approve it)
-        let poller = Poller::new()
-            .with_timeout(scaled_duration(30))
-            .with_interval(Duration::from_millis(500))
-            .with_error_message("AttestationKey was not approved".to_string());
-
-        poller
-            .poll_async(|| {
-                let ak_api = attestation_keys.clone();
-                let ak_name_clone = ak_name.clone();
-                async move {
-                    let ak = ak_api.get(&ak_name_clone).await?;
-
-                    // Check for Approved condition
-                    let has_approved_condition = ak
-                        .status
-                        .as_ref()
-                        .and_then(|s| s.conditions.as_ref())
-                        .map(|conditions| {
-                            conditions
-                                .iter()
-                                .any(|c| c.type_ == "Approved" && c.status == "True")
-                        })
-                        .unwrap_or(false);
-
-                    if !has_approved_condition {
-                        return Err(anyhow!(
-                            "AttestationKey does not have Approved condition yet"
-                        ));
-                    }
-
-                    Ok(())
-                }
-            })
-            .await?;
+        let done = await_condition(attestation_keys.clone(), &ak_name, ak_approved);
+        let ctx = format!("waiting for AttestationKey {ak_name} to be approved");
+        timeout(scaled_duration(30), done).await.context(ctx)??;
 
         test_ctx.info("AttestationKey successfully approved");
 
@@ -125,26 +104,20 @@ named_test!(
         api.delete(TEC_NAME, &dp).await?;
 
         // Wait until it disappears
-        wait_for_resource_deleted(&api, TEC_NAME, scaled_timeout(120), 5).await?;
+        wait_for_resource_deleted(&api, TEC_NAME, scaled_timeout(120)).await?;
 
         let deployments_api: Api<Deployment> = Api::namespaced(client.clone(), namespace);
-        wait_for_resource_deleted(
-            &deployments_api,
-            "trustee-deployment",
-            scaled_timeout(120),
-            1,
-        )
-        .await?;
-        wait_for_resource_deleted(&deployments_api, "register-server", scaled_timeout(120), 1)
-            .await?;
+        let timeout = scaled_timeout(120);
+        wait_for_resource_deleted(&deployments_api, TRUSTEE_DEPLOYMENT, timeout).await?;
+        wait_for_resource_deleted(&deployments_api, REGISTER_SERVER_DEPLOYMENT, timeout).await?;
 
         let images_api: Api<ApprovedImage> = Api::namespaced(client.clone(), namespace);
-        wait_for_resource_deleted(&images_api, APPROVED_IMAGE_NAME, scaled_timeout(120), 1).await?;
+        wait_for_resource_deleted(&images_api, APPROVED_IMAGE_NAME, scaled_timeout(120)).await?;
 
-        wait_for_resource_deleted(&machines, &machine_name, scaled_timeout(120), 1).await?;
-        wait_for_resource_deleted(&attestation_keys, &ak_name, scaled_timeout(120), 1).await?;
+        wait_for_resource_deleted(&machines, &machine_name, scaled_timeout(120)).await?;
+        wait_for_resource_deleted(&attestation_keys, &ak_name, scaled_timeout(120)).await?;
         let secrets_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
-        wait_for_resource_deleted(&secrets_api, &ak_name, scaled_timeout(120), 1).await?;
+        wait_for_resource_deleted(&secrets_api, &ak_name, scaled_timeout(120)).await?;
 
         test_ctx.cleanup().await?;
 
@@ -159,30 +132,15 @@ async fn test_image_pcrs_configmap_updates() -> anyhow::Result<()> {
     let namespace = test_ctx.namespace();
 
     let configmap_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
-
-    let poller = Poller::new()
-        .with_timeout(scaled_duration(180))
-        .with_interval(Duration::from_secs(5))
-        .with_error_message("image-pcrs ConfigMap not populated with data".to_string());
-
-    poller
-        .poll_async(|| {
-            let api = configmap_api.clone();
-            async move {
-                let cm = api.get("image-pcrs").await?;
-
-                if let Some(data) = &cm.data
-                    && let Some(image_pcrs_json) = data.get("image-pcrs.json")
-                    && let Ok(image_pcrs) = serde_json::from_str::<ImagePcrs>(image_pcrs_json)
-                    && !image_pcrs.0.is_empty()
-                {
-                    return Ok(());
-                }
-
-                Err(anyhow!("image-pcrs ConfigMap not yet populated with image-pcrs.json data"))
-            }
-        })
-        .await?;
+    let populated = |cm: Option<&ConfigMap>| {
+        let data = cm.and_then(|cm| cm.data.as_ref());
+        let json = data.and_then(|data| data.get("image-pcrs.json"));
+        let pcrs = json.and_then(|json| serde_json::from_str::<ImagePcrs>(json).ok());
+        pcrs.map(|pcrs| !pcrs.0.is_empty()).unwrap_or(false)
+    };
+    let done = await_condition(configmap_api.clone(), "image-pcrs", populated);
+    let ctx = "waiting for ConfigMap image-pcrs to be populated";
+    timeout(scaled_duration(180), done).await.context(ctx)??;
 
     let image_pcrs_cm = configmap_api.get("image-pcrs").await?;
     assert_eq!(image_pcrs_cm.metadata.name.as_deref(), Some("image-pcrs"));
@@ -268,23 +226,14 @@ async fn test_image_disallow() -> anyhow::Result<()> {
     images.delete(APPROVED_IMAGE_NAME, &DeleteParams::default()).await?;
 
     let configmap_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
-    let poller = Poller::new()
-        .with_timeout(scaled_duration(180))
-        .with_interval(Duration::from_secs(5))
-        .with_error_message("Reference value not removed".to_string());
-    poller.poll_async(|| {
-        let api = configmap_api.clone();
-        async move {
-            let cm = api.get(TRUSTEE_CONFIG_MAP).await?;
-            if let Some(data) = &cm.data
-                && let Some(reference_values_json) = data.get(RV_JSON_KEY)
-                && !reference_values_json.contains(EXPECTED_PCR4)
-            {
-                return Ok(());
-            }
-            Err(anyhow!("Reference value not yet removed"))
-        }
-    }).await?;
+    let chk_removed = |cm: Option<&ConfigMap>| {
+        let data = cm.and_then(|cm| cm.data.as_ref());
+        let json = data.and_then(|data| data.get(RV_JSON_KEY));
+        json.map(|json| !json.contains(EXPECTED_PCR4)).unwrap_or(false)
+    };
+    let rv_removed = await_condition(configmap_api, TRUSTEE_CONFIG_MAP, chk_removed);
+    let ctx = format!("waiting for ConfigMap {TRUSTEE_CONFIG_MAP} to not contain PCR value");
+    timeout(scaled_duration(180), rv_removed).await.context(ctx)??;
 
     test_ctx.cleanup().await?;
     Ok(())
@@ -348,81 +297,27 @@ async fn test_attestation_key_lifecycle() -> anyhow::Result<()> {
         "Created test Machine: {machine_name} with uuid: {machine_uuid}",
     ));
 
-    // Poll for the AttestationKey to be approved, have owner reference, and have a Secret created
+    // Timeout for the AttestationKey to be approved, have owner reference, and have a Secret created
+    let approved = await_condition(attestation_keys.clone(), &ak_name, ak_approved);
+    let ctx = format!("waiting for AttestationKey {ak_name} to be approved");
+    timeout(scaled_duration(30), approved).await.context(ctx)??;
+    let chk_machine_owner = |ak: Option<&AttestationKey>| {
+        let chk_owner = |owner: &OwnerReference| owner.kind == "Machine" && owner.name == machine_name;
+        let refs = ak.and_then(|ak| ak.metadata.owner_references.as_ref());
+        refs.map(|refs| refs.iter().any(chk_owner)).unwrap_or(false)
+    };
+    let has_machine_owner = await_condition(attestation_keys.clone(), &ak_name, chk_machine_owner);
+    let ctx = format!("waiting for AttestationKey {ak_name} to be owned by Machine {machine_name}");
+    timeout(scaled_duration(30), has_machine_owner).await.context(ctx)??;
     let secrets_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
-    let poller = Poller::new()
-        .with_timeout(scaled_duration(30))
-        .with_interval(Duration::from_millis(500))
-        .with_error_message("AttestationKey was not approved with owner reference and secret".to_string());
-
-    poller
-        .poll_async(|| {
-            let ak_api = attestation_keys.clone();
-            let secrets = secrets_api.clone();
-            let ak_name_clone = ak_name.clone();
-            let machine_name_clone = machine_name.clone();
-            async move {
-                let ak = ak_api.get(&ak_name_clone).await?;
-
-                // Check for Approved condition
-                let has_approved_condition = ak
-                    .status
-                    .as_ref()
-                    .and_then(|s| s.conditions.as_ref())
-                    .map(|conditions| {
-                        conditions
-                            .iter()
-                            .any(|c| c.type_ == "Approved" && c.status == "True")
-                    })
-                    .unwrap_or(false);
-
-                if !has_approved_condition {
-                    return Err(anyhow!(
-                        "AttestationKey does not have Approved condition yet"
-                    ));
-                }
-
-                // Check for owner reference to the Machine
-                let has_machine_owner_ref = ak
-                    .metadata
-                    .owner_references
-                    .as_ref()
-                    .map(|owner_refs| {
-                        owner_refs.iter().any(|owner_ref| {
-                            owner_ref.kind == "Machine" && owner_ref.name == machine_name_clone
-                        })
-                    })
-                    .unwrap_or(false);
-
-                if !has_machine_owner_ref {
-                    return Err(anyhow!(
-                        "AttestationKey does not have owner reference to Machine yet"
-                    ));
-                }
-
-                // Check that a Secret with the same name exists and has the AttestationKey as owner
-                let secret = secrets.get(&ak_name_clone).await?;
-                let has_ak_owner_ref = secret
-                    .metadata
-                    .owner_references
-                    .as_ref()
-                    .map(|owner_refs| {
-                        owner_refs.iter().any(|owner_ref| {
-                            owner_ref.kind == "AttestationKey" && owner_ref.name == ak_name_clone
-                        })
-                    })
-                    .unwrap_or(false);
-
-                if !has_ak_owner_ref {
-                    return Err(anyhow!(
-                        "Secret does not have owner reference to AttestationKey yet"
-                    ));
-                }
-
-                Ok(())
-            }
-        })
-        .await?;
+    let chk_ak_owner = |secret: Option<&Secret>| {
+        let chk_owner = |owner: &OwnerReference| owner.kind == "AttestationKey" && owner.name == ak_name;
+        let refs = secret.and_then(|s| s.metadata.owner_references.as_ref());
+        refs.map(|refs| refs.iter().any(chk_owner)).unwrap_or(false)
+    };
+    let has_ak_owner = await_condition(secrets_api.clone(), &ak_name, chk_ak_owner);
+    let ctx = format!("waiting for Secret {ak_name} to be owned by AttestationKey {ak_name}");
+    timeout(scaled_duration(30), has_ak_owner).await.context(ctx)??;
 
     test_ctx.info(format!(
         "AttestationKey successfully approved with owner reference to Machine: {machine_name} and Secret created"
@@ -433,11 +328,11 @@ async fn test_attestation_key_lifecycle() -> anyhow::Result<()> {
     machines.delete(&machine_name, &dp).await?;
     test_ctx.info(format!("Deleted Machine: {machine_name}"));
 
-    wait_for_resource_deleted(&machines, &machine_name, scaled_timeout(120), 1).await?;
+    wait_for_resource_deleted(&machines, &machine_name, scaled_timeout(120)).await?;
     test_ctx.info("Machine successfully deleted");
-    wait_for_resource_deleted(&attestation_keys, &ak_name, scaled_timeout(120), 1).await?;
+    wait_for_resource_deleted(&attestation_keys, &ak_name, scaled_timeout(120)).await?;
     test_ctx.info("AttestationKey successfully deleted");
-    wait_for_resource_deleted(&secrets_api, &ak_name, scaled_timeout(120), 1).await?;
+    wait_for_resource_deleted(&secrets_api, &ak_name, scaled_timeout(120)).await?;
     test_ctx.info("Secret successfully deleted");
 
     test_ctx.cleanup().await?;
@@ -465,22 +360,14 @@ async fn test_nonexistent_approved_image() -> anyhow::Result<()> {
         status: None,
     }).await?;
 
-    let poller = Poller::new()
-        .with_timeout(scaled_duration(30))
-        .with_interval(Duration::from_millis(500))
-        .with_error_message("ApprovedImage not created".to_string());
-    poller.poll_async(|| {
-        let api = images.clone();
-        async move {
-            let img = api.get("coreos1").await?;
-            if img.status.as_ref().and_then(|s| s.conditions.as_ref()).map(|conditions| {
-                conditions.iter().any(|c| c.reason == NOT_COMMITTED_REASON_PENDING)
-            }).unwrap_or(false) {
-                return Ok(());
-            }
-            Err(anyhow::anyhow!("ApprovedImage not yet committed"))
-        }
-    }).await?;
+    let is_pending = |img: Option<&ApprovedImage>| {
+        let pending = |c: &Condition| c.reason == NOT_COMMITTED_REASON_PENDING;
+        let cs = img.and_then(|img| img.status.as_ref()).and_then(|s| s.conditions.as_ref());
+        cs.map(|cs| cs.iter().any(pending)).unwrap_or(false)
+    };
+    let done = await_condition(images, "coreos1", is_pending);
+    let ctx = "waiting for ApprovedImage coreos1 to be PodPending";
+    timeout(scaled_duration(30), done).await.context(ctx)??;
 
     test_ctx.cleanup().await?;
     Ok(())
@@ -502,28 +389,8 @@ async fn test_approved_image_readoption() -> anyhow::Result<()> {
 
     test_ctx.info(format!("Deleting TrustedExecuctionCluster {TEC_NAME}"));
     clusters.delete(TEC_NAME, &Default::default()).await?;
-    let removal_poller = Poller::new()
-        .with_timeout(Duration::from_secs(60))
-        .with_interval(Duration::from_secs(5))
-        .with_error_message(format!(
-            "ConfigMap {TRUSTEE_CONFIG_MAP} or ApprovedImage {APPROVED_IMAGE_NAME} not removed"
-        ));
-    removal_poller
-        .poll_async(|| {
-            let configmaps = configmaps.clone();
-            let images = images.clone();
-            async move {
-                if configmaps.get(TRUSTEE_CONFIG_MAP).await.is_ok() {
-                    return Err(anyhow!("ConfigMap {TRUSTEE_CONFIG_MAP} not yet removed"));
-                }
-                if images.get(APPROVED_IMAGE_NAME).await.is_ok() {
-                    let err = anyhow!("ApprovedImage {APPROVED_IMAGE_NAME} not yet removed");
-                    return Err(err);
-                }
-                Ok(())
-            }
-        })
-        .await?;
+    wait_for_resource_deleted(&configmaps, TRUSTEE_CONFIG_MAP, scaled_timeout(60)).await?;
+    wait_for_resource_deleted(&images, APPROVED_IMAGE_NAME, scaled_timeout(60)).await?;
     test_ctx.info(format!("Configmap {TRUSTEE_CONFIG_MAP} was removed"));
 
     let image = ApprovedImage {
@@ -548,25 +415,14 @@ async fn test_approved_image_readoption() -> anyhow::Result<()> {
     // Ensure adoption works even when cluster creation was delayed
     tokio::time::sleep(Duration::from_secs(5)).await;
     clusters.create(&Default::default(), &cluster).await?;
-    let regeneration_poller = Poller::new()
-        .with_timeout(Duration::from_secs(180))
-        .with_interval(Duration::from_secs(5))
-        .with_error_message("Reference value not regenerated".to_string());
-    regeneration_poller
-        .poll_async(|| {
-            let configmaps = configmaps.clone();
-            async move {
-                let configmap = configmaps.get(TRUSTEE_CONFIG_MAP).await?;
-                if let Some(data) = &configmap.data
-                    && let Some(json) = data.get(RV_JSON_KEY)
-                    && json.contains(EXPECTED_PCR4)
-                {
-                    return Ok(());
-                }
-                Err(anyhow!("Reference value not yet regenerated"))
-            }
-        })
-        .await?;
+    let chk_added = |cm: Option<&ConfigMap>| {
+        let data = cm.and_then(|cm| cm.data.as_ref());
+        let json = data.and_then(|data| data.get(RV_JSON_KEY));
+        json.map(|json| json.contains(EXPECTED_PCR4)).unwrap_or(false)
+    };
+    let rv_added = await_condition(configmaps, TRUSTEE_CONFIG_MAP, chk_added);
+    let ctx = format!("waiting for ConfigMap {TRUSTEE_CONFIG_MAP} to contain PCR value");
+    timeout(scaled_duration(180), rv_added).await.context(ctx)??;
     test_ctx.info("Reference values regenerated");
 
     test_ctx.cleanup().await?;

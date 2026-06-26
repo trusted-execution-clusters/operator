@@ -13,8 +13,6 @@ package tools
 import (
 	_ "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	_ "github.com/mikefarah/yq/v4"
-	_ "github.com/openshift/api/config/v1"
-	_ "github.com/openshift/api/route/v1"
 	_ "github.com/projectcalico/api/pkg/lib/numorstring"
 	_ "sigs.k8s.io/controller-tools/cmd/controller-gen"
 	_ "sigs.k8s.io/kind"

@@ -99,11 +99,11 @@ async fn reconcile(
         if changed {
             update_status!(clusters, name, TrustedExecutionClusterStatus { conditions })?;
         }
-        return Ok(Action::await_change());
+        return Ok(Action::requeue(Duration::from_secs(60)));
     }
 
     if is_installed(cluster.status.clone()) {
-        return Ok(Action::await_change());
+        return Ok(Action::requeue(Duration::from_secs(300)));
     }
 
     if ctx.tec_store.state().len() > 1 {
@@ -145,7 +145,7 @@ async fn reconcile(
         let status = TrustedExecutionClusterStatus { conditions };
         update_status!(clusters, name, status)?;
     }
-    Ok(Action::await_change())
+    Ok(Action::requeue(Duration::from_secs(300)))
 }
 
 async fn install_components(client: &Client, cluster: &TrustedExecutionCluster) -> Result<()> {
@@ -336,7 +336,7 @@ mod tests {
             let mut cluster = dummy_cluster();
             cluster.metadata.deletion_timestamp = Some(Time(Timestamp::now()));
             let result = reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client))).await;
-            assert_eq!(result.unwrap(), Action::await_change());
+            assert_eq!(result.unwrap(), Action::requeue(Duration::from_secs(60)));
         });
     }
 
@@ -416,7 +416,7 @@ mod tests {
                 conditions: Some(vec![foreign_condition]),
             });
             let result = reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client))).await;
-            assert_eq!(result.unwrap(), Action::await_change());
+            assert_eq!(result.unwrap(), Action::requeue(Duration::from_secs(60)));
         });
     }
 
@@ -493,7 +493,7 @@ mod tests {
         });
         count_check!(10, clos, |client| {
             let result = reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client))).await;
-            assert_eq!(result.unwrap(), Action::await_change());
+            assert_eq!(result.unwrap(), Action::requeue(Duration::from_secs(300)));
         });
     }
 

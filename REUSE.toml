@@ -2,7 +2,8 @@ version = 1
 
 [[annotations]]
 path = [
-  "README.md",
+  ".cursor/rules/*.mdc",
+  "*.md",
   "Cargo.lock",
   "go.sum",
   "PROJECT",

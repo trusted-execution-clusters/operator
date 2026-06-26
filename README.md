@@ -10,14 +10,29 @@ within the cluster.
 
 ## Repository Structure
 
--   `/api`: Defines the `TrustedExecutionCluster` Custom Resource Definition (CRD) and associated CRDs and RBAC definitions in Go. Also contains a program to generate a `TrustedExecutionCluster` CR and associated deployment.
+The operator relies on Rust crates for its functionality.
+
+### Operator components
+
 -   `/operator`: Contains the source code for the Kubernetes operator itself.
 -   `/register-server`: A server that provides Clevis PINs for key retrieval with random UUIDs.
 -   `/attestation-key-register`: A server that accepts attestation key registrations from VMs and creates AttestationKey resources.
 -   `/compute-pcrs`: A program to compute PCR reference values using the [compute-pcrs library](https://github.com/trusted-execution-clusters/compute-pcrs) and insert them into a ConfigMap, run as a Job.
+
+### Other crates
+
 -   `/lib`: Shared Rust definitions, including translated CRDs
+-   `/tests`: Non-unit tests; most rely on a cluster being available. Many of those also rely on a virtualization backend.
+-   `/test_utils`: Operator setup helpers and virtualization backends
+
+### Other components
+
+-   `/docs`, `/examples`
+-   `/api`: Defines the `TrustedExecutionCluster` Custom Resource Definition (CRD) and associated CRDs and RBAC definitions in Go. Also contains a program to generate a `TrustedExecutionCluster` CR and associated deployment.
 -   `/scripts`: Helper scripts for managing a local `kind` development cluster.
 -   `/config`: The default output directory for generated manifests. This directory is not checked into source control.
+-   `/tools`: Tracking tool versions for autoupdates
+-   `/must-gather`: for OpenShift CI
 
 ## Getting Started
 

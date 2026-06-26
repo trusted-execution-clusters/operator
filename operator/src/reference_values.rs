@@ -32,8 +32,8 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use crate::COMPONENT_VERSION;
 use crate::trustee::{self, get_image_pcrs};
-use operator::{ControllerError, upsert_condition};
-use operator::{controller_error_policy, controller_info, create_or_info_if_exists};
+use operator::{ControllerError, committed_condition, upsert_condition};
+use operator::{controller_error_policy, controller_info, create_or_info_if_exists, update_status};
 use trusted_cluster_operator_lib::{conditions::*, reference_values::*, *};
 
 const JOB_LABEL_KEY: &str = "kind";
@@ -136,7 +136,7 @@ async fn job_reconcile(job: Arc<Job>, client: Arc<Client>) -> Result<Action, Con
     let committed = committed_condition(INSTALLED_REASON, image.metadata.generation, &None);
     let conditions = Some(vec![committed]);
     let image_status = ApprovedImageStatus { conditions };
-    update_status!(approved_images, resource_name, image_status)?;
+    update_status(&approved_images, resource_name, image_status).await?;
 
     let jobs: Api<Job> = Api::default_namespaced(kube_client.clone());
     // Foreground deletion: Delete the pod too
@@ -319,7 +319,8 @@ async fn image_add_reconcile(
     let changed = upsert_condition(&mut conditions, committed);
     if changed {
         let images: Api<ApprovedImage> = Api::default_namespaced(client);
-        update_status!(images, &name, ApprovedImageStatus { conditions })
+        update_status(&images, name, ApprovedImageStatus { conditions })
+            .await
             .map_err(|e| finalizer::Error::<ControllerError>::ApplyFailed(e.into()))?;
     }
     Ok(action)

@@ -31,14 +31,12 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use trusted_cluster_operator_lib::conditions::ATTESTATION_KEY_MACHINE_APPROVE;
 use trusted_cluster_operator_lib::endpoints::*;
-use trusted_cluster_operator_lib::{AttestationKey, AttestationKeyStatus, Machine, update_status};
+use trusted_cluster_operator_lib::{AttestationKey, AttestationKeyStatus, Machine};
 
 use crate::conditions::attestation_key_approved_condition;
 use crate::trustee;
-use operator::{
-    ControllerError, TLS_DIR, controller_error_policy, create_or_info_if_exists, read_certificate,
-    upsert_condition,
-};
+use operator::{ControllerError, TLS_DIR, controller_error_policy};
+use operator::{create_or_info_if_exists, read_certificate, update_status, upsert_condition};
 
 /// Shared context for the three attestation-key controllers.
 /// Stores give local cache access to avoid repeated API-server reads.
@@ -243,7 +241,7 @@ async fn approve_ak(ak: &AttestationKey, machine: &Machine, ctx: &AkContextData)
 
     if changed {
         let status = AttestationKeyStatus { conditions };
-        update_status!(aks, &name, status)?;
+        update_status(&aks, &name, status).await?;
         info!("Approved attestation key {name}");
     }
 

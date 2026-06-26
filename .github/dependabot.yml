@@ -16,7 +16,9 @@ updates:
         patterns:
           - "*"
   - package-ecosystem: "gomod"
-    directory: "/"
+    directories:
+      - "/"
+      - "/tools/virtctl"
     schedule:
       interval: "weekly"
     groups:

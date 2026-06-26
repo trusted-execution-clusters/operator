@@ -17,6 +17,7 @@ path = [
   "must-gather/README.md",
   "tests/README.md",
   "examples/*",
+  "tools/virtctl/go.sum",
   "scripts/install-kubevirt.sh"
 ]
 SPDX-FileCopyrightText = [

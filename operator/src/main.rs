@@ -36,7 +36,7 @@ use operator::*;
 const TRUSTEE_VERSION: &str = "v0.17.0";
 /// Default version tag for operator-managed component images
 const COMPONENT_VERSION: &str = "v0.2.0";
-/// Default registry
+/// Default container registry
 const TEC_REGISTRY: &str = "quay.io/trusted-execution-clusters";
 
 struct ClusterContext {

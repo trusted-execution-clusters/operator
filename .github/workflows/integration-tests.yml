@@ -5,10 +5,8 @@
 name: "Integration tests"
 on:
   pull_request:
-    branches:
-      - "main"
-  pull_request_target:
-    types: [labeled]
+    # Default types, plus `labeled` for when `ok-to-test` was added
+    types: [opened, synchronize, reopened, labeled]
     branches:
       - "main"
 permissions:

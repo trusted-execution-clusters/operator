@@ -247,6 +247,23 @@ async fn image_reconcile(
         .await
         .map_err(|e| -> ControllerError { e.into() })?;
 
+    let uid_owns = |uid: &String| {
+        let refs = image.metadata.owner_references.as_ref();
+        refs.map(|os| os.iter().any(|o| o.uid == *uid))
+    };
+    let cluster_owns = |cluster: &TrustedExecutionCluster| {
+        let uid = cluster.metadata.uid.as_ref();
+        uid.and_then(uid_owns).unwrap_or(false)
+    };
+
+    if let Some(ref cluster) = cluster
+        && !cluster_owns(cluster)
+    {
+        adopt_approved_image(kube_client.clone(), &name, cluster)
+            .await
+            .map_err(|e| -> ControllerError { e.into() })?;
+    }
+
     let images: Api<ApprovedImage> = Api::default_namespaced(kube_client.clone());
     finalizer(&images, APPROVED_IMAGE_FINALIZER, image, |ev| async {
         match ev {
@@ -277,19 +294,6 @@ async fn image_add_reconcile(
         info!("TrustedExecutionCluster is being deleted, deferring image processing for {name}");
         return Ok(Action::requeue(Duration::from_secs(5)));
     }
-    let uid_owns = |uid: &String| {
-        let refs = image.metadata.owner_references.as_ref();
-        refs.map(|os| os.iter().any(|o| o.uid == *uid))
-    };
-    let cluster_owns = |cluster: &TrustedExecutionCluster| {
-        let uid = cluster.metadata.uid.as_ref();
-        uid.and_then(uid_owns).unwrap_or(false)
-    };
-    // Adopt the image by adding TEC as owner reference if not already owned
-    if !cluster_owns(&cluster) {
-        adopt_approved_image(client.clone(), name, &cluster).await?;
-    }
-
     let (action, reason) = match handle_new_image(client.clone(), image).await {
         Ok(reason) => (Action::await_change(), reason),
         Err(e) => {

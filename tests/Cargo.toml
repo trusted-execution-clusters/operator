@@ -15,6 +15,7 @@ virtualization = []
 [dependencies]
 anyhow.workspace = true
 cfg-if = "1.0.4"
+chrono.workspace = true
 compute-pcrs-lib.workspace = true
 k8s-openapi.workspace = true
 kube = { workspace = true }

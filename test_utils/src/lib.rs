@@ -592,6 +592,49 @@ impl TestContext {
         Ok(())
     }
 
+    pub async fn wait_for_deployment_ready(
+        &self,
+        deployments_api: &Api<Deployment>,
+        deployment_name: &str,
+        timeout_secs: u64,
+    ) -> Result<()> {
+        test_info!(
+            &self.test_name,
+            "Waiting for deployment {} to be ready",
+            deployment_name
+        );
+        let poller = Poller::new()
+            .with_timeout(Duration::from_secs(timeout_secs))
+            .with_interval(Duration::from_secs(5))
+            .with_error_message(format!(
+                "{deployment_name} deployment does not have 1 available replica after {timeout_secs} seconds"
+            ));
+
+        let test_name_owned = self.test_name.clone();
+        poller
+            .poll_async(move || {
+                let api = deployments_api.clone();
+                let name = deployment_name.to_string();
+                let tn = test_name_owned.clone();
+                async move {
+                    let deployment = api.get(&name).await?;
+
+                    if let Some(status) = &deployment.status
+                        && let Some(available_replicas) = status.available_replicas
+                        && available_replicas == 1
+                    {
+                        test_info!(&tn, "{} deployment has 1 available replica", name);
+                        return Ok(());
+                    }
+
+                    Err(anyhow!(
+                        "{name} deployment does not have 1 available replica yet"
+                    ))
+                }
+            })
+            .await
+    }
+
     async fn create_certificate(
         &self,
         service_name: &str,

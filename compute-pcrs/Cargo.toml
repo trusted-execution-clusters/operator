@@ -15,7 +15,9 @@ anyhow.workspace = true
 clap.workspace = true
 trusted-cluster-operator-lib = { path = "../lib" }
 compute-pcrs-lib.workspace = true
+env_logger.workspace = true
 k8s-openapi.workspace = true
 kube.workspace = true
+log.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

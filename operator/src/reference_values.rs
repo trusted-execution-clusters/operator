@@ -32,8 +32,8 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use crate::COMPONENT_VERSION;
 use crate::trustee::{self, get_image_pcrs};
-use operator::{ControllerError, upsert_condition};
-use operator::{controller_error_policy, controller_info, create_or_info_if_exists};
+use operator::{ControllerError, committed_condition, upsert_condition};
+use operator::{controller_error_policy, controller_info, create_or_info_if_exists, update_status};
 use trusted_cluster_operator_lib::{conditions::*, reference_values::*, *};
 
 const JOB_LABEL_KEY: &str = "kind";
@@ -125,6 +125,19 @@ async fn job_reconcile(job: Arc<Job>, client: Arc<Client>) -> Result<Action, Con
         info!("Job {name} changed, but had not completed");
         return Ok(Action::requeue(Duration::from_secs(300)));
     }
+
+    let owner_refs = &job.meta().owner_references.as_ref();
+    let err = "Completed job had no owner reference";
+    let owner_ref = owner_refs.and_then(|rs| rs.first()).context(err)?;
+    let resource_name = &owner_ref.name;
+    let approved_images: Api<ApprovedImage> = Api::default_namespaced(kube_client.clone());
+    let try_image = approved_images.get(resource_name).await;
+    let image = try_image.map_err(Into::<anyhow::Error>::into)?;
+    let committed = committed_condition(INSTALLED_REASON, image.metadata.generation, &None);
+    let conditions = Some(vec![committed]);
+    let image_status = ApprovedImageStatus { conditions };
+    update_status(&approved_images, resource_name, image_status).await?;
+
     let jobs: Api<Job> = Api::default_namespaced(kube_client.clone());
     // Foreground deletion: Delete the pod too
     let delete = jobs.delete(name, &DeleteParams::foreground()).await;
@@ -159,6 +172,7 @@ fn get_job_name(boot_image: &str) -> Result<String> {
     Ok(trimmed)
 }
 
+// If jobs running in a suboptimal order becomes a problem, consider work queues
 async fn compute_fresh_pcrs(client: Client, image: &ApprovedImage) -> anyhow::Result<()> {
     let job_name = get_job_name(&image.spec.image)?;
     let env = "RELATED_IMAGE_COMPUTE_PCRS";
@@ -305,7 +319,8 @@ async fn image_add_reconcile(
     let changed = upsert_condition(&mut conditions, committed);
     if changed {
         let images: Api<ApprovedImage> = Api::default_namespaced(client);
-        update_status!(images, &name, ApprovedImageStatus { conditions })
+        update_status(&images, name, ApprovedImageStatus { conditions })
+            .await
             .map_err(|e| finalizer::Error::<ControllerError>::ApplyFailed(e.into()))?;
     }
     Ok(action)
@@ -353,6 +368,19 @@ async fn is_pending(client: &Client, resource_name: &str) -> Result<bool> {
         .max_by_key(|pod| pod.metadata.creation_timestamp.as_ref().map(|t| t.0))
         .and_then(|pod| pod.status.as_ref().and_then(|s| s.phase.as_ref()))
         .is_some_and(|phase| phase == "Pending"))
+}
+
+async fn update_image_pcrs(
+    api: &Api<ConfigMap>,
+    map: &mut ConfigMap,
+    pcrs: &ImagePcrs,
+) -> Result<()> {
+    let image_pcrs_json = serde_json::to_string(pcrs)?;
+    let entry = (PCR_CONFIG_FILE.to_string(), image_pcrs_json);
+    map.data = Some(BTreeMap::from([entry]));
+    api.replace(PCR_CONFIG_MAP, &Default::default(), map)
+        .await?;
+    Ok(())
 }
 
 pub async fn handle_new_image(client: Client, image: &ApprovedImage) -> Result<&'static str> {
@@ -404,7 +432,7 @@ pub async fn handle_new_image(client: Client, image: &ApprovedImage) -> Result<&
         reference: boot_image.to_string(),
     };
     image_pcrs.0.insert(resource_name.to_string(), image_pcr);
-    update_image_pcrs!(config_maps, image_pcrs_map, image_pcrs);
+    update_image_pcrs(&config_maps, &mut image_pcrs_map, &image_pcrs).await?;
     trustee::update_reference_values(client)
         .await
         .map(|_| COMMITTED_REASON)
@@ -417,7 +445,7 @@ pub async fn disallow_image(client: Client, resource_name: &str) -> Result<()> {
     if image_pcrs.0.remove(resource_name).is_none() {
         info!("Image {resource_name} was to be disallowed, but already was not allowed");
     }
-    update_image_pcrs!(config_maps, image_pcrs_map, image_pcrs);
+    update_image_pcrs(&config_maps, &mut image_pcrs_map, &image_pcrs).await?;
     trustee::update_reference_values(client).await
 }
 
@@ -427,7 +455,7 @@ mod tests {
     use crate::test_utils::*;
     use http::{Method, Request, StatusCode};
     use k8s_openapi::api::batch::v1::JobStatus;
-    use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::{OwnerReference, Time};
     use kube::api::ObjectList;
     use kube::client::Body;
     use trusted_cluster_operator_test_utils::mock_client::*;
@@ -472,6 +500,10 @@ mod tests {
         Job {
             metadata: ObjectMeta {
                 name: Some("test".to_string()),
+                owner_references: Some(vec![OwnerReference {
+                    name: "test".to_string(),
+                    ..Default::default()
+                }]),
                 ..Default::default()
             },
             status: Some(JobStatus {
@@ -485,18 +517,20 @@ mod tests {
     #[tokio::test]
     async fn test_job_reconcile_success() {
         let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
-            (0, &Method::DELETE) => Ok(serde_json::to_string(&Job::default()).unwrap()),
-            (1, &Method::GET) => {
+            (0, &Method::GET) => Ok(serde_json::to_string(&dummy_image()).unwrap()),
+            (1, &Method::PATCH) => Ok(serde_json::to_string(&dummy_image()).unwrap()),
+            (2, &Method::DELETE) => Ok(serde_json::to_string(&Job::default()).unwrap()),
+            (3, &Method::GET) => {
                 assert!(req.uri().path().contains(PCR_CONFIG_MAP));
                 Ok(serde_json::to_string(&dummy_pcrs_map()).unwrap())
             }
-            (2, &Method::GET) | (3, &Method::PUT) => {
+            (4, &Method::GET) | (5, &Method::PUT) => {
                 assert!(req.uri().path().contains(trustee::TRUSTEE_DATA_MAP));
                 Ok(serde_json::to_string(&dummy_trustee_map()).unwrap())
             }
             _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
         };
-        count_check!(4, clos, |client| {
+        count_check!(6, clos, |client| {
             let job = Arc::new(dummy_job());
             let result = job_reconcile(job, Arc::new(client)).await.unwrap();
             assert_eq!(result, Action::await_change());
@@ -615,6 +649,36 @@ mod tests {
         };
         count_check!(5, clos, |client| {
             assert!(image_remove_reconcile(client, image, cluster).await.is_ok());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_update_image_pcrs_success() {
+        let clos = async |req: Request<_>, _| match req.method() {
+            &Method::PUT => Ok(serde_json::to_string(&dummy_pcrs_map()).unwrap()),
+            _ => panic!("unexpected API interaction: {req:?}"),
+        };
+        count_check!(1, clos, |client| {
+            let config_maps: Api<ConfigMap> = Api::default_namespaced(client);
+            let mut map = dummy_pcrs_map();
+            let pcrs = dummy_pcrs();
+            let result = update_image_pcrs(&config_maps, &mut map, &pcrs).await;
+            assert!(result.is_ok());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_update_image_pcrs_error() {
+        let clos = async |req: Request<_>, _| match req.method() {
+            &Method::PUT => Err(StatusCode::INTERNAL_SERVER_ERROR),
+            _ => panic!("unexpected API interaction: {req:?}"),
+        };
+        count_check!(1, clos, |client| {
+            let config_maps: Api<ConfigMap> = Api::default_namespaced(client);
+            let mut map = dummy_pcrs_map();
+            let pcrs = dummy_pcrs();
+            let result = update_image_pcrs(&config_maps, &mut map, &pcrs).await;
+            assert!(result.is_err());
         });
     }
 }

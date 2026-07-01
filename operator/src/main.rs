@@ -17,9 +17,9 @@ use kube::runtime::watcher;
 use kube::{Api, Client};
 use log::{info, warn};
 
-use operator::{generate_owner_reference, upsert_condition};
+use operator::{generate_owner_reference, update_status, upsert_condition};
 use trusted_cluster_operator_lib::{TrustedExecutionCluster, TrustedExecutionClusterStatus};
-use trusted_cluster_operator_lib::{conditions::*, images::*, update_status};
+use trusted_cluster_operator_lib::{conditions::*, images::*};
 
 mod attestation_key_register;
 mod conditions;
@@ -96,8 +96,9 @@ async fn reconcile(
         let uninstall_condition =
             installed_condition(uninstalling_reason, generation, existing_status);
         let changed = upsert_condition(&mut conditions, uninstall_condition);
+        let status = TrustedExecutionClusterStatus { conditions };
         if changed {
-            update_status!(clusters, name, TrustedExecutionClusterStatus { conditions })?;
+            update_status(&clusters, name, status).await?;
         }
         return Ok(Action::await_change());
     }
@@ -115,8 +116,9 @@ async fn reconcile(
         let non_unique_condition =
             installed_condition(NOT_INSTALLED_REASON_NON_UNIQUE, generation, existing_status);
         let changed = upsert_condition(&mut conditions, non_unique_condition);
+        let status = TrustedExecutionClusterStatus { conditions };
         if changed {
-            update_status!(clusters, name, TrustedExecutionClusterStatus { conditions })?;
+            update_status(&clusters, name, status).await?;
         }
         return Ok(Action::requeue(Duration::from_secs(60)));
     }
@@ -129,7 +131,7 @@ async fn reconcile(
         let status = TrustedExecutionClusterStatus {
             conditions: conditions.clone(),
         };
-        update_status!(clusters, name, status)?;
+        update_status(&clusters, name, status).await?;
     }
 
     if let Err(e) = install_components(&kube_client, &cluster).await {
@@ -143,7 +145,7 @@ async fn reconcile(
     let changed = upsert_condition(&mut conditions, installed_condition);
     if changed {
         let status = TrustedExecutionClusterStatus { conditions };
-        update_status!(clusters, name, status)?;
+        update_status(&clusters, name, status).await?;
     }
     Ok(Action::await_change())
 }

@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Chirag Rao <crao@redhat.com>
+#
+# SPDX-License-Identifier: CC0-1.0
+
+name: "Commit Verification"
+on:
+  pull_request:
+    branches:
+      - "main"
+  workflow_call:
+permissions:
+  contents: "read"
+
+jobs:
+  verify-commits:
+    name: "Verify commit signatures and authorship"
+    runs-on: " ubuntu-slim"
+    steps:
+      - name: "Verify all PR commits are signed and authored by PR owner"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -euo pipefail
+          errors=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/commits" \
+             -q '
+              .[] | .sha[:12] as $s |
+              (if .commit.verification.verified != true
+               then "::error::Commit \($s) is not signed and/or not verified (\(.commit.verification.reason))"
+               else empty end)
+            ')
+          if [ -n "${errors}" ]; then
+            echo "${errors}"
+            exit 1
+          fi
+          echo "All commits are signed and verified."

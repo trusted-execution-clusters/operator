@@ -24,7 +24,10 @@ env:
   REGISTRY: localhost:5000/trusted-execution-clusters
 
 jobs:
+  verify-commits:
+    uses: ./.github/workflows/commit-verification.yml
   integration-tests:
+    needs: verify-commits
     name: "KubeVirt integration tests"
     if: >-
       github.event.pull_request.author_association == 'MEMBER' ||

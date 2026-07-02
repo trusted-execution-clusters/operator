@@ -23,7 +23,10 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  verify-commits:
+    uses: ./.github/workflows/commit-verification.yml
   tests-stable:
+    needs: verify-commits
     name: "Tests, stable toolchain"
     runs-on: "ubuntu-24.04"
     container: "ghcr.io/trusted-execution-clusters/buildroot:fedora"
@@ -48,6 +51,7 @@ jobs:
       - name: "cargo test"
         run: cargo test --bins --lib
   tests-release-stable:
+    needs: verify-commits
     name: "Tests (release), stable toolchain"
     runs-on: "ubuntu-24.04"
     container: "ghcr.io/trusted-execution-clusters/buildroot:fedora"
@@ -72,6 +76,7 @@ jobs:
       - name: "cargo test (release)"
         run: cargo test --bins --lib --release
   tests-release-msrv:
+    needs: verify-commits
     name: "Tests (release), minimum supported toolchain"
     runs-on: "ubuntu-24.04"
     container: "ghcr.io/trusted-execution-clusters/buildroot:fedora"
@@ -102,6 +107,7 @@ jobs:
       - name: "cargo test (release)"
         run: cargo test --bins --lib --release
   tests-other-channels:
+    needs: verify-commits
     name: "Tests, unstable toolchain"
     runs-on: "ubuntu-24.04"
     container: "ghcr.io/trusted-execution-clusters/buildroot:fedora"

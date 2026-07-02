@@ -25,7 +25,10 @@ env:
   ACTIONS_LINTS_TOOLCHAIN: 1.88.0
 
 jobs:
+  verify-commits:
+    uses: ./.github/workflows/commit-verification.yml
   linting:
+    needs: verify-commits
     name: "Lints, pinned toolchain"
     runs-on: "ubuntu-24.04"
     container: "ghcr.io/trusted-execution-clusters/buildroot:fedora"

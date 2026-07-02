@@ -16,7 +16,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  verify-commits:
+    uses: ./.github/workflows/commit-verification.yml
   build:
+    needs: verify-commits
     name: "Build"
     runs-on: "ubuntu-24.04"
     steps:

@@ -185,30 +185,31 @@ pub trait VmBackend: Send + Sync {
     async fn get_root_key(&self) -> Result<Option<Vec<u8>>>;
     async fn cleanup(&self) -> Result<()>;
 
-    async fn wait_for_vm_ssh_ready(&self, timeout_secs: u64) -> Result<()> {
-        self.wait_for_vm_ssh(timeout_secs, true).await
+    async fn get_boot_id(&self) -> Result<String> {
+        let id = self.ssh_exec("cat /proc/sys/kernel/random/boot_id").await?;
+        Ok(id.trim().to_string())
     }
 
-    async fn wait_for_vm_ssh_unavail(&self, timeout_secs: u64) -> Result<()> {
-        self.wait_for_vm_ssh(timeout_secs, false).await
-    }
-
-    async fn wait_for_vm_ssh(&self, timeout_secs: u64, await_start: bool) -> Result<()> {
-        let avail_prefix = if await_start { "" } else { "un" };
+    async fn wait_for_vm_ssh_ready(
+        &self,
+        timeout_secs: u64,
+        prev_boot_id: Option<&str>,
+    ) -> Result<()> {
+        let err = format!("SSH access to VM did not become available after {timeout_secs} seconds");
         let poller = Poller::new()
             .with_timeout(Duration::from_secs(timeout_secs))
             .with_interval(Duration::from_secs(10))
-            .with_error_message(format!(
-                "SSH access to VM did not become {avail_prefix}available after {timeout_secs} seconds"
-            ));
+            .with_error_message(err);
 
-        let check_fn = || {
-            async move {
-                // Try a simple command to check if SSH is ready
-                let result = self.ssh_exec("echo ready").await;
-                let err = anyhow!("SSH not desired state yet: {result:?}");
-                (result.is_err() ^ await_start).then_some(()).ok_or(err)
+        let check_fn = || async move {
+            let cat = self.ssh_exec("cat /proc/sys/kernel/random/boot_id").await;
+            let boot_id = cat.map_err(|e| anyhow!("SSH not available yet: {e}"))?;
+            if let Some(prev) = prev_boot_id
+                && boot_id.trim() == prev
+            {
+                return Err(anyhow!("VM has not rebooted yet (boot ID unchanged)"));
             }
+            Ok(())
         };
         poller.poll_async(check_fn).await
     }

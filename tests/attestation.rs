@@ -49,7 +49,7 @@ impl SingleAttestationContext {
         test_ctx.info(format!("VM {vm_name} is Running"));
 
         test_ctx.info(format!("Waiting for SSH access to VM {vm_name}"));
-        backend.wait_for_vm_ssh_ready(scaled_timeout(600)).await?;
+        backend.wait_for_vm_ssh_ready(scaled_timeout(600), None).await?;
         test_ctx.info("SSH access is ready");
 
         let root_key = backend.get_root_key().await?;
@@ -113,8 +113,8 @@ async fn test_parallel_vm_attestation() -> anyhow::Result<()> {
     // Wait for SSH access on both VMs in parallel
     test_ctx.info("Waiting for SSH access on both VMs");
     let (ssh1_ready, ssh2_ready) = tokio::join!(
-        backend1.wait_for_vm_ssh_ready(scaled_timeout(900)),
-        backend2.wait_for_vm_ssh_ready(scaled_timeout(900))
+        backend1.wait_for_vm_ssh_ready(scaled_timeout(900), None),
+        backend2.wait_for_vm_ssh_ready(scaled_timeout(900), None)
     );
     ssh1_ready?;
     ssh2_ready?;
@@ -165,14 +165,11 @@ async fn test_vm_reboot_attestation() -> anyhow::Result<()> {
     for i in 1..=num_reboots {
         test_ctx.info(format!("Performing reboot {i} of {num_reboots}"));
 
-        // Reboot the VM via SSH
+        let boot_id = att_ctx.backend.get_boot_id().await?;
         let _reboot_result = att_ctx.backend.ssh_exec("sudo systemctl reboot").await;
 
-        test_ctx.info(format!("Waiting for lack of SSH access after reboot {i}"));
-        att_ctx.backend.wait_for_vm_ssh_unavail(scaled_timeout(30)).await?;
-
         test_ctx.info(format!("Waiting for SSH access after reboot {i}"));
-        att_ctx.backend.wait_for_vm_ssh_ready(scaled_timeout(300)).await?;
+        att_ctx.backend.wait_for_vm_ssh_ready(scaled_timeout(300), Some(&boot_id)).await?;
 
         // Verify encrypted root is still present after reboot
         test_ctx.info(format!("Verifying encrypted root after reboot {i}"));
@@ -207,13 +204,11 @@ async fn test_vm_reboot_delete_machine() -> anyhow::Result<()> {
     wait_for_resource_deleted(&machines, name, scaled_timeout(120)).await?;
 
     test_ctx.info("Performing reboot, expecting missing resource");
+    let boot_id = att_ctx.backend.get_boot_id().await?;
     let _reboot_result = att_ctx.backend.ssh_exec("sudo systemctl reboot").await;
 
-    test_ctx.info("Waiting for lack of SSH access after reboot");
-    att_ctx.backend.wait_for_vm_ssh_unavail(scaled_timeout(30)).await?;
-
     test_ctx.info("Waiting for SSH access after machine removal");
-    let wait = att_ctx.backend.wait_for_vm_ssh_ready(scaled_timeout(300)).await;
+    let wait = att_ctx.backend.wait_for_vm_ssh_ready(scaled_timeout(300), Some(&boot_id)).await;
     assert!(wait.is_err());
 
     att_ctx.cleanup().await?;
@@ -233,13 +228,11 @@ async fn test_vm_restart_operator_existing() -> anyhow::Result<()> {
         Api::namespaced(test_ctx.client().clone(), test_ctx.namespace());
     deployments.restart("trusted-cluster-operator").await?;
 
+    let boot_id = att_ctx.backend.get_boot_id().await?;
     let _reboot_result = att_ctx.backend.ssh_exec("sudo systemctl reboot").await;
 
-    test_ctx.info("Waiting for lack of SSH access after reboot");
-    att_ctx.backend.wait_for_vm_ssh_unavail(scaled_timeout(30)).await?;
-
     test_ctx.info("Waiting for SSH access after operator restart & reboot");
-    let wait = att_ctx.backend.wait_for_vm_ssh_ready(scaled_timeout(300)).await;
+    let wait = att_ctx.backend.wait_for_vm_ssh_ready(scaled_timeout(300), Some(&boot_id)).await;
     assert!(wait.is_ok());
 
     att_ctx.cleanup().await?;

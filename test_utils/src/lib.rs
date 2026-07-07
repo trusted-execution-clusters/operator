@@ -10,6 +10,7 @@ use k8s_openapi::api::core::v1::{
     ConfigMap, LoadBalancerStatus, Namespace, Secret, Service, ServicePort, ServiceSpec,
     ServiceStatus,
 };
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use kube::api::{DeleteParams, ObjectMeta, Patch};
 use kube::runtime::wait::await_condition;
 use kube::{Api, Client};
@@ -21,9 +22,10 @@ use tokio::time::timeout;
 use trusted_cluster_operator_lib::certificates::{
     Certificate, CertificateIssuerRef, CertificateSpec, CertificateStatus,
 };
+use trusted_cluster_operator_lib::conditions::COMMITTED_CONDITION;
 use trusted_cluster_operator_lib::issuers::{Issuer, IssuerCa, IssuerSpec};
 
-use trusted_cluster_operator_lib::{ApprovedImage, AttestationKey, Machine};
+use trusted_cluster_operator_lib::{ApprovedImage, ApprovedImageStatus, AttestationKey, Machine};
 use trusted_cluster_operator_lib::{TrustedExecutionCluster, endpoints::*, images::*};
 
 pub mod timer;
@@ -55,6 +57,7 @@ const ATT_REG_SECRET: &str = "att-reg-secret";
 const REG_CERT: &str = "reg-srv-cert";
 const TRUSTEE_CERT: &str = "trustee-cert";
 const ATT_REG_CERT: &str = "att-reg-cert";
+pub const APPROVED_IMAGE_NAME: &str = "coreos";
 
 pub fn compare_pcrs(actual: &[Pcr], expected: &[Pcr]) -> bool {
     if actual.len() != expected.len() {
@@ -1021,7 +1024,22 @@ impl TestContext {
             "Waiting for image-pcrs ConfigMap to be created"
         );
         let configmap_api: Api<ConfigMap> = Api::namespaced(self.client.clone(), ns);
-        wait_for_resource_created(&configmap_api, "image-pcrs", scaled_timeout(60)).await
+        wait_for_resource_created(&configmap_api, "image-pcrs", scaled_timeout(60)).await?;
+
+        let info = format!("Waiting for ApprovedImage {APPROVED_IMAGE_NAME} to be Committed");
+        test_info!(&self.test_name, "{info}");
+        let images: Api<ApprovedImage> = Api::namespaced(self.client.clone(), ns);
+        let image_ready = |img: Option<&ApprovedImage>| {
+            let chk_cond = |c: &Condition| c.type_ == COMMITTED_CONDITION && c.status == "True";
+            let chk_status =
+                |st: &ApprovedImageStatus| st.conditions.as_ref().map(|cs| cs.iter().any(chk_cond));
+            let chk = |img: &ApprovedImage| img.status.as_ref().and_then(chk_status);
+            img.and_then(chk).unwrap_or(false)
+        };
+        let done = await_condition(images.clone(), APPROVED_IMAGE_NAME, image_ready);
+        let ctx = format!("waiting for ApprovedImage {APPROVED_IMAGE_NAME} to be Committed");
+        timeout(scaled_duration(300), done).await.context(ctx)??;
+        Ok(())
     }
 }
 

@@ -347,8 +347,11 @@ async fn image_remove_reconcile(
 
 pub async fn launch_rv_image_controller(ctx: Arc<OperatorContext>) {
     let images: Api<ApprovedImage> = Api::default_namespaced(ctx.client.clone());
+    let jobs: Api<Job> = Api::default_namespaced(ctx.client.clone());
+    let wc = watcher::Config::default().labels(&format!("{JOB_LABEL_KEY}={PCR_COMMAND_NAME}"));
     tokio::spawn(
         Controller::new(images, Default::default())
+            .owns(jobs, wc)
             .run(image_reconcile, controller_error_policy, ctx)
             .for_each(controller_info),
     );

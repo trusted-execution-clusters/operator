@@ -36,3 +36,7 @@ path = "attestation.rs"
 [[test]]
 name = "equal_conditions"
 path = "equal_conditions.rs"
+
+[[test]]
+name = "no_disallowed_crypto"
+path = "no_disallowed_crypto.rs"

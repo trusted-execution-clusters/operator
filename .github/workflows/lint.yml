@@ -55,5 +55,5 @@ jobs:
         run: go vet ./...
       - name: "Ensure Rust & Go conditions definitions use same strings"
         run: cargo test --test equal_conditions
-      - name: "Ensure rustls isn't used"
-        run: "! { cargo tree -e normal | grep rustls | grep -v rustls-pki-types; }"
+      - name: "Ensure no disallowed crypto crates are shipped"
+        run: cargo test --test no_disallowed_crypto

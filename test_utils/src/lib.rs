@@ -89,6 +89,11 @@ pub fn scaled_duration(secs: u64) -> Duration {
     Duration::from_secs(scaled_timeout(secs))
 }
 
+fn log_time() -> String {
+    let fmt = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+    fmt.to_string()
+}
+
 // Large warning frame, e.g. for paid cloud resources that may not have been shut down correctly
 pub fn warn_frame(msg: &str) -> String {
     format!("{YELLOW}=== WARNING ===\n{msg}{ANSI_RESET}")
@@ -98,14 +103,14 @@ pub fn warn_frame(msg: &str) -> String {
 macro_rules! test_info {
     ($test_name:expr, $($arg:tt)*) => {{
         const GREEN: &str = "\x1b[32m";
-        println!("{}INFO{}: {}: {}", GREEN, ANSI_RESET, $test_name, format!($($arg)*));
+        println!("{} {}INFO{}: {}: {}", log_time(), GREEN, ANSI_RESET, $test_name, format!($($arg)*));
     }}
 }
 
 #[macro_export]
 macro_rules! test_warn {
     ($test_name:expr, $($arg:tt)*) => {{
-        println!("{YELLOW}WARN{ANSI_RESET}: {}: {}", $test_name, format!($($arg)*));
+        println!("{} {YELLOW}WARN{ANSI_RESET}: {}: {}", log_time(), $test_name, format!($($arg)*));
     }}
 }
 

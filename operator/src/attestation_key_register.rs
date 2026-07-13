@@ -25,7 +25,7 @@ use kube::{
         watcher,
     },
 };
-use log::info;
+use log::{info, warn};
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -335,7 +335,7 @@ async fn secret_reconcile(
                     .await
                     .map(|_| Action::requeue(Duration::from_secs(300)))
                     .map_err(|e| {
-                        eprintln!("Error updating attestation key volumes on secret apply: {e}");
+                        warn!("Error updating attestation key volumes on secret apply: {e}");
                         finalizer::Error::<ControllerError>::ApplyFailed(e.into())
                     })
             }
@@ -349,9 +349,7 @@ async fn secret_reconcile(
                     .await
                     .map(|_| Action::requeue(Duration::from_secs(300)))
                     .map_err(|e| {
-                        eprintln!(
-                            "Error updating attestation key volumes during secret deletion: {e}"
-                        );
+                        warn!("Error updating attestation key volumes during secret deletion: {e}");
                         finalizer::Error::<ControllerError>::CleanupFailed(e.into())
                     })
             }

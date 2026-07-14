@@ -23,7 +23,6 @@ use trusted_cluster_operator_test_utils::*;
 
 const EXPECTED_PCR4: &str = "ff2b357be4a4bc66be796d4e7b2f1f27077dc89b96220aae60b443bcf4672525";
 const TEC_NAME: &str = "trusted-execution-cluster";
-const APPROVED_IMAGE_NAME: &str = "coreos";
 const TRUSTEE_CONFIG_MAP: &str = "trustee-data";
 const RV_JSON_KEY: &str = "reference-values.json";
 

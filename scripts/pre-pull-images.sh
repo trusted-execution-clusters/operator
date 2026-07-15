@@ -4,15 +4,27 @@
 #
 # SPDX-License-Identifier: CC0-1.0
 
+secondary_approved_image() {
+    sed -nE 's/pub const COMBINE_PCRS_UPDATE_TEST_IMAGE_REF: &str = "(.*)";/\1/p' test_utils/src/constants.rs
+}
 
 ## Special handling for the approved image because of the kind issue with
 ## loading images used by image volumes. See:
 ##   https://github.com/kubernetes-sigs/kind/issues/4099
-LOCAL_APPROVED_IMAGE=localhost:5000/approved-image:latest
-docker pull $APPROVED_IMAGE
-docker tag $APPROVED_IMAGE $LOCAL_APPROVED_IMAGE
-docker push $LOCAL_APPROVED_IMAGE
-docker exec -ti  kind-control-plane crictl pull $LOCAL_APPROVED_IMAGE
+pull_approved_image() {
+	local image=$1
+	local index=$2
+	local local_image="localhost:5000/approved-image-${index}:latest"
+	echo "Pulling approved image: $image"
+	docker pull "$image"
+	docker tag "$image" "$local_image"
+	docker push "$local_image"
+	docker exec -ti kind-control-plane crictl pull "$local_image"
+	echo "-------------------------------"
+}
+
+pull_approved_image "$APPROVED_IMAGE" 0
+pull_approved_image "$(secondary_approved_image)" 1
 
 KV_VERSION=v1.7.0
 IMAGES=(

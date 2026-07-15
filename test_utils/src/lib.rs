@@ -5,6 +5,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use fs_extra::dir;
+use glob::glob;
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentCondition, DeploymentStatus};
 use k8s_openapi::api::core::v1::{
     ConfigMap, LoadBalancerStatus, Namespace, Secret, Service, ServicePort, ServiceSpec,
@@ -57,7 +58,7 @@ const ATT_REG_SECRET: &str = "att-reg-secret";
 const REG_CERT: &str = "reg-srv-cert";
 const TRUSTEE_CERT: &str = "trustee-cert";
 const ATT_REG_CERT: &str = "att-reg-cert";
-pub const APPROVED_IMAGE_NAME: &str = "coreos";
+pub const APPROVED_IMAGE_NAME: &str = "coreos-approved-primary";
 
 pub fn compare_pcrs(actual: &[Pcr], expected: &[Pcr]) -> bool {
     if actual.len() != expected.len() {
@@ -461,7 +462,11 @@ pub struct TestContext {
 }
 
 impl TestContext {
-    pub async fn new(test_name: &str, delayed_approved_image: bool) -> Result<Self> {
+    pub async fn new(
+        test_name: &str,
+        delayed_approved_image: bool,
+        approved_images: &[(&str, &str)],
+    ) -> Result<Self> {
         INIT.call_once(|| {
             let _ = env_logger::builder().is_test(true).try_init();
         });
@@ -482,7 +487,7 @@ impl TestContext {
         ctx.manifests_dir = manifests_dir;
 
         ctx.create_namespace().await?;
-        ctx.apply_operator_manifests().await?;
+        ctx.apply_operator_manifests(approved_images).await?;
 
         test_info!(
             &ctx.test_name,
@@ -731,7 +736,11 @@ impl TestContext {
         Ok(())
     }
 
-    async fn generate_manifests(&self, workspace_root: &PathBuf) -> Result<(PathBuf, PathBuf)> {
+    async fn generate_manifests(
+        &self,
+        workspace_root: &PathBuf,
+        approved_images: &[(&str, &str)],
+    ) -> Result<(PathBuf, PathBuf)> {
         let ns = self.test_namespace.clone();
         let controller_gen_pattern = workspace_root.join("bin/controller-gen-*");
         let pattern = controller_gen_pattern.to_str().unwrap();
@@ -796,7 +805,15 @@ impl TestContext {
         args.extend(&["-trustee-image", &trustee_image]);
         args.extend(&["-register-server-image", &reg_srv_img]);
         args.extend(&["-attestation-key-register-image", &att_reg_img]);
-        args.extend(&["-approved-image", &approved_image]);
+        let primary_approved_arg = format!("{},{approved_image}", APPROVED_IMAGE_NAME);
+        args.extend(&["-approved-image", &primary_approved_arg]);
+        let approved_args: Vec<String> = approved_images
+            .iter()
+            .map(|&(n, r)| format!("{n},{r}"))
+            .collect();
+        for arg in &approved_args {
+            args.extend(&["-approved-image", arg]);
+        }
         let manifest_gen = Command::new(&trusted_cluster_gen_path).args(args).output();
         let manifest_gen_output = manifest_gen.await?;
         if !manifest_gen_output.status.success() {
@@ -806,11 +823,13 @@ impl TestContext {
         Ok((crd_temp_dir, rbac_temp_dir))
     }
 
-    async fn apply_operator_manifests(&self) -> Result<()> {
+    async fn apply_operator_manifests(&self, approved_images: &[(&str, &str)]) -> Result<()> {
         let manifests_dir = &self.manifests_dir;
         test_info!(&self.test_name, "Generating manifests in {manifests_dir}");
         let workspace_root = env::current_dir()?.join("..");
-        let (crd_temp_dir, rbac_temp_dir) = self.generate_manifests(&workspace_root).await?;
+        let (crd_temp_dir, rbac_temp_dir) = self
+            .generate_manifests(&workspace_root, approved_images)
+            .await?;
         test_info!(&self.test_name, "Manifests generated successfully");
 
         self.set_certificates().await?;
@@ -955,13 +974,20 @@ impl TestContext {
         if self.delayed_approved_image {
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
-        let approved_image_path = manifests_path.join("approved_image_cr.yaml");
-        let approved_image_str = approved_image_path.to_str().unwrap();
-        kube_apply!(
-            approved_image_str,
-            &self.test_name,
-            "Applying ApprovedImage manifest"
-        );
+        let approved_image_paths = glob(
+            manifests_path
+                .join("approved_image_cr_*.yaml")
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Invalid ApprovedImage manifest path"))?,
+        )?;
+        for approved_image_path in approved_image_paths.filter_map(Result::ok) {
+            let approved_image_str = approved_image_path.to_str().unwrap();
+            kube_apply!(
+                approved_image_str,
+                &self.test_name,
+                "Applying ApprovedImage manifest"
+            );
+        }
 
         let depl_ready = |depl: Option<&Deployment>| {
             let chk_cond = |c: &DeploymentCondition| c.type_ == "Available" && c.status == "True";
@@ -1069,8 +1095,9 @@ macro_rules! virt_test {
 
 #[macro_export]
 macro_rules! setup {
-    () => {{ $crate::TestContext::new(TEST_NAME, false) }};
-    (delayed_approved_image) => {{ $crate::TestContext::new(TEST_NAME, true) }};
+    () => {{ $crate::TestContext::new(TEST_NAME, false, &[]) }};
+    (delayed_approved_image) => {{ $crate::TestContext::new(TEST_NAME, true, &[]) }};
+    ($images:expr) => {{ $crate::TestContext::new(TEST_NAME, false, &$images) }};
 }
 
 async fn setup_test_client() -> Result<Client> {

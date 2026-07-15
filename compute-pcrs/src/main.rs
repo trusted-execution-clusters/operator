@@ -43,12 +43,11 @@ async fn main() -> Result<()> {
     let os_id = get_val("ID")?;
     let os_version_id = get_val("VERSION_ID")?;
 
-    let efivars = format!("/reference-values/efivars/qemu-ovmf/{os_id}-{os_version_id}");
     let mokvars = format!("/reference-values/mok-variables/{os_id}-{os_version_id}");
 
     let pcrs = vec![
         compute_pcr4(&kernels, &esp, false, true),
-        compute_pcr7(Some(&efivars), &esp, true),
+        // TODO: compute pcr7 when platform EFI vars can be elucidated
         compute_pcr14(&mokvars),
     ];
 

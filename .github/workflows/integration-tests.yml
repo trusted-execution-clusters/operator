@@ -72,6 +72,8 @@ jobs:
         run: make push
       - name: "Install KubeVirt"
         run: make install-kubevirt
+      - name: "Pre-pull images"
+        run: make pre-pull-images
       - name: "Run integration tests"
         run: |
           eval $(ssh-agent -s)

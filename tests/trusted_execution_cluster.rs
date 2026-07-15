@@ -4,7 +4,8 @@
 // SPDX-License-Identifier: MIT
 
 use anyhow::Context;
-use compute_pcrs_lib::{Part, Pcr};
+use compute_pcrs_lib::Pcr;
+use compute_pcrs_lib::tpmevents::{TPMEvent, TPMEventID};
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{ConfigMap, Secret};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, OwnerReference};
@@ -15,16 +16,11 @@ use std::time::Duration;
 use tokio::time::timeout;
 use trusted_cluster_operator_lib::conditions::NOT_COMMITTED_REASON_PENDING;
 use trusted_cluster_operator_lib::endpoints::{REGISTER_SERVER_DEPLOYMENT, TRUSTEE_DEPLOYMENT};
-use trusted_cluster_operator_lib::reference_values::ImagePcrs;
 use trusted_cluster_operator_lib::{
     ApprovedImage, AttestationKey, Machine, TrustedExecutionCluster, generate_owner_reference,
 };
+use trusted_cluster_operator_test_utils::constants::*;
 use trusted_cluster_operator_test_utils::*;
-
-const EXPECTED_PCR4: &str = "ff2b357be4a4bc66be796d4e7b2f1f27077dc89b96220aae60b443bcf4672525";
-const TEC_NAME: &str = "trusted-execution-cluster";
-const TRUSTEE_CONFIG_MAP: &str = "trustee-data";
-const RV_JSON_KEY: &str = "reference-values.json";
 
 fn ak_approved(ak: Option<&AttestationKey>) -> bool {
     let is_approved = |c: &Condition| c.type_ == "Approved" && c.status == "True";
@@ -127,88 +123,8 @@ named_test!(
 named_test! {
 async fn test_image_pcrs_configmap_updates() -> anyhow::Result<()> {
     let test_ctx = setup!().await?;
-    let client = test_ctx.client();
-    let namespace = test_ctx.namespace();
 
-    let configmap_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
-    let populated = |cm: Option<&ConfigMap>| {
-        let data = cm.and_then(|cm| cm.data.as_ref());
-        let json = data.and_then(|data| data.get("image-pcrs.json"));
-        let pcrs = json.and_then(|json| serde_json::from_str::<ImagePcrs>(json).ok());
-        pcrs.map(|pcrs| !pcrs.0.is_empty()).unwrap_or(false)
-    };
-    let done = await_condition(configmap_api.clone(), "image-pcrs", populated);
-    let ctx = "waiting for ConfigMap image-pcrs to be populated";
-    timeout(scaled_duration(180), done).await.context(ctx)??;
-
-    let image_pcrs_cm = configmap_api.get("image-pcrs").await?;
-    assert_eq!(image_pcrs_cm.metadata.name.as_deref(), Some("image-pcrs"));
-
-    let data = image_pcrs_cm.data.as_ref()
-        .expect("image-pcrs ConfigMap should have data field");
-
-    assert!(!data.is_empty(), "image-pcrs ConfigMap should have data");
-
-    let image_pcrs_json = data.get("image-pcrs.json")
-        .expect("image-pcrs ConfigMap should have image-pcrs.json key");
-
-    assert!(!image_pcrs_json.is_empty(), "image-pcrs.json should not be empty");
-
-    // Parse the image-pcrs.json using the ImagePcrs structure
-    let image_pcrs: ImagePcrs = serde_json::from_str(image_pcrs_json)
-        .expect("image-pcrs.json should be valid ImagePcrs JSON");
-
-    assert!(!image_pcrs.0.is_empty(), "image-pcrs.json should contain at least one image entry");
-
-    let expected_pcrs = vec![
-        Pcr {
-            id: 4,
-            value: EXPECTED_PCR4.to_string(),
-            parts: vec![
-                Part { name: "EV_EFI_ACTION".to_string(), hash: "3d6772b4f84ed47595d72a2c4c5ffd15f5bb72c7507fe26f2aaee2c69d5633ba".to_string() },
-                Part { name: "EV_SEPARATOR".to_string(), hash: "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119".to_string() },
-                Part { name: "EV_EFI_BOOT_SERVICES_APPLICATION".to_string(), hash: "94896c17d49fc8c8df0cc2836611586edab1615ce7cb58cf13fc5798de56b367".to_string() },
-                Part { name: "EV_EFI_BOOT_SERVICES_APPLICATION".to_string(), hash: "bc6844fc7b59b4f0c7da70a307fc578465411d7a2c34b0f4dc2cc154c873b644".to_string() },
-                Part { name: "EV_EFI_BOOT_SERVICES_APPLICATION".to_string(), hash: "72c613f1b4d60dcf51f82f3458cca246580d23150130ec6751ac6fa62c867364".to_string() },
-            ],
-        },
-        Pcr {
-            id: 7,
-            value: "b3a56a06c03a65277d0a787fcabc1e293eaa5d6dd79398f2dda741f7b874c65d".to_string(),
-            parts: vec![
-                Part { name: "EV_EFI_VARIABLE_DRIVER_CONFIG".to_string(), hash: "ccfc4bb32888a345bc8aeadaba552b627d99348c767681ab3141f5b01e40a40e".to_string() },
-                Part { name: "EV_EFI_VARIABLE_DRIVER_CONFIG".to_string(), hash: "adb6fc232943e39c374bf4782b6c697f43c39fca1f4b51dfceda21164e19a893".to_string() },
-                Part { name: "EV_EFI_VARIABLE_DRIVER_CONFIG".to_string(), hash: "b5432fe20c624811cb0296391bfdf948ebd02f0705ab8229bea09774023f0ebf".to_string() },
-                Part { name: "EV_EFI_VARIABLE_DRIVER_CONFIG".to_string(), hash: "4313e43de720194a0eabf4d6415d42b5a03a34fdc47bb1fc924cc4e665e6893d".to_string() },
-                Part { name: "EV_EFI_VARIABLE_DRIVER_CONFIG".to_string(), hash: "001004ba58a184f09be6c1f4ec75a246cc2eefa9637b48ee428b6aa9bce48c55".to_string() },
-                Part { name: "EV_SEPARATOR".to_string(), hash: "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119".to_string() },
-                Part { name: "EV_EFI_VARIABLE_AUTHORITY".to_string(), hash: "4d4a8e2c74133bbdc01a16eaf2dbb5d575afeb36f5d8dfcf609ae043909e2ee9".to_string() },
-                Part { name: "EV_EFI_VARIABLE_AUTHORITY".to_string(), hash: "e8e9578f5951ef16b1c1aa18ef02944b8375ec45ed4b5d8cdb30428db4a31016".to_string() },
-                Part { name: "EV_EFI_VARIABLE_AUTHORITY".to_string(), hash: "ad5901fd581e6640c742c488083b9ac2c48255bd28a16c106c6f9df52702ee3f".to_string() },
-            ],
-        },
-        Pcr {
-            id: 14,
-            value: "17cdefd9548f4383b67a37a901673bf3c8ded6f619d36c8007562de1d93c81cc".to_string(),
-            parts: vec![
-                Part { name: "EV_IPL".to_string(), hash: "e8e48e3ad10bc243341b4663c0057aef0ec7894ccc9ecb0598f0830fa57f7220".to_string() },
-                Part { name: "EV_IPL".to_string(), hash: "8d8a3aae50d5d25838c95c034aadce7b548c9a952eb7925e366eda537c59c3b0".to_string() },
-                Part { name: "EV_IPL".to_string(), hash: "4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a".to_string() },
-            ],
-        },
-    ];
-
-    let mut found_expected_pcrs = false;
-    for (_image_ref, image_data) in image_pcrs.0.iter() {
-        if compare_pcrs(&image_data.pcrs, &expected_pcrs) {
-            found_expected_pcrs = true;
-            break;
-        }
-    }
-
-    assert!(found_expected_pcrs,
-        "At least one image should have the expected PCR values");
-
+    test_ctx.verify_expected_pcrs(&[&primary_pcrs!()]).await?;
     test_ctx.cleanup().await?;
 
     Ok(())
@@ -228,7 +144,7 @@ async fn test_image_disallow() -> anyhow::Result<()> {
     let chk_removed = |cm: Option<&ConfigMap>| {
         let data = cm.and_then(|cm| cm.data.as_ref());
         let json = data.and_then(|data| data.get(RV_JSON_KEY));
-        json.map(|json| !json.contains(EXPECTED_PCR4)).unwrap_or(false)
+        json.map(|json| !json.contains(PRIMARY_PCR4_HASH)).unwrap_or(false)
     };
     let rv_removed = await_condition(configmap_api, TRUSTEE_CONFIG_MAP, chk_removed);
     let ctx = format!("waiting for ConfigMap {TRUSTEE_CONFIG_MAP} to not contain PCR value");
@@ -425,12 +341,55 @@ async fn test_approved_image_readoption() -> anyhow::Result<()> {
     let chk_added = |cm: Option<&ConfigMap>| {
         let data = cm.and_then(|cm| cm.data.as_ref());
         let json = data.and_then(|data| data.get(RV_JSON_KEY));
-        json.map(|json| json.contains(EXPECTED_PCR4)).unwrap_or(false)
+        json.map(|json| json.contains(PRIMARY_PCR4_HASH)).unwrap_or(false)
     };
     let rv_added = await_condition(configmaps, TRUSTEE_CONFIG_MAP, chk_added);
     let ctx = format!("waiting for ConfigMap {TRUSTEE_CONFIG_MAP} to contain PCR value");
     timeout(scaled_duration(180), rv_added).await.context(ctx)??;
     test_ctx.info("Reference values regenerated");
+
+    test_ctx.cleanup().await?;
+    Ok(())
+}
+}
+
+named_test! {
+async fn test_combined_image_pcrs_configmap_updates() -> anyhow::Result<()> {
+    let test_ctx = setup!([(COMBINE_PCRS_UPDATE_TEST_IMAGE_NAME, COMBINE_PCRS_UPDATE_TEST_IMAGE_REF)]).await?;
+    let client = test_ctx.client();
+    let namespace = test_ctx.namespace();
+
+    // In practical terms it emulates a grub + kernel upgrade
+    test_ctx.verify_expected_pcrs(&[&primary_pcrs!(), &secondary_pcrs!()]).await?;
+
+    let expected_ref_values = [
+        // PCR4
+        PRIMARY_PCR4_HASH,
+        MIX_PRIMARY_BOOT_SECONDARY_KERNEL_PCR4_HASH,
+        MIX_SECONDARY_BOOT_PRIMARY_KERNEL_PCR4_HASH,
+        SECONDARY_PCR4_HASH,
+        // PCR14
+        PCR14_HASH,
+    ];
+
+    let configmaps: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+    let all_expected_pcrs = |cm: Option<&ConfigMap>| {
+        let data = cm.and_then(|cm| cm.data.as_ref());
+        let rv_json = data.and_then(|data| data.get("reference-values.json"));
+        if let Some(reference_values) = rv_json {
+            for value in expected_ref_values {
+                if !reference_values.contains(value) {
+                    return false;
+                }
+            }
+        } else {
+            return false;
+        }
+        true
+    };
+    let done = await_condition(configmaps, "trustee-data", all_expected_pcrs);
+    let ctx = "waiting for ConfigMap trustee-data to contain all expected pcrs";
+    timeout(scaled_duration(180), done).await.context(ctx)??;
 
     test_ctx.cleanup().await?;
     Ok(())

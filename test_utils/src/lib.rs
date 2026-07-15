@@ -1084,65 +1084,19 @@ impl TestContext {
             let data = cm.and_then(|cm| cm.data.as_ref());
             let json = data.and_then(|data| data.get("image-pcrs.json"));
             let pcrs = json.and_then(|json| serde_json::from_str::<ImagePcrs>(json).ok());
-            pcrs.map(|pcrs| !pcrs.0.is_empty()).unwrap_or(false)
+            pcrs.map(|pcrs| {
+                pcrs.0.len() == expected_pcrs.len()
+                    && pcrs.0.values().all(|image_data| {
+                        expected_pcrs
+                            .iter()
+                            .any(|exp| compare_pcrs(&image_data.pcrs, exp))
+                    })
+            })
+            .unwrap_or(false)
         };
         let done = await_condition(configmap_api.clone(), "image-pcrs", populated);
-        let ctx = "waiting for ConfigMap image-pcrs to be populated";
+        let ctx = "waiting for ConfigMap image-pcrs to be populated with expected PCR values";
         timeout(scaled_duration(180), done).await.context(ctx)??;
-
-        let image_pcrs_cm = configmap_api.get("image-pcrs").await?;
-        assert_eq!(image_pcrs_cm.metadata.name.as_deref(), Some("image-pcrs"));
-
-        let data = image_pcrs_cm
-            .data
-            .as_ref()
-            .expect("image-pcrs ConfigMap should have data field");
-
-        assert!(!data.is_empty(), "image-pcrs ConfigMap should have data");
-
-        let image_pcrs_json = data
-            .get("image-pcrs.json")
-            .expect("image-pcrs ConfigMap should have image-pcrs.json key");
-
-        assert!(
-            !image_pcrs_json.is_empty(),
-            "image-pcrs.json should not be empty"
-        );
-
-        // Parse the image-pcrs.json using the ImagePcrs structure
-        let image_pcrs: ImagePcrs = serde_json::from_str(image_pcrs_json)
-            .expect("image-pcrs.json should be valid ImagePcrs JSON");
-
-        assert!(
-            !image_pcrs.0.is_empty(),
-            "image-pcrs.json should contain at least one image entry"
-        );
-
-        test_info!(
-            &self.test_name,
-            "Checking into {} image results:",
-            image_pcrs.0.len()
-        );
-        let mut found_expected_pcrs = false;
-
-        assert_eq!(
-            image_pcrs.0.len(),
-            expected_pcrs.len(),
-            "image-pcrs.json should contain {} image entries",
-            expected_pcrs.len()
-        );
-
-        for (i, (_image_ref, image_data)) in image_pcrs.0.iter().enumerate() {
-            if compare_pcrs(&image_data.pcrs, expected_pcrs[i]) {
-                found_expected_pcrs = true;
-                break;
-            }
-        }
-
-        assert!(
-            found_expected_pcrs,
-            "At least one image should have the expected PCR values"
-        );
 
         Ok(())
     }

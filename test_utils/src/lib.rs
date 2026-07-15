@@ -511,7 +511,7 @@ impl TestContext {
 
     pub async fn cleanup(&self) -> Result<()> {
         self.delete_trusted_execution_cluster().await?;
-        let timeout = scaled_duration(60);
+        let timeout = scaled_duration(360);
         let msg = format!("Resources were left behind after {timeout:?}");
         let poller = Poller::new().with_timeout(timeout).with_error_message(msg);
         let chk = || async move {

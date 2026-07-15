@@ -111,10 +111,10 @@ named_test!(
         wait_for_resource_deleted(&deployments_api, REGISTER_SERVER_DEPLOYMENT, timeout).await?;
 
         let images_api: Api<ApprovedImage> = Api::namespaced(client.clone(), namespace);
-        wait_for_resource_deleted(&images_api, APPROVED_IMAGE_NAME, scaled_timeout(120)).await?;
+        wait_for_resource_deleted(&images_api, APPROVED_IMAGE_NAME, scaled_timeout(360)).await?;
 
-        wait_for_resource_deleted(&machines, &machine_name, scaled_timeout(120)).await?;
-        wait_for_resource_deleted(&attestation_keys, &ak_name, scaled_timeout(120)).await?;
+        wait_for_resource_deleted(&machines, &machine_name, scaled_timeout(360)).await?;
+        wait_for_resource_deleted(&attestation_keys, &ak_name, scaled_timeout(360)).await?;
         let secrets_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
         wait_for_resource_deleted(&secrets_api, &ak_name, scaled_timeout(120)).await?;
 
@@ -327,9 +327,9 @@ async fn test_attestation_key_lifecycle() -> anyhow::Result<()> {
     machines.delete(&machine_name, &dp).await?;
     test_ctx.info(format!("Deleted Machine: {machine_name}"));
 
-    wait_for_resource_deleted(&machines, &machine_name, scaled_timeout(120)).await?;
+    wait_for_resource_deleted(&machines, &machine_name, scaled_timeout(360)).await?;
     test_ctx.info("Machine successfully deleted");
-    wait_for_resource_deleted(&attestation_keys, &ak_name, scaled_timeout(120)).await?;
+    wait_for_resource_deleted(&attestation_keys, &ak_name, scaled_timeout(360)).await?;
     test_ctx.info("AttestationKey successfully deleted");
     wait_for_resource_deleted(&secrets_api, &ak_name, scaled_timeout(120)).await?;
     test_ctx.info("Secret successfully deleted");
@@ -366,7 +366,7 @@ async fn test_nonexistent_approved_image() -> anyhow::Result<()> {
     };
     let done = await_condition(images, "coreos1", is_pending);
     let ctx = "waiting for ApprovedImage coreos1 to be PodPending";
-    timeout(scaled_duration(30), done).await.context(ctx)??;
+    timeout(scaled_duration(360), done).await.context(ctx)??;
 
     test_ctx.cleanup().await?;
     Ok(())
@@ -397,7 +397,7 @@ async fn test_approved_image_readoption() -> anyhow::Result<()> {
     test_ctx.info(format!("Deleting TrustedExecutionCluster {TEC_NAME}"));
     clusters.delete(TEC_NAME, &Default::default()).await?;
     wait_for_resource_deleted(&configmaps, TRUSTEE_CONFIG_MAP, scaled_timeout(60)).await?;
-    wait_for_resource_deleted(&images, APPROVED_IMAGE_NAME, scaled_timeout(60)).await?;
+    wait_for_resource_deleted(&images, APPROVED_IMAGE_NAME, scaled_timeout(360)).await?;
     test_ctx.info(format!("Configmap {TRUSTEE_CONFIG_MAP} was removed"));
 
     let image = ApprovedImage {

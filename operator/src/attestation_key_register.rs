@@ -25,7 +25,7 @@ use kube::{
         watcher,
     },
 };
-use log::info;
+use log::{info, warn};
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -195,10 +195,10 @@ async fn ak_reconcile(
     for machine in ctx.machine_store.state() {
         if ak.spec.uuid.as_ref() == Some(&machine.spec.id) {
             approve_ak(&ak, &machine, &ctx).await?;
-            return Ok(Action::await_change());
+            return Ok(Action::requeue(Duration::from_secs(300)));
         }
     }
-    Ok(Action::await_change())
+    Ok(Action::requeue(Duration::from_secs(300)))
 }
 
 async fn machine_reconcile(
@@ -216,7 +216,7 @@ async fn machine_reconcile(
             "Machine {} is being deleted, updating attestation key volumes",
             machine.metadata.name.clone().unwrap_or_default()
         );
-        return Ok(Action::await_change());
+        return Ok(Action::requeue(Duration::from_secs(60)));
     }
 
     for ak in ctx.ak_store.state() {
@@ -224,10 +224,10 @@ async fn machine_reconcile(
             && *ak_uuid == machine.spec.id
         {
             approve_ak(&ak, &machine, &ctx).await?;
-            return Ok(Action::await_change());
+            return Ok(Action::requeue(Duration::from_secs(300)));
         }
     }
-    Ok(Action::await_change())
+    Ok(Action::requeue(Duration::from_secs(300)))
 }
 
 async fn approve_ak(ak: &AttestationKey, machine: &Machine, ctx: &AkContextData) -> Result<()> {
@@ -333,9 +333,9 @@ async fn secret_reconcile(
                 // On creation/update, just update the trustee deployment volumes
                 trustee::update_attestation_keys(&ctx)
                     .await
-                    .map(|_| Action::await_change())
+                    .map(|_| Action::requeue(Duration::from_secs(300)))
                     .map_err(|e| {
-                        eprintln!("Error updating attestation key volumes on secret apply: {e}");
+                        warn!("Error updating attestation key volumes on secret apply: {e}");
                         finalizer::Error::<ControllerError>::ApplyFailed(e.into())
                     })
             }
@@ -347,11 +347,9 @@ async fn secret_reconcile(
                 // Update trustee deployment - secrets with deletion_timestamp will be filtered out
                 trustee::update_attestation_keys(&ctx)
                     .await
-                    .map(|_| Action::await_change())
+                    .map(|_| Action::requeue(Duration::from_secs(300)))
                     .map_err(|e| {
-                        eprintln!(
-                            "Error updating attestation key volumes during secret deletion: {e}"
-                        );
+                        warn!("Error updating attestation key volumes during secret deletion: {e}");
                         finalizer::Error::<ControllerError>::CleanupFailed(e.into())
                     })
             }

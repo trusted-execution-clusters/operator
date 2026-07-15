@@ -295,7 +295,7 @@ async fn image_add_reconcile(
         return Ok(Action::requeue(Duration::from_secs(5)));
     }
     let (action, reason) = match handle_new_image(client.clone(), image).await {
-        Ok(reason) => (Action::await_change(), reason),
+        Ok(reason) => (Action::requeue(Duration::from_secs(300)), reason),
         Err(e) => {
             warn!("PCR computation for {name} failed: {e}");
             let action = Action::requeue(Duration::from_secs(60));
@@ -324,7 +324,7 @@ async fn image_remove_reconcile(
     let name = image.metadata.name.as_ref().unwrap_or(&default);
     if cluster.is_none() {
         info!("No TrustedExecutionCluster found, skipping disallow_image for {name}");
-        return Ok(Action::await_change());
+        return Ok(Action::requeue(Duration::from_secs(60)));
     }
     let cluster = cluster.unwrap();
     let tec_name = cluster.metadata.name.unwrap_or("<no name>".to_string());
@@ -333,16 +333,19 @@ async fn image_remove_reconcile(
             "TrustedExecutionCluster {tec_name} is being deleted, \
              skipping disallow_image for {name}"
         );
-        return Ok(Action::await_change());
+        return Ok(Action::requeue(Duration::from_secs(60)));
     }
     disallow_image(client, name).await?;
-    Ok(Action::await_change())
+    Ok(Action::requeue(Duration::from_secs(60)))
 }
 
 pub async fn launch_rv_image_controller(client: Client) {
     let images: Api<ApprovedImage> = Api::default_namespaced(client.clone());
+    let jobs: Api<Job> = Api::default_namespaced(client.clone());
+    let wc = watcher::Config::default().labels(&format!("{JOB_LABEL_KEY}={PCR_COMMAND_NAME}"));
     tokio::spawn(
         Controller::new(images, Default::default())
+            .owns(jobs, wc)
             .run(image_reconcile, controller_error_policy, Arc::new(client))
             .for_each(controller_info),
     );

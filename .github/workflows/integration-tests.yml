@@ -69,7 +69,7 @@ jobs:
       - name: "Create KinD cluster"
         run: make cluster-up
       - name: "Build and push images"
-        run: make push
+        run: make DELETE_AFTER_PUSH=true push
       - name: "Install KubeVirt"
         run: make install-kubevirt
       - name: "Run integration tests"

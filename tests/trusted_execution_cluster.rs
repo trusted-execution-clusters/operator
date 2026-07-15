@@ -352,3 +352,46 @@ async fn test_approved_image_readoption() -> anyhow::Result<()> {
     Ok(())
 }
 }
+
+named_test! {
+async fn test_combined_image_pcrs_configmap_updates() -> anyhow::Result<()> {
+    let test_ctx = setup!([(COMBINE_PCRS_UPDATE_TEST_IMAGE_NAME, COMBINE_PCRS_UPDATE_TEST_IMAGE_REF)]).await?;
+    let client = test_ctx.client();
+    let namespace = test_ctx.namespace();
+
+    // In practical terms it emulates a grub + kernel upgrade
+    test_ctx.verify_expected_pcrs(&[&primary_pcrs!(), &secondary_pcrs!()]).await?;
+
+    let expected_ref_values = [
+        // PCR4
+        PRIMARY_PCR4_HASH,
+        MIX_PRIMARY_BOOT_SECONDARY_KERNEL_PCR4_HASH,
+        MIX_SECONDARY_BOOT_PRIMARY_KERNEL_PCR4_HASH,
+        SECONDARY_PCR4_HASH,
+        // PCR14
+        PCR14_HASH,
+    ];
+
+    let configmaps: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+    let all_expected_pcrs = |cm: Option<&ConfigMap>| {
+        let data = cm.and_then(|cm| cm.data.as_ref());
+        let rv_json = data.and_then(|data| data.get("reference-values.json"));
+        if let Some(reference_values) = rv_json {
+            for value in expected_ref_values {
+                if !reference_values.contains(value) {
+                    return false;
+                }
+            }
+        } else {
+            return false;
+        }
+        true
+    };
+    let done = await_condition(configmaps, "trustee-data", all_expected_pcrs);
+    let ctx = "waiting for ConfigMap trustee-data to contain all expected pcrs";
+    timeout(scaled_duration(180), done).await.context(ctx)??;
+
+    test_ctx.cleanup().await?;
+    Ok(())
+}
+}

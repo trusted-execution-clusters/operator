@@ -7,9 +7,23 @@ pub const TRUSTEE_CONFIG_MAP: &str = "trustee-data";
 pub const RV_JSON_KEY: &str = "reference-values.json";
 
 pub const APPROVED_IMAGE_NAME: &str = "coreos-approved-primary";
+pub const COMBINE_PCRS_UPDATE_TEST_IMAGE_NAME: &str = "coreos-test-update-combination";
+// TODO: This image does not contain a custom ignition, neither a clevis pin.
+//       It is just right to check that the operator fills the expected trustee
+//       reference values in the integration test covering PCR combination.
+//       However, it is not an image that supports attestation and so it will
+//       always boot, even if reference values or policies were not configured
+//       properly.
+pub const COMBINE_PCRS_UPDATE_TEST_IMAGE_REF: &str = "quay.io/trusted-execution-clusters/fedora-coreos@sha256:372a5db90a8695fafc2869d438bacd7f0ef7fd84f63746a450bfcd4b8b64ae83";
 
 pub const PRIMARY_PCR4_HASH: &str =
     "ff2b357be4a4bc66be796d4e7b2f1f27077dc89b96220aae60b443bcf4672525";
+pub const SECONDARY_PCR4_HASH: &str =
+    "37517a1f76c4d5cf615f4690921c732ad31359aac55f3aaf66d65a8ed38655a9";
+pub const MIX_PRIMARY_BOOT_SECONDARY_KERNEL_PCR4_HASH: &str =
+    "0c4e52c0bc5d2fedbf83b2fee82664dbe5347a79cfb2cbcb9a37f64211add6e8";
+pub const MIX_SECONDARY_BOOT_PRIMARY_KERNEL_PCR4_HASH: &str =
+    "cc5a5360e64b25718be370ca2056645a9ba9e9bae33df08308d6b8e05b8ebb87";
 // PCR7 is not used for attestation yet. This constant is only consumed by
 // unit tests.
 pub const PCR7_HASH: &str = "b3a56a06c03a65277d0a787fcabc1e293eaa5d6dd79398f2dda741f7b874c65d";
@@ -23,6 +37,11 @@ pub const PRIMARY_GRUB_HASH: &str =
     "bc6844fc7b59b4f0c7da70a307fc578465411d7a2c34b0f4dc2cc154c873b644";
 pub const PRIMARY_KERNEL_HASH: &str =
     "72c613f1b4d60dcf51f82f3458cca246580d23150130ec6751ac6fa62c867364";
+pub const SECONDARY_SHIM_HASH: &str = PRIMARY_SHIM_HASH;
+pub const SECONDARY_GRUB_HASH: &str =
+    "f45c2c974192366a5391e077c3cbf91e735e86eba2037fd86a1f1501818f73f4";
+pub const SECONDARY_KERNEL_HASH: &str =
+    "f31e645e5e9ed131eea5dca0a18893a21e5625b4a56314fa39587ddc33a7fa91";
 
 #[macro_export]
 macro_rules! pcr4_ev_efi_action_event {
@@ -249,4 +268,16 @@ macro_rules! pcrs {
 #[macro_export]
 macro_rules! primary_pcrs {
     () => {{ pcrs!(primary_pcr4!()) }};
+}
+
+#[macro_export]
+macro_rules! secondary_pcrs {
+    () => {{
+        pcrs!(pcr4!(
+            SECONDARY_PCR4_HASH,
+            SECONDARY_SHIM_HASH,
+            SECONDARY_GRUB_HASH,
+            SECONDARY_KERNEL_HASH
+        ))
+    }};
 }

@@ -32,6 +32,7 @@ use trusted_cluster_operator_lib::{TrustedExecutionCluster, endpoints::*, images
 
 pub mod timer;
 pub use timer::Poller;
+pub mod constants;
 pub mod mock_client;
 
 #[cfg(feature = "virtualization")]
@@ -59,7 +60,6 @@ const ATT_REG_SECRET: &str = "att-reg-secret";
 const REG_CERT: &str = "reg-srv-cert";
 const TRUSTEE_CERT: &str = "trustee-cert";
 const ATT_REG_CERT: &str = "att-reg-cert";
-pub const APPROVED_IMAGE_NAME: &str = "coreos-approved-primary";
 
 pub fn compare_pcrs(actual: &[Pcr], expected: &[Pcr]) -> bool {
     if actual.len() != expected.len() {
@@ -806,7 +806,7 @@ impl TestContext {
         args.extend(&["-trustee-image", &trustee_image]);
         args.extend(&["-register-server-image", &reg_srv_img]);
         args.extend(&["-attestation-key-register-image", &att_reg_img]);
-        let primary_approved_arg = format!("{},{approved_image}", APPROVED_IMAGE_NAME);
+        let primary_approved_arg = format!("{},{approved_image}", constants::APPROVED_IMAGE_NAME);
         args.extend(&["-approved-image", &primary_approved_arg]);
         let approved_args: Vec<String> = approved_images
             .iter()
@@ -1053,7 +1053,10 @@ impl TestContext {
         let configmap_api: Api<ConfigMap> = Api::namespaced(self.client.clone(), ns);
         wait_for_resource_created(&configmap_api, "image-pcrs", scaled_timeout(60)).await?;
 
-        let info = format!("Waiting for ApprovedImage {APPROVED_IMAGE_NAME} to be Committed");
+        let info = format!(
+            "Waiting for ApprovedImage {} to be Committed",
+            constants::APPROVED_IMAGE_NAME
+        );
         test_info!(&self.test_name, "{info}");
         let images: Api<ApprovedImage> = Api::namespaced(self.client.clone(), ns);
         let image_ready = |img: Option<&ApprovedImage>| {
@@ -1063,8 +1066,11 @@ impl TestContext {
             let chk = |img: &ApprovedImage| img.status.as_ref().and_then(chk_status);
             img.and_then(chk).unwrap_or(false)
         };
-        let done = await_condition(images.clone(), APPROVED_IMAGE_NAME, image_ready);
-        let ctx = format!("waiting for ApprovedImage {APPROVED_IMAGE_NAME} to be Committed");
+        let done = await_condition(images.clone(), constants::APPROVED_IMAGE_NAME, image_ready);
+        let ctx = format!(
+            "waiting for ApprovedImage {} to be Committed",
+            constants::APPROVED_IMAGE_NAME
+        );
         timeout(scaled_duration(300), done).await.context(ctx)??;
         Ok(())
     }

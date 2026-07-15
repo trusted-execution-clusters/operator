@@ -19,12 +19,8 @@ use trusted_cluster_operator_lib::endpoints::{REGISTER_SERVER_DEPLOYMENT, TRUSTE
 use trusted_cluster_operator_lib::{
     ApprovedImage, AttestationKey, Machine, TrustedExecutionCluster, generate_owner_reference,
 };
+use trusted_cluster_operator_test_utils::constants::*;
 use trusted_cluster_operator_test_utils::*;
-
-const EXPECTED_PCR4: &str = "ff2b357be4a4bc66be796d4e7b2f1f27077dc89b96220aae60b443bcf4672525";
-const TEC_NAME: &str = "trusted-execution-cluster";
-const TRUSTEE_CONFIG_MAP: &str = "trustee-data";
-const RV_JSON_KEY: &str = "reference-values.json";
 
 fn ak_approved(ak: Option<&AttestationKey>) -> bool {
     let is_approved = |c: &Condition| c.type_ == "Approved" && c.status == "True";
@@ -128,98 +124,7 @@ named_test! {
 async fn test_image_pcrs_configmap_updates() -> anyhow::Result<()> {
     let test_ctx = setup!().await?;
 
-    test_ctx.verify_expected_pcrs(
-        &[&[
-            Pcr {
-                id: 4,
-                value: hex::decode(EXPECTED_PCR4).unwrap(),
-                events: vec![
-                    TPMEvent {
-                        pcr: 4,
-                        name: "EV_EFI_ACTION".to_string(),
-                        hash: hex::decode(
-                            "3d6772b4f84ed47595d72a2c4c5ffd15f5bb72c7507fe26f2aaee2c69d5633ba",
-                        )
-                        .unwrap(),
-                        id: TPMEventID::Pcr4EfiCall,
-                    },
-                    TPMEvent {
-                        pcr: 4,
-                        name: "EV_SEPARATOR".to_string(),
-                        hash: hex::decode(
-                            "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
-                        )
-                        .unwrap(),
-                        id: TPMEventID::Pcr4Separator,
-                    },
-                    TPMEvent {
-                        pcr: 4,
-                        name: "EV_EFI_BOOT_SERVICES_APPLICATION".to_string(),
-                        hash: hex::decode(
-                            "94896c17d49fc8c8df0cc2836611586edab1615ce7cb58cf13fc5798de56b367",
-                        )
-                        .unwrap(),
-                        id: TPMEventID::Pcr4Shim,
-                    },
-                    TPMEvent {
-                        pcr: 4,
-                        name: "EV_EFI_BOOT_SERVICES_APPLICATION".to_string(),
-                        hash: hex::decode(
-                            "bc6844fc7b59b4f0c7da70a307fc578465411d7a2c34b0f4dc2cc154c873b644",
-                        )
-                        .unwrap(),
-                        id: TPMEventID::Pcr4Grub,
-                    },
-                    TPMEvent {
-                        pcr: 4,
-                        name: "EV_EFI_BOOT_SERVICES_APPLICATION".to_string(),
-                        hash: hex::decode(
-                            "2b1dc59bc61dbbc3db11a6f3b0708c948efd46cceb7f6c8ea2024b8d1b8c829a",
-                        )
-                        .unwrap(),
-                        id: TPMEventID::Pcr4Vmlinuz,
-                    },
-                ],
-            },
-            Pcr {
-                id: 14,
-                value: hex::decode(
-                    "17cdefd9548f4383b67a37a901673bf3c8ded6f619d36c8007562de1d93c81cc",
-                )
-                .unwrap(),
-                events: vec![
-                    TPMEvent {
-                        pcr: 14,
-                        name: "EV_IPL".to_string(),
-                        hash: hex::decode(
-                            "e8e48e3ad10bc243341b4663c0057aef0ec7894ccc9ecb0598f0830fa57f7220",
-                        )
-                        .unwrap(),
-                        id: TPMEventID::Pcr14MokList,
-                    },
-                    TPMEvent {
-                        pcr: 14,
-                        name: "EV_IPL".to_string(),
-                        hash: hex::decode(
-                            "8d8a3aae50d5d25838c95c034aadce7b548c9a952eb7925e366eda537c59c3b0",
-                        )
-                        .unwrap(),
-                        id: TPMEventID::Pcr14MokListX,
-                    },
-                    TPMEvent {
-                        pcr: 14,
-                        name: "EV_IPL".to_string(),
-                        hash: hex::decode(
-                            "4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a",
-                        )
-                        .unwrap(),
-                        id: TPMEventID::Pcr14MokListTrusted,
-                    },
-                ],
-            },
-        ]]
-    ).await?;
-
+    test_ctx.verify_expected_pcrs(&[&primary_pcrs!()]).await?;
     test_ctx.cleanup().await?;
 
     Ok(())
@@ -239,7 +144,7 @@ async fn test_image_disallow() -> anyhow::Result<()> {
     let chk_removed = |cm: Option<&ConfigMap>| {
         let data = cm.and_then(|cm| cm.data.as_ref());
         let json = data.and_then(|data| data.get(RV_JSON_KEY));
-        json.map(|json| !json.contains(EXPECTED_PCR4)).unwrap_or(false)
+        json.map(|json| !json.contains(PRIMARY_PCR4_HASH)).unwrap_or(false)
     };
     let rv_removed = await_condition(configmap_api, TRUSTEE_CONFIG_MAP, chk_removed);
     let ctx = format!("waiting for ConfigMap {TRUSTEE_CONFIG_MAP} to not contain PCR value");
@@ -436,7 +341,7 @@ async fn test_approved_image_readoption() -> anyhow::Result<()> {
     let chk_added = |cm: Option<&ConfigMap>| {
         let data = cm.and_then(|cm| cm.data.as_ref());
         let json = data.and_then(|data| data.get(RV_JSON_KEY));
-        json.map(|json| json.contains(EXPECTED_PCR4)).unwrap_or(false)
+        json.map(|json| json.contains(PRIMARY_PCR4_HASH)).unwrap_or(false)
     };
     let rv_added = await_condition(configmaps, TRUSTEE_CONFIG_MAP, chk_added);
     let ctx = format!("waiting for ConfigMap {TRUSTEE_CONFIG_MAP} to contain PCR value");

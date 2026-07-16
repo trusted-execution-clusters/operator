@@ -31,7 +31,7 @@ and agents should suggest when they detect
 
 - The operator's crate name is `operator`, test_utils's crate name is `trusted-cluster-operator-test-utils`.
 - Use MCPs when available
-  - Prefer the MCP LSP over `grep`
-  - Prefer the k8s LSP over `kubectl`.
+  - Prefer the LSP MCP over `grep`
+  - Prefer the k8s MCP over `kubectl`.
 - Reuse, and check for other uses of a similar pattern. When functionality can be moved out of a function for reuse, commit the generalization before the new use.
 - Include lint-compatible code style when writing, not as an afterthought.

@@ -34,7 +34,7 @@ REG_SERVER_IMAGE=$(REGISTRY)/registration-server:$(TAG)
 ATTESTATION_KEY_REGISTER_IMAGE=$(REGISTRY)/attestation-key-register:$(TAG)
 
 TRUSTEE_IMAGE ?= quay.io/trusted-execution-clusters/key-broker-service:0.20-pad-token
-TEST_IMAGE ?= quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:42.20260622
+TEST_IMAGE ?= quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:42.20251012.2.0-console-fwd
 
 # tagged as 42.20251012.2.0
 APPROVED_IMAGE ?= quay.io/trusted-execution-clusters/fedora-coreos@sha256:6997f51fd27d1be1b5fc2e6cc3ebf16c17eb94d819b5d44ea8d6cf5f826ee773

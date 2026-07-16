@@ -29,7 +29,7 @@ COMPUTE_PCRS_IMAGE=$(REGISTRY)/compute-pcrs:$(TAG)
 REG_SERVER_IMAGE=$(REGISTRY)/registration-server:$(TAG)
 ATTESTATION_KEY_REGISTER_IMAGE=$(REGISTRY)/attestation-key-register:$(TAG)
 
-TRUSTEE_IMAGE ?= quay.io/trusted-execution-clusters/key-broker-service:v0.20.0
+TRUSTEE_IMAGE ?= quay.io/trusted-execution-clusters/key-broker-service:0.20-pad-token
 TEST_IMAGE ?= quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:42.20260622
 
 # tagged as 42.20251012.2.0

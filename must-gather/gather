@@ -31,3 +31,7 @@ for ns in $(${KUBECTL} get namespaces -o jsonpath={..metadata.name}); do
 		           "${COLLECTION_PATH}/logs/${pod}-${ns}.log"
 	done
 done
+
+for pod in $(${KUBECTL} get pods -o jsonpath={..metadata.name} -n kube-system); do
+  ${KUBECTL} logs "$pod" -n kube-system &> "${COLLECTION_PATH}/logs/${pod}-kube-system.log"
+done

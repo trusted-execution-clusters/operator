@@ -3,7 +3,10 @@
 #
 # SPDX-License-Identifier: CC0-1.0
 
-.PHONY: all build build-tools crds-rs generate manifests cluster-up cluster-down image push install-trustee install clean fmt-check clippy lint test test-release release-tarball
+.PHONY: all build build-tools crds-rs generate manifests cluster-up cluster-down \
+	install-trustee install clean fmt-check clippy lint test test-release release-tarball \
+	operator-image compute-pcrs-image reg-server-image attestation-key-register-image image \
+	push-operator push-compute-pcrs push-reg-server push-attestation-key-register push \
 
 SHELL := /bin/bash
 
@@ -24,6 +27,7 @@ KOPIUM ?= $(LOCALBIN)/kopium-$(KOPIUM_VERSION)
 REGISTRY ?= quay.io/trusted-execution-clusters
 TAG ?= latest
 PUSH_FLAGS ?=
+DELETE_AFTER_PUSH ?= false
 OPERATOR_IMAGE ?= $(REGISTRY)/trusted-cluster-operator:$(TAG)
 COMPUTE_PCRS_IMAGE=$(REGISTRY)/compute-pcrs:$(TAG)
 REG_SERVER_IMAGE=$(REGISTRY)/registration-server:$(TAG)
@@ -111,11 +115,21 @@ attestation-key-register-image:
 
 image: operator-image compute-pcrs-image reg-server-image attestation-key-register-image
 
-push: image
-	$(CONTAINER_CLI) push $(OPERATOR_IMAGE) $(PUSH_FLAGS)
-	$(CONTAINER_CLI) push $(COMPUTE_PCRS_IMAGE) $(PUSH_FLAGS)
-	$(CONTAINER_CLI) push $(REG_SERVER_IMAGE) $(PUSH_FLAGS)
-	$(CONTAINER_CLI) push $(ATTESTATION_KEY_REGISTER_IMAGE) $(PUSH_FLAGS)
+define push-image
+$(CONTAINER_CLI) push $(1) $(PUSH_FLAGS)
+$(if $(filter true,$(DELETE_AFTER_PUSH)),$(CONTAINER_CLI) rmi $(1))
+endef
+
+push-operator: operator-image
+	$(call push-image,$(OPERATOR_IMAGE))
+push-compute-pcrs: compute-pcrs-image
+	$(call push-image,$(COMPUTE_PCRS_IMAGE))
+push-reg-server: reg-server-image
+	$(call push-image,$(REG_SERVER_IMAGE))
+push-attestation-key-register: attestation-key-register-image
+	$(call push-image,$(ATTESTATION_KEY_REGISTER_IMAGE))
+
+push: push-operator push-compute-pcrs push-reg-server push-attestation-key-register
 
 release-tarball: manifests
 	tar -cf trusted-execution-operator-$(TAG).tar config

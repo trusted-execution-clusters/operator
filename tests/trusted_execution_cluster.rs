@@ -4,26 +4,30 @@
 // SPDX-License-Identifier: MIT
 
 use anyhow::Context;
+use chrono::Utc;
 use compute_pcrs_lib::{Part, Pcr};
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{ConfigMap, Secret};
+use k8s_openapi::api::core::v1::{ConfigMap, Pod, Secret};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, OwnerReference};
-use kube::api::ObjectMeta;
+use kube::api::{ListParams, LogParams, Patch, PatchParams};
 use kube::runtime::wait::await_condition;
 use kube::{Api, api::DeleteParams};
+use serde_json::json;
 use std::time::Duration;
 use tokio::time::timeout;
 use trusted_cluster_operator_lib::conditions::NOT_COMMITTED_REASON_PENDING;
-use trusted_cluster_operator_lib::endpoints::{REGISTER_SERVER_DEPLOYMENT, TRUSTEE_DEPLOYMENT};
+use trusted_cluster_operator_lib::endpoints::REGISTER_SERVER_DEPLOYMENT;
+use trusted_cluster_operator_lib::endpoints::TRUSTEE_DEPLOYMENT;
 use trusted_cluster_operator_lib::reference_values::ImagePcrs;
 use trusted_cluster_operator_lib::{
     ApprovedImage, AttestationKey, Machine, TrustedExecutionCluster, generate_owner_reference,
 };
 use trusted_cluster_operator_test_utils::*;
-
 const EXPECTED_PCR4: &str = "ff2b357be4a4bc66be796d4e7b2f1f27077dc89b96220aae60b443bcf4672525";
 const TEC_NAME: &str = "trusted-execution-cluster";
-const TRUSTEE_CONFIG_MAP: &str = "trustee-data";
+const APPROVED_IMAGE_NAME: &str = "coreos";
+const TRUSTEE_RV_MAP: &str = "trustee-rv-data";
 const RV_JSON_KEY: &str = "reference-values.json";
 
 fn ak_approved(ak: Option<&AttestationKey>) -> bool {
@@ -230,8 +234,8 @@ async fn test_image_disallow() -> anyhow::Result<()> {
         let json = data.and_then(|data| data.get(RV_JSON_KEY));
         json.map(|json| !json.contains(EXPECTED_PCR4)).unwrap_or(false)
     };
-    let rv_removed = await_condition(configmap_api, TRUSTEE_CONFIG_MAP, chk_removed);
-    let ctx = format!("waiting for ConfigMap {TRUSTEE_CONFIG_MAP} to not contain PCR value");
+    let rv_removed = await_condition(configmap_api, TRUSTEE_RV_MAP, chk_removed);
+    let ctx = format!("waiting for ConfigMap {TRUSTEE_RV_MAP} to not contain PCR value");
     timeout(scaled_duration(180), rv_removed).await.context(ctx)??;
 
     test_ctx.cleanup().await?;
@@ -368,6 +372,387 @@ async fn test_nonexistent_approved_image() -> anyhow::Result<()> {
     let ctx = "waiting for ApprovedImage coreos1 to be PodPending";
     timeout(scaled_duration(30), done).await.context(ctx)??;
 
+     test_ctx.cleanup().await?;
+    Ok(())
+}
+}
+
+named_test! {
+async fn test_luks_key_sync() -> anyhow::Result<()> {
+    let test_ctx = setup!().await?;
+    let client = test_ctx.client();
+    let namespace = test_ctx.namespace();
+    let tec_name = "trusted-execution-cluster";
+
+    let tec_api: Api<TrustedExecutionCluster> = Api::namespaced(client.clone(), namespace);
+    let tec = tec_api.get(tec_name).await?;
+    let owner_reference = generate_owner_reference(&tec)?;
+
+    // Create two machines
+    let machine1_uuid = uuid::Uuid::new_v4().to_string();
+    let machine1_name = format!("test-machine-{}", &machine1_uuid[..8]);
+    let machine2_uuid = uuid::Uuid::new_v4().to_string();
+    let machine2_name = format!("test-machine-{}", &machine2_uuid[..8]);
+
+    let machines: Api<Machine> = Api::namespaced(client.clone(), namespace);
+
+    let machine1 = Machine {
+        metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+            name: Some(machine1_name.clone()),
+            namespace: Some(namespace.to_string()),
+            owner_references: Some(vec![owner_reference.clone()]),
+            ..Default::default()
+        },
+        spec: trusted_cluster_operator_lib::MachineSpec {
+            id: machine1_uuid.clone(),
+        },
+        status: None,
+    };
+    machines.create(&Default::default(), &machine1).await?;
+    test_ctx.info(format!("Created Machine 1: {machine1_name}"));
+
+    let machine2 = Machine {
+        metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+            name: Some(machine2_name.clone()),
+            namespace: Some(namespace.to_string()),
+            owner_references: Some(vec![owner_reference.clone()]),
+            ..Default::default()
+        },
+        spec: trusted_cluster_operator_lib::MachineSpec {
+            id: machine2_uuid.clone(),
+        },
+        status: None,
+    };
+    machines.create(&Default::default(), &machine2).await?;
+    test_ctx.info(format!("Created Machine 2: {machine2_name}"));
+
+    // Wait for both K8s secrets to be created by the keygen controller
+    let secrets_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
+    wait_for_resource_created(&secrets_api, &machine1_uuid, scaled_timeout(60)).await?;
+    wait_for_resource_created(&secrets_api, &machine2_uuid, scaled_timeout(60)).await?;
+    test_ctx.info("Both machine secrets created");
+
+    // Wait for the operator to send both secrets to the KBS
+    let pods_api: Api<Pod> = Api::namespaced(client.clone(), namespace);
+    let poller = Poller::new()
+        .with_timeout(Duration::from_secs(60))
+        .with_interval(Duration::from_secs(2))
+        .with_error_message("Secrets not sent to KBS".to_string());
+
+    poller
+        .poll_async(|| {
+            let api = pods_api.clone();
+            let id1 = machine1_uuid.clone();
+            let id2 = machine2_uuid.clone();
+            async move {
+                let lp = ListParams::default().labels("app=trusted-cluster-operator");
+                let operator_pods = api.list(&lp).await?;
+                let pod_name = operator_pods
+                    .items
+                    .first()
+                    .and_then(|p| p.metadata.name.as_ref())
+                    .ok_or_else(|| anyhow::anyhow!("Operator pod not found"))?
+                    .clone();
+                let logs = api.logs(&pod_name, &LogParams::default()).await?;
+                if logs.contains(&format!("{id1} sent successfully"))
+                    && logs.contains(&format!("{id2} sent successfully"))
+                {
+                    return Ok(());
+                }
+                Err(anyhow::anyhow!("Not all secrets sent to KBS yet"))
+            }
+        })
+        .await?;
+    test_ctx.info("Both secrets sent to KBS");
+
+
+    let now = Utc::now().to_rfc3339();
+    let patch = json!({
+        "spec": {
+            "template": {
+                "metadata": {
+                    "annotations": {
+                        "kubectl.kubernetes.io/restartedAt": now
+                    }
+                }
+            }
+        }
+    });
+
+    test_ctx.info(format!("Triggering rollout restart for deployment: {TRUSTEE_DEPLOYMENT}"));
+    let deployments: Api<Deployment> = Api::namespaced(client.clone(), namespace);
+    // Apply the patch
+    deployments
+        .patch(
+            TRUSTEE_DEPLOYMENT,
+            &PatchParams::default(),
+            &Patch::Strategic(patch),
+        )
+        .await?;
+
+    test_ctx.wait_for_deployment_ready(&deployments, TRUSTEE_DEPLOYMENT, 120).await?;
+
+    // Wait for the new pod to be ready
+    test_ctx.info("Trustee deployment is ready after restart");
+
+    // Verify both secrets are re-synced to KBS after the trustee restart
+    let poller = Poller::new()
+        .with_timeout(Duration::from_secs(60))
+        .with_interval(Duration::from_secs(2))
+        .with_error_message("Secrets not re-synced to KBS after restart".to_string());
+
+    poller
+        .poll_async(|| {
+            let api = pods_api.clone();
+            async move {
+                let lp = ListParams::default().labels("app=trusted-cluster-operator");
+                let operator_pods = api.list(&lp).await?;
+                let pod_name = operator_pods
+                    .items
+                    .first()
+                    .and_then(|p| p.metadata.name.as_ref())
+                    .ok_or_else(|| anyhow::anyhow!("Operator pod not found"))?
+                    .clone();
+                let logs = api.logs(&pod_name, &LogParams::default()).await?;
+                if logs.contains("Syncing 2 machine luks key to KBS") {
+                    return Ok(());
+                }
+                Err(anyhow::anyhow!("Secrets not yet re-synced to KBS after restart."))
+            }
+        })
+        .await?;
+    test_ctx.info("Both secrets re-synced to KBS after trustee restart");
+
+    // Delete machine1 and verify its secret is removed from both K8s and KBS
+    machines
+        .delete(&machine1_name, &Default::default())
+        .await?;
+    test_ctx.info(format!("Deleted Machine 1: {machine1_name}"));
+
+    let poller = Poller::new()
+        .with_timeout(Duration::from_secs(60))
+        .with_interval(Duration::from_secs(2))
+        .with_error_message("Machine1 secret not deleted from KBS".to_string());
+
+    poller
+        .poll_async(|| {
+            let api = pods_api.clone();
+            let id1 = machine1_uuid.clone();
+            async move {
+                let lp = ListParams::default().labels("app=trusted-cluster-operator");
+                let operator_pods = api.list(&lp).await?;
+                let pod_name = operator_pods
+                    .items
+                    .first()
+                    .and_then(|p| p.metadata.name.as_ref())
+                    .ok_or_else(|| anyhow::anyhow!("Operator pod not found"))?
+                    .clone();
+                let logs = api.logs(&pod_name, &LogParams::default()).await?;
+                if logs.contains(&format!("Secret {id1} deleted successfully")) {
+                    return Ok(());
+                }
+                Err(anyhow::anyhow!("Machine1 secret not yet deleted from KBS"))
+            }
+        })
+        .await?;
+    test_ctx.info("Machine1 secret deleted from KBS");
+
+    // Verify the K8s Secret for machine1 is also deleted
+    wait_for_resource_deleted(&secrets_api, &machine1_uuid, 60).await?;
+    test_ctx.info("Machine1 K8s secret deleted");
+
+    test_ctx.cleanup().await?;
+    Ok(())
+}
+}
+
+named_test! {
+async fn test_attestation_key_sync() -> anyhow::Result<()> {
+    let test_ctx = setup!().await?;
+    let client = test_ctx.client();
+    let namespace = test_ctx.namespace();
+    let tec_name = "trusted-execution-cluster";
+
+    let tec_api: Api<TrustedExecutionCluster> = Api::namespaced(client.clone(), namespace);
+    let tec = tec_api.get(tec_name).await?;
+    let owner_reference = generate_owner_reference(&tec)?;
+
+    // Create two machines
+    let machine1_uuid = uuid::Uuid::new_v4().to_string();
+    let machine1_name = format!("test-machine-{}", &machine1_uuid[..8]);
+    let machine2_uuid = uuid::Uuid::new_v4().to_string();
+    let machine2_name = format!("test-machine-{}", &machine2_uuid[..8]);
+
+    let machines: Api<Machine> = Api::namespaced(client.clone(), namespace);
+    let machine1 = Machine {
+        metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+            name: Some(machine1_name.clone()),
+            namespace: Some(namespace.to_string()),
+            owner_references: Some(vec![owner_reference.clone()]),
+            ..Default::default()
+        },
+        spec: trusted_cluster_operator_lib::MachineSpec {
+            id: machine1_uuid.clone(),
+        },
+        status: None,
+    };
+    machines.create(&Default::default(), &machine1).await?;
+    test_ctx.info(format!("Created Machine 1: {machine1_name}"));
+
+    let machine2 = Machine {
+        metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+            name: Some(machine2_name.clone()),
+            namespace: Some(namespace.to_string()),
+            owner_references: Some(vec![owner_reference.clone()]),
+            ..Default::default()
+        },
+        spec: trusted_cluster_operator_lib::MachineSpec {
+            id: machine2_uuid.clone(),
+        },
+        status: None,
+    };
+    machines.create(&Default::default(), &machine2).await?;
+    test_ctx.info(format!("Created Machine 2: {machine2_name}"));
+
+    // Create two AttestationKeys with matching UUIDs
+    let ak1_name = format!("test-ak-{}", &machine1_uuid[..8]);
+    let ak1_public_key = uuid::Uuid::new_v4().to_string();
+    let ak2_name = format!("test-ak-{}", &machine2_uuid[..8]);
+    let ak2_public_key = uuid::Uuid::new_v4().to_string();
+
+    let attestation_keys: Api<AttestationKey> = Api::namespaced(client.clone(), namespace);
+
+    let ak1 = AttestationKey {
+        metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+            name: Some(ak1_name.clone()),
+            namespace: Some(namespace.to_string()),
+            owner_references: Some(vec![owner_reference.clone()]),
+            ..Default::default()
+        },
+        spec: trusted_cluster_operator_lib::AttestationKeySpec {
+            public_key: ak1_public_key,
+            uuid: Some(machine1_uuid.clone()),
+        },
+        status: None,
+    };
+    attestation_keys.create(&Default::default(), &ak1).await?;
+    test_ctx.info(format!("Created AttestationKey 1: {ak1_name}"));
+
+    let ak2 = AttestationKey {
+        metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+            name: Some(ak2_name.clone()),
+            namespace: Some(namespace.to_string()),
+            owner_references: Some(vec![owner_reference.clone()]),
+            ..Default::default()
+        },
+        spec: trusted_cluster_operator_lib::AttestationKeySpec {
+            public_key: ak2_public_key,
+            uuid: Some(machine2_uuid.clone()),
+        },
+        status: None,
+    };
+    attestation_keys.create(&Default::default(), &ak2).await?;
+    test_ctx.info(format!("Created AttestationKey 2: {ak2_name}"));
+
+    // Wait for both AKs to be approved and have secrets created
+    let secrets_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
+    let ak1_done = await_condition(attestation_keys.clone(), &ak1_name, ak_approved);
+    let ak2_done = await_condition(attestation_keys.clone(), &ak2_name, ak_approved);
+    wait_for_resource_created(&secrets_api, &ak1_name, scaled_timeout(60)).await?;
+    wait_for_resource_created(&secrets_api, &ak2_name, scaled_timeout(60)).await?;
+    timeout(scaled_duration(60), async {
+        tokio::try_join!(ak1_done, ak2_done)
+    })
+    .await
+    .context("waiting for AttestationKeys to be approved with secrets")??;
+    test_ctx.info("Both AttestationKeys approved and secrets created");
+
+    // Wait for both AKs to be registered with KBS
+    let pods_api: Api<Pod> = Api::namespaced(client.clone(), namespace);
+    let poller = Poller::new()
+        .with_timeout(Duration::from_secs(60))
+        .with_interval(Duration::from_secs(2))
+        .with_error_message("AKs not registered with KBS".to_string());
+
+    poller
+        .poll_async(|| {
+            let api = pods_api.clone();
+            async move {
+                let lp = ListParams::default().labels("app=trusted-cluster-operator");
+                let operator_pods = api.list(&lp).await?;
+                let pod_name = operator_pods
+                    .items
+                    .first()
+                    .and_then(|p| p.metadata.name.as_ref())
+                    .ok_or_else(|| anyhow::anyhow!("Operator pod not found"))?
+                    .clone();
+                let logs = api.logs(&pod_name, &LogParams::default()).await?;
+                let count = logs.matches("AK registered successfully").count();
+                if count >= 1 {
+                    return Ok(());
+                }
+                Err(anyhow::anyhow!("Only {count} AK registrations found, need at least 1"))
+            }
+        })
+        .await?;
+    test_ctx.info("Both AKs registered with KBS");
+
+    // Restart the trustee deployment
+    let now = Utc::now().to_rfc3339();
+    let patch = json!({
+        "spec": {
+            "template": {
+                "metadata": {
+                    "annotations": {
+                        "kubectl.kubernetes.io/restartedAt": now
+                    }
+                }
+            }
+        }
+    });
+
+    test_ctx.info(format!("Triggering rollout restart for deployment: {TRUSTEE_DEPLOYMENT}"));
+    let deployments: Api<Deployment> = Api::namespaced(client.clone(), namespace);
+    deployments
+        .patch(
+            TRUSTEE_DEPLOYMENT,
+            &PatchParams::default(),
+            &Patch::Strategic(patch),
+        )
+        .await?;
+
+    test_ctx.wait_for_deployment_ready(&deployments, TRUSTEE_DEPLOYMENT, 120).await?;
+    test_ctx.info("Trustee deployment is ready after restart");
+
+    // Verify both AKs are re-registered to KBS after the trustee restart
+    let poller = Poller::new()
+        .with_timeout(Duration::from_secs(60))
+        .with_interval(Duration::from_secs(2))
+        .with_error_message("AKs not re-registered with KBS after restart".to_string());
+
+    poller
+        .poll_async(|| {
+            let api = pods_api.clone();
+            async move {
+                let lp = ListParams::default().labels("app=trusted-cluster-operator");
+                let operator_pods = api.list(&lp).await?;
+                let pod_name = operator_pods
+                    .items
+                    .first()
+                    .and_then(|p| p.metadata.name.as_ref())
+                    .ok_or_else(|| anyhow::anyhow!("Operator pod not found"))?
+                    .clone();
+                let logs = api.logs(&pod_name, &LogParams::default()).await?;
+                let count = logs.matches("AK registered successfully").count();
+                if count >= 2 {
+                    return Ok(());
+                }
+                Err(anyhow::anyhow!("Only {count} AK registrations after restart, need at least 2"))
+            }
+        })
+        .await?;
+    test_ctx.info("Both AKs re-registered with KBS after trustee restart");
+
     test_ctx.cleanup().await?;
     Ok(())
 }
@@ -396,9 +781,9 @@ async fn test_approved_image_readoption() -> anyhow::Result<()> {
 
     test_ctx.info(format!("Deleting TrustedExecutionCluster {TEC_NAME}"));
     clusters.delete(TEC_NAME, &Default::default()).await?;
-    wait_for_resource_deleted(&configmaps, TRUSTEE_CONFIG_MAP, scaled_timeout(60)).await?;
+    wait_for_resource_deleted(&configmaps, TRUSTEE_RV_MAP, scaled_timeout(60)).await?;
     wait_for_resource_deleted(&images, APPROVED_IMAGE_NAME, scaled_timeout(60)).await?;
-    test_ctx.info(format!("Configmap {TRUSTEE_CONFIG_MAP} was removed"));
+    test_ctx.info(format!("Configmap {TRUSTEE_RV_MAP} was removed"));
 
     let image = ApprovedImage {
         spec: image_spec,
@@ -427,8 +812,8 @@ async fn test_approved_image_readoption() -> anyhow::Result<()> {
         let json = data.and_then(|data| data.get(RV_JSON_KEY));
         json.map(|json| json.contains(EXPECTED_PCR4)).unwrap_or(false)
     };
-    let rv_added = await_condition(configmaps, TRUSTEE_CONFIG_MAP, chk_added);
-    let ctx = format!("waiting for ConfigMap {TRUSTEE_CONFIG_MAP} to contain PCR value");
+    let rv_added = await_condition(configmaps, TRUSTEE_RV_MAP, chk_added);
+    let ctx = format!("waiting for ConfigMap {TRUSTEE_RV_MAP} to contain PCR value");
     timeout(scaled_duration(180), rv_added).await.context(ctx)??;
     test_ctx.info("Reference values regenerated");
 

@@ -131,7 +131,8 @@ async fn keygen_reconcile(
 ) -> Result<Action, ControllerError> {
     let kube_client_clone = Arc::unwrap_or_clone(client.clone());
     let machines: Api<Machine> = Api::default_namespaced(kube_client_clone.clone());
-    finalizer(&machines, MACHINE_FINALIZER, machine, |ev| async move {
+    info!("machine {machine:?}");
+    let result = finalizer(&machines, MACHINE_FINALIZER, machine, |ev| async move {
         match ev {
             Event::Apply(machine) => {
                 let kube_client = Arc::unwrap_or_clone(client);
@@ -139,7 +140,7 @@ async fn keygen_reconcile(
                 async {
                     let owner_reference = generate_owner_reference(&Arc::unwrap_or_clone(machine))?;
                     trustee::generate_secret(kube_client.clone(), id, owner_reference).await?;
-                    trustee::mount_secret(kube_client, id).await
+                    trustee::send_secret(kube_client, id).await
                 }
                 .await
                 .map(|_| Action::await_change())
@@ -148,6 +149,7 @@ async fn keygen_reconcile(
             Event::Cleanup(machine) => {
                 let kube_client = Arc::unwrap_or_clone(client);
                 let id = &machine.spec.id;
+                info!("Cleanup for machine {machine:?}");
 
                 // Check if the TrustedExecutionCluster is being deleted
                 // If so, skip unmounting the secret as everything will be cleaned up
@@ -160,6 +162,7 @@ async fn keygen_reconcile(
                     let tecs: Api<TrustedExecutionCluster> =
                         Api::default_namespaced(kube_client.clone());
 
+                    info!("get TEC");
                     match tecs.get(tec_name).await {
                         Ok(tec) if tec.metadata.deletion_timestamp.is_some() => {
                             // TEC is being deleted, skip unmount_secret
@@ -185,15 +188,18 @@ async fn keygen_reconcile(
                     }
                 }
 
-                trustee::unmount_secret(kube_client, id)
-                    .await
-                    .map(|_| Action::await_change())
-                    .map_err(|e| finalizer::Error::<ControllerError>::CleanupFailed(e.into()))
+                trustee::delete_secret(kube_client, id).await.map_err(|e| {
+                    finalizer::Error::<ControllerError>::CleanupFailed(
+                        anyhow!("failed to delete secret for machine {id}: {e}").into(),
+                    )
+                })?;
+                Ok(Action::await_change())
             }
         }
     })
-    .await
-    .map_err(|e| anyhow!("failed to reconcile on machine: {e}").into())
+    .await;
+    info!("finalizer() for machine returned {result:?}");
+    result.map_err(|e| anyhow!("failed to reconcile on machine: {e}").into())
 }
 
 pub async fn launch_keygen_controller(client: Client) {

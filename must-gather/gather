@@ -31,3 +31,8 @@ for ns in $(${KUBECTL} get namespaces -o jsonpath={..metadata.name}); do
 		           "${COLLECTION_PATH}/logs/${pod}-${ns}.log"
 	done
 done
+
+etcd_kind=etcd-kind-control-plane
+if ${KUBECTL} get $etcd_kind -n kube-system &> /dev/null; then
+  ${KUBECTL} logs $etcd_kind &> "${COLLECTION_PATH}/logs/${etcd_kind}.log"
+fi

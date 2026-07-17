@@ -89,6 +89,11 @@ pub fn scaled_duration(secs: u64) -> Duration {
     Duration::from_secs(scaled_timeout(secs))
 }
 
+fn log_time() -> String {
+    let fmt = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+    fmt.to_string()
+}
+
 // Large warning frame, e.g. for paid cloud resources that may not have been shut down correctly
 pub fn warn_frame(msg: &str) -> String {
     format!("{YELLOW}=== WARNING ===\n{msg}{ANSI_RESET}")
@@ -98,14 +103,14 @@ pub fn warn_frame(msg: &str) -> String {
 macro_rules! test_info {
     ($test_name:expr, $($arg:tt)*) => {{
         const GREEN: &str = "\x1b[32m";
-        println!("{}INFO{}: {}: {}", GREEN, ANSI_RESET, $test_name, format!($($arg)*));
+        println!("{} {}INFO{}: {}: {}", log_time(), GREEN, ANSI_RESET, $test_name, format!($($arg)*));
     }}
 }
 
 #[macro_export]
 macro_rules! test_warn {
     ($test_name:expr, $($arg:tt)*) => {{
-        println!("{YELLOW}WARN{ANSI_RESET}: {}: {}", $test_name, format!($($arg)*));
+        println!("{} {YELLOW}WARN{ANSI_RESET}: {}: {}", log_time(), $test_name, format!($($arg)*));
     }}
 }
 
@@ -630,6 +635,35 @@ impl TestContext {
                 self.manifests_dir
             );
         }
+        Ok(())
+    }
+
+    pub async fn wait_for_deployment_ready(
+        &self,
+        deployments_api: &Api<Deployment>,
+        deployment_name: &str,
+        timeout_secs: u64,
+    ) -> Result<()> {
+        test_info!(
+            &self.test_name,
+            "Waiting for deployment {} to be ready",
+            deployment_name
+        );
+        let has_available_replica = |d: Option<&Deployment>| {
+            d.and_then(|d| d.status.as_ref())
+                .and_then(|s| s.available_replicas)
+                .is_some_and(|r| r >= 1)
+        };
+        let done = await_condition(
+            deployments_api.clone(),
+            deployment_name,
+            has_available_replica,
+        );
+        timeout(Duration::from_secs(timeout_secs), done)
+            .await
+            .context(format!(
+            "{deployment_name} deployment does not have 1 available replica after {timeout_secs} seconds"
+        ))??;
         Ok(())
     }
 

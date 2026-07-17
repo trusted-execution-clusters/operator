@@ -69,10 +69,21 @@ jobs:
       - name: "Create KinD cluster"
         run: make cluster-up
       - name: "Build and push images"
-        run: make push
+        run: make DELETE_AFTER_PUSH=true push
       - name: "Install KubeVirt"
         run: make install-kubevirt
       - name: "Run integration tests"
         run: |
           eval $(ssh-agent -s)
           make integration-tests
+      - name: "Gather must-gather"
+        if: always()
+        run: must-gather/gather
+        env:
+          COLLECTION_PATH: must-gather-output
+      - name: "Upload must-gather"
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: must-gather
+          path: must-gather-output/

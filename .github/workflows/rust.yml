@@ -36,7 +36,7 @@ jobs:
           toolchain: stable
           components: rustfmt
       - name: "Install Go toolchain"
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: "Cache build artifacts"
@@ -60,7 +60,7 @@ jobs:
           toolchain: stable
           components: rustfmt
       - name: "Install Go toolchain"
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: "Cache build artifacts"
@@ -90,7 +90,7 @@ jobs:
           toolchain: ${{ env.MSRV }}
           components: rustfmt
       - name: "Install Go toolchain"
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: "Cache build artifacts"
@@ -118,7 +118,7 @@ jobs:
           toolchain: ${{ matrix.channel }}
           components: rustfmt
       - name: "Install Go toolchain"
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: "Cache build artifacts"

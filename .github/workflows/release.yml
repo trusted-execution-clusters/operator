@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Chirag Rao <crao@redhat.com>
+#
+# SPDX-License-Identifier: CC0-1.0
+
+name: "Release"
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CONTAINER_CLI: docker
+  BUILD_TYPE: release
+  REGISTRY: quay.io/trusted-execution-clusters
+
+jobs:
+  release:
+    name: "Build and push images"
+    # Full VM required: ubuntu-slim has no Docker.
+    # Component images build inside Containerfiles (buildroot),
+    # host only needs Go/yq/operator-sdk for OLM bundle generation.
+    runs-on: ubuntu-24.04
+    steps:
+      - name: "Check out repository"
+        uses: actions/checkout@v7
+
+      - name: "Install Go toolchain"
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # generate-bundle-prod.sh invokes `yq` directly on PATH.
+      - name: "Install yq"
+        run: go install github.com/mikefarah/yq/v4@$(go list -m -f '{{.Version}}' github.com/mikefarah/yq/v4)
+
+      - name: "Install operator-sdk"
+        run: |
+          OPERATOR_SDK_VERSION=v1.39.1
+          curl -Lo /usr/local/bin/operator-sdk \
+            "https://github.com/operator-framework/operator-sdk/releases/download/${OPERATOR_SDK_VERSION}/operator-sdk_linux_amd64"
+          chmod +x /usr/local/bin/operator-sdk
+
+      # Secrets: QUAY_USERNAME and QUAY_PASSWORD in repository settings
+      - name: "Log in to Quay.io"
+        uses: docker/login-action@v3
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_PASSWORD }}
+
+      - name: "Build and push images and OLM bundle"
+        run: make push-all TAG=v${{ github.ref_name }}
+
+      - name: "Create GitHub Release"
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          tag_name: ${{ github.ref_name }}

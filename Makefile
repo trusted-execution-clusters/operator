@@ -101,13 +101,13 @@ CONTAINER_CLI ?= podman
 RUNTIME ?= podman
 
 operator-image:
-	$(CONTAINER_CLI) build $(IMAGE_BUILD_OPTIONS) -t $(OPERATOR_IMAGE) -f Containerfile .
+	$(CONTAINER_CLI) build $(IMAGE_BUILD_OPTIONS) --target operator -t $(OPERATOR_IMAGE) -f Containerfile .
 compute-pcrs-image:
-	$(CONTAINER_CLI) build $(IMAGE_BUILD_OPTIONS) -t $(COMPUTE_PCRS_IMAGE) -f compute-pcrs/Containerfile .
+	$(CONTAINER_CLI) build $(IMAGE_BUILD_OPTIONS) --target compute-pcrs -t $(COMPUTE_PCRS_IMAGE) -f Containerfile .
 reg-server-image:
-	$(CONTAINER_CLI) build $(IMAGE_BUILD_OPTIONS) -t $(REG_SERVER_IMAGE) -f register-server/Containerfile .
+	$(CONTAINER_CLI) build $(IMAGE_BUILD_OPTIONS) --target register-server -t $(REG_SERVER_IMAGE) -f Containerfile .
 attestation-key-register-image:
-	$(CONTAINER_CLI) build $(IMAGE_BUILD_OPTIONS) -t $(ATTESTATION_KEY_REGISTER_IMAGE) -f attestation-key-register/Containerfile .
+	$(CONTAINER_CLI) build $(IMAGE_BUILD_OPTIONS) --target attestation-key-register -t $(ATTESTATION_KEY_REGISTER_IMAGE) -f Containerfile .
 
 image: operator-image compute-pcrs-image reg-server-image attestation-key-register-image
 

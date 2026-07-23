@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Yair Podemsky <ypodemsk@redhat.com>
+#
+# SPDX-License-Identifier: CC0-1.0
+
+
+target/
+.git/
+bin/
+tests/
+test_utils/
+must-gather/
+bundle/
+.github/
+*.tar

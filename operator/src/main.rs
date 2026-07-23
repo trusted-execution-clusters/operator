@@ -32,10 +32,17 @@ mod trustee;
 use crate::conditions::*;
 use operator::*;
 
-/// Default tag for Trustee image
-const TRUSTEE_VERSION: &str = "v0.17.0";
-/// Default version tag for operator-managed component images
-const COMPONENT_VERSION: &str = "v0.2.0";
+/// Default tag for Trustee image from environment or default to v0.17.0
+const TRUSTEE_VERSION: &str = match option_env!("TRUSTEE_VERSION") {
+    Some(v) => v,
+    None => "v0.17.0",
+};
+/// Default version tag for operator-managed component images from environment
+const COMPONENT_VERSION: &str = match option_env!("COMPONENT_VERSION") {
+    Some(v) => v,
+    None => concat!("v", env!("CARGO_PKG_VERSION")),
+};
+
 /// Default registry
 const TEC_REGISTRY: &str = "quay.io/trusted-execution-clusters";
 

@@ -39,9 +39,9 @@ metadata:
           },
           "spec": {
             "trusteeImage": "quay.io/trusted-execution-clusters/key-broker-service:v0.17.0",
-            "pcrsComputeImage": "quay.io/trusted-execution-clusters/compute-pcrs:0.2.0",
-            "registerServerImage": "quay.io/trusted-execution-clusters/registration-server:0.2.0",
-            "attestationKeyRegisterImage": "quay.io/trusted-execution-clusters/attestation-key-register:0.2.0",
+            "pcrsComputeImage": "quay.io/trusted-execution-clusters/compute-pcrs:v0.2.1",
+            "registerServerImage": "quay.io/trusted-execution-clusters/registration-server:v0.2.1",
+            "attestationKeyRegisterImage": "quay.io/trusted-execution-clusters/attestation-key-register:v0.2.1",
             "publicTrusteeAddr": "kbs-service-trusted-execution-clusters.apps.example.com",
             "publicAttestationKeyRegisterAddr": "attestation-key-register-trusted-execution-clusters.apps.example.com",
             "registerServerPort": 8000,
@@ -60,15 +60,15 @@ metadata:
         }
       ]
     olm.skipRange: ">=0.0.0 <1.0.0"
-    containerImage: "quay.io/trusted-execution-clusters/trusted-cluster-operator:0.2.0"
+    containerImage: "quay.io/trusted-execution-clusters/trusted-cluster-operator:v0.2.1"
     capabilities: Basic Install
-  name: trusted-cluster-operator.v0.2.0
+  name: trusted-cluster-operator.v0.2.1
   namespace: placeholder
 spec:
   displayName: Trusted Execution Cluster Operator
   description: |-
     An operator to manage a trusted execution cluster, which is a Kubernetes cluster that can attest its integrity to a relying party.
-  version: 0.2.0
+  version: 0.2.1
   minKubeVersion: "1.27.0"
   provider:
     name: Red Hat
@@ -87,13 +87,13 @@ spec:
       supported: false
   relatedImages:
     - name: trusted-cluster-operator
-      image: quay.io/trusted-execution-clusters/trusted-cluster-operator:0.2.0
+      image: quay.io/trusted-execution-clusters/trusted-cluster-operator:v0.2.1
     - name: compute-pcrs
-      image: quay.io/trusted-execution-clusters/compute-pcrs:0.2.0
+      image: quay.io/trusted-execution-clusters/compute-pcrs:v0.2.1
     - name: registration-server
-      image: quay.io/trusted-execution-clusters/registration-server:0.2.0
+      image: quay.io/trusted-execution-clusters/registration-server:v0.2.1
     - name: attestation-key-register
-      image: quay.io/trusted-execution-clusters/attestation-key-register:0.2.0
+      image: quay.io/trusted-execution-clusters/attestation-key-register:v0.2.1
     - name: trustee
       image: quay.io/trusted-execution-clusters/key-broker-service:v0.17.0
   install:
@@ -136,7 +136,7 @@ spec:
                 serviceAccountName: trusted-cluster-operator
                 containers:
                   - name: trusted-cluster-operator
-                    image: quay.io/trusted-execution-clusters/trusted-cluster-operator:0.2.0
+                    image: quay.io/trusted-execution-clusters/trusted-cluster-operator:v0.2.1
                     command:
                       - /usr/bin/operator
                     imagePullPolicy: IfNotPresent
@@ -154,11 +154,11 @@ spec:
                       - name: RELATED_IMAGE_TRUSTEE
                         value: "quay.io/trusted-execution-clusters/key-broker-service:v0.17.0"
                       - name: RELATED_IMAGE_COMPUTE_PCRS
-                        value: "quay.io/trusted-execution-clusters/compute-pcrs:0.2.0"
+                        value: "quay.io/trusted-execution-clusters/compute-pcrs:v0.2.1"
                       - name: RELATED_IMAGE_REGISTRATION_SERVER
-                        value: "quay.io/trusted-execution-clusters/registration-server:0.2.0"
+                        value: "quay.io/trusted-execution-clusters/registration-server:v0.2.1"
                       - name: RELATED_IMAGE_ATTESTATION_KEY_REGISTER
-                        value: "quay.io/trusted-execution-clusters/attestation-key-register:0.2.0"
+                        value: "quay.io/trusted-execution-clusters/attestation-key-register:v0.2.1"
                     resources:
                       limits:
                         cpu: 500m

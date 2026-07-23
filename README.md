@@ -109,10 +109,10 @@ Define the container registry, image tag, and CLI.
 
 ```bash
 export REGISTRY=quay.io/<your-username>
-export TAG=0.2.0
+export TAG=v0.2.1
 export CONTAINER_CLI=docker # or podman
 ```
-> **Note:** The `TAG` must be a valid semantic version (e.g., `0.2.0`). OLM does not support tags like `latest` for bundle versions. Use an unreleased version tag to build with the latest code.
+> **Note:** The `TAG` is the image tag (e.g., `v0.2.1`). OLM requires bare semver for bundle versions; the Makefile derives `OLM_VERSION` by stripping a leading `v` from `TAG`.
 
 **3. Build, Validate, and Push**
 

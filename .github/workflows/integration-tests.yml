@@ -32,7 +32,6 @@ jobs:
       github.event.pull_request.author_association == 'COLLABORATOR' ||
       contains(github.event.pull_request.labels.*.name, 'ok-to-test')
     runs-on: "ubuntu-24.04"
-    timeout-minutes: 120
     steps:
       - name: "Check out repository"
         uses: actions/checkout@v7
@@ -75,7 +74,8 @@ jobs:
       - name: "Run integration tests"
         run: |
           eval $(ssh-agent -s)
-          make integration-tests
+          while make integration-tests; do :; done
+          exit 1
       - name: "Gather must-gather"
         if: always()
         run: must-gather/gather

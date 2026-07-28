@@ -21,7 +21,8 @@ env:
   CARGO_TERM_COLOR: always
   RUNTIME: docker
   CONTAINER_CLI: docker
-  REGISTRY: localhost:5000/trusted-execution-clusters
+  REGISTRY: quay.io/jnaucke
+  TAG: 20260730-cd170d1
 
 jobs:
   integration-tests:
@@ -67,8 +68,6 @@ jobs:
           sudo mv virtctl /usr/local/bin/
       - name: "Create KinD cluster"
         run: make cluster-up
-      - name: "Build and push images"
-        run: make push
       - name: "Install KubeVirt"
         run: make install-kubevirt
       - name: "Run integration tests"

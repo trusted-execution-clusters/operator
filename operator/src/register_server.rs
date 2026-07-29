@@ -179,6 +179,10 @@ async fn keygen_reconcile(
                             );
                             return Ok(Action::await_change());
                         }
+                        Err(e) => {
+                            let err = anyhow!("{e}").into();
+                            return Err(finalizer::Error::<ControllerError>::CleanupFailed(err));
+                        }
                         _ => {
                             // TEC exists and is not being deleted, proceed with unmount_secret
                         }

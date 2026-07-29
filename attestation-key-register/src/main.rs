@@ -17,7 +17,8 @@ use uuid::Uuid;
 
 use trusted_cluster_operator_lib::endpoints::ATTESTATION_KEY_REGISTER_RESOURCE;
 use trusted_cluster_operator_lib::{
-    generate_owner_reference, get_trusted_execution_cluster, AttestationKey, AttestationKeySpec,
+    generate_owner_reference, get_trusted_execution_cluster, timed_client, AttestationKey,
+    AttestationKeySpec,
 };
 
 #[derive(Parser)]
@@ -131,7 +132,7 @@ async fn main() {
     let args = Args::parse();
     let endpoint = format!("/{ATTESTATION_KEY_REGISTER_RESOURCE}");
     let err = "failed to create Kubernetes client";
-    let client = Client::try_default().await.expect(err);
+    let client = timed_client().await.expect(err);
     let app = Router::new()
         .route(&endpoint, put(handle_registration))
         .with_state(client);

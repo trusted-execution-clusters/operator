@@ -7,7 +7,7 @@ use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use compute_pcrs_lib::*;
 use k8s_openapi::{api::core::v1::ConfigMap, jiff::Timestamp};
-use kube::{Api, Client};
+use kube::Api;
 use std::{fs::File, io::Read};
 
 use trusted_cluster_operator_lib::{conditions::INSTALLED_REASON, reference_values::*, *};
@@ -52,7 +52,7 @@ async fn main() -> Result<()> {
         compute_pcr14(&mokvars),
     ];
 
-    let client = Client::try_default().await?;
+    let client = timed_client().await?;
     let config_maps: Api<ConfigMap> = Api::default_namespaced(client.clone());
 
     let mut image_pcrs_map = config_maps.get(PCR_CONFIG_MAP).await?;

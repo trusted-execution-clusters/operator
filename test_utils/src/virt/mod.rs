@@ -9,7 +9,7 @@ pub mod kubevirt;
 use anyhow::{Result, anyhow};
 use clevis_pin_trustee_lib::Key as ClevisKey;
 use k8s_openapi::api::core::v1::Secret;
-use kube::{Api, Client};
+use kube::Api;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use std::{env, path::PathBuf, time::Duration};
 use tokio::process::Command;
@@ -22,7 +22,7 @@ use crate::{ROOT_SECRET, VirtProvider, get_cluster_url, get_env, get_virt_provid
 
 #[derive(Clone)]
 pub struct VmConfig {
-    pub client: Client,
+    pub clients: KubeClients,
     pub namespace: String,
     pub vm_name: String,
     pub ssh_public_key: String,
@@ -76,10 +76,10 @@ pub fn generate_ssh_key_pair() -> Result<(String, PathBuf)> {
 
 pub async fn generate_ignition(config: &VmConfig) -> Result<serde_json::Value> {
     use ignition_config::v3_6::*;
-    let client = config.client.clone();
     let ns = &config.namespace;
     let port = Some(REGISTER_SERVER_PORT);
-    let register_server_url = get_cluster_url(&client, ns, REGISTER_SERVER_SERVICE, port).await?;
+    let register_server_url =
+        get_cluster_url(&config.clients, ns, REGISTER_SERVER_SERVICE, port).await?;
     let root_pem_encoded = utf8_percent_encode(&config.ca_pem, NON_ALPHANUMERIC);
     let ignition = Ignition {
         version: "3.6.0".to_string(),
@@ -148,11 +148,11 @@ pub async fn ssh_exec(command: &str) -> Result<String> {
 }
 
 pub async fn create_backend(
-    client: Client,
+    clients: KubeClients,
     namespace: &str,
     vm_name: &str,
 ) -> Result<Box<dyn VmBackend>> {
-    let secrets: Api<Secret> = Api::namespaced(client.clone(), namespace);
+    let secrets: Api<Secret> = Api::namespaced(clients.client.clone(), namespace);
     let root_secret = secrets.get(ROOT_SECRET).await?;
     let root_secret_data = root_secret.data.unwrap();
     let ca_pem_bytes = root_secret_data.get("ca.crt").unwrap();
@@ -162,7 +162,7 @@ pub async fn create_backend(
     let (public_key, key_path) = generate_ssh_key_pair()?;
     let image = get_env("TEST_IMAGE")?;
     let config = VmConfig {
-        client,
+        clients,
         namespace: namespace.to_string(),
         vm_name: vm_name.to_string(),
         ssh_public_key: public_key,

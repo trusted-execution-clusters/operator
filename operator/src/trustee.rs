@@ -41,7 +41,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use trusted_cluster_operator_lib::reference_values::*;
+use trusted_cluster_operator_lib::{KubeClients, reference_values::*};
 use trusted_cluster_operator_lib::{Machine, endpoints::*};
 
 const TRUSTEE_DATA_DIR: &str = "/etc/kbs";
@@ -381,8 +381,8 @@ async fn trustee_deployment_reconcile(
     Ok(Action::await_change())
 }
 
-pub async fn launch_trustee_sync_controller(client: Client) {
-    let deployments: Api<Deployment> = Api::default_namespaced(client.clone());
+pub async fn launch_trustee_sync_controller(clients: KubeClients) {
+    let deployments: Api<Deployment> = Api::default_namespaced(clients.watch.clone());
     let watcher_config = watcher::Config {
         label_selector: Some(format!("app={TRUSTEE_APP_LABEL}")),
         ..Default::default()
@@ -392,7 +392,7 @@ pub async fn launch_trustee_sync_controller(client: Client) {
             .run(
                 trustee_deployment_reconcile,
                 controller_error_policy,
-                Arc::new(client),
+                Arc::new(clients.client),
             )
             .for_each(controller_info),
     );

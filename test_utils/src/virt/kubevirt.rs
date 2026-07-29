@@ -36,7 +36,8 @@ impl VmBackend for KubevirtBackend {
             ..Default::default()
         };
 
-        let secrets: Api<Secret> = Api::namespaced(self.0.client.clone(), &self.0.namespace);
+        let secrets: Api<Secret> =
+            Api::namespaced(self.0.clients.client.clone(), &self.0.namespace);
         secrets.create(&Default::default(), &secret).await?;
 
         let vm = VirtualMachine {
@@ -134,14 +135,16 @@ impl VmBackend for KubevirtBackend {
             ..Default::default()
         };
 
-        let vms: Api<VirtualMachine> = Api::namespaced(self.0.client.clone(), &self.0.namespace);
+        let vms: Api<VirtualMachine> =
+            Api::namespaced(self.0.clients.client.clone(), &self.0.namespace);
         vms.create(&Default::default(), &vm).await?;
 
         Ok(())
     }
 
     async fn wait_for_running(&self, timeout_secs: u64) -> Result<()> {
-        let api: Api<VirtualMachine> = Api::namespaced(self.0.client.clone(), &self.0.namespace);
+        let api: Api<VirtualMachine> =
+            Api::namespaced(self.0.clients.watch.clone(), &self.0.namespace);
         let machine_running = |m: Option<&VirtualMachine>| {
             let status = m.as_ref().and_then(|m| m.status.as_ref());
             let print_status = status.and_then(|s| s.printable_status.as_ref());
@@ -180,7 +183,8 @@ impl VmBackend for KubevirtBackend {
         }
 
         // Use the UUID to get the secret (secrets are named with just the UUID)
-        let secrets: Api<Secret> = Api::namespaced(self.0.client.clone(), &self.0.namespace);
+        let secrets: Api<Secret> =
+            Api::namespaced(self.0.clients.client.clone(), &self.0.namespace);
         let secret = secrets
             .get(uuid)
             .await

@@ -18,8 +18,10 @@ use kube::{Api, Client};
 use log::{info, warn};
 
 use operator::{generate_owner_reference, upsert_condition};
-use trusted_cluster_operator_lib::{TrustedExecutionCluster, TrustedExecutionClusterStatus};
-use trusted_cluster_operator_lib::{conditions::*, images::*, update_status};
+use trusted_cluster_operator_lib::{
+    KubeClients, TrustedExecutionCluster, TrustedExecutionClusterStatus, conditions::*, images::*,
+    timed_client, update_status,
+};
 
 mod attestation_key_register;
 mod conditions;
@@ -44,15 +46,16 @@ struct ClusterContext {
 }
 
 impl ClusterContext {
-    fn new(client: Client) -> Self {
+    fn new(clients: &KubeClients) -> Self {
         let (tec_store, tec_writer) = reflector::store::<TrustedExecutionCluster>();
 
         spawn_reflector::<TrustedExecutionCluster>(
             tec_writer,
-            client.clone(),
+            clients.watch.clone(),
             "TrustedExecutionCluster",
         );
 
+        let client = clients.client.clone();
         Self { client, tec_store }
     }
 
@@ -254,19 +257,22 @@ async fn install_attestation_key_register(
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
     let _ = jsonwebtoken_openssl::install_default();
-    let kube_client = Client::try_default().await?;
+    let kube_client = timed_client().await?;
+    let watch_client = Client::try_default().await?;
+    let clients = KubeClients {
+        client: kube_client.clone(),
+        watch: watch_client.clone(),
+    };
     info!("trusted execution clusters operator",);
 
     const CACHE_SYNC_TIMEOUT: Duration = Duration::from_secs(60);
 
     // Launch controllers that do not depend on reflector caches first.
-    register_server::launch_keygen_controller(kube_client.clone()).await;
+    register_server::launch_keygen_controller(clients.clone()).await;
 
     // Spawn reflectors (starts background list-watch immediately).
-    let ak_ctx = Arc::new(attestation_key_register::AkContextData::new(
-        kube_client.clone(),
-    ));
-    let ctx = Arc::new(ClusterContext::new(kube_client.clone()));
+    let ak_ctx = Arc::new(attestation_key_register::AkContextData::new(&clients));
+    let ctx = Arc::new(ClusterContext::new(&clients));
 
     // Best-effort wait for caches; controllers will work with
     // partially-filled stores if the sync times out.
@@ -279,14 +285,14 @@ async fn main() -> Result<()> {
 
     info!("Starting controllers");
 
-    let cl: Api<TrustedExecutionCluster> = Api::default_namespaced(kube_client.clone());
+    let cl: Api<TrustedExecutionCluster> = Api::default_namespaced(watch_client);
 
     attestation_key_register::launch_ak_controller(ak_ctx.clone()).await;
     attestation_key_register::launch_machine_ak_controller(ak_ctx.clone()).await;
     attestation_key_register::launch_secret_ak_controller(ak_ctx).await;
-    reference_values::launch_rv_image_controller(kube_client.clone()).await;
-    reference_values::launch_rv_job_controller(kube_client.clone()).await;
-    trustee::launch_trustee_sync_controller(kube_client.clone()).await;
+    reference_values::launch_rv_image_controller(clients.clone()).await;
+    reference_values::launch_rv_job_controller(clients.clone()).await;
+    trustee::launch_trustee_sync_controller(clients).await;
 
     Controller::new(cl, watcher::Config::default())
         .run(reconcile, controller_error_policy, ctx)

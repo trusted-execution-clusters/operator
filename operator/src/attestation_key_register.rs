@@ -213,7 +213,7 @@ async fn machine_reconcile(
     // Check if the machine is being deleted
     if machine.metadata.deletion_timestamp.is_some() {
         info!(
-            "Machine {} is being deleted, updating attestation key volumes",
+            "Machine {} is being deleted, skipping update of attestation key volumes",
             machine.metadata.name.clone().unwrap_or_default()
         );
         return Ok(Action::await_change());

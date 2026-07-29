@@ -30,8 +30,8 @@ use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use trusted_cluster_operator_lib::conditions::ATTESTATION_KEY_MACHINE_APPROVE;
-use trusted_cluster_operator_lib::endpoints::*;
-use trusted_cluster_operator_lib::{AttestationKey, AttestationKeyStatus, Machine, update_status};
+use trusted_cluster_operator_lib::{AttestationKey, AttestationKeyStatus, KubeClients, Machine};
+use trusted_cluster_operator_lib::{endpoints::*, update_status};
 
 use crate::conditions::attestation_key_approved_condition;
 use crate::trustee;
@@ -44,6 +44,7 @@ use operator::{
 /// Stores give local cache access to avoid repeated API-server reads.
 pub struct AkContextData {
     pub client: Client,
+    watch_client: Client,
     pub machine_store: Store<Machine>,
     pub ak_store: Store<AttestationKey>,
     pub secret_store: Store<Secret>,
@@ -51,19 +52,21 @@ pub struct AkContextData {
 }
 
 impl AkContextData {
-    pub fn new(client: Client) -> Self {
+    pub fn new(clients: &KubeClients) -> Self {
         let (machine_store, machine_writer) = reflector::store::<Machine>();
         let (ak_store, ak_writer) = reflector::store::<AttestationKey>();
         let (secret_store, secret_writer) = reflector::store::<Secret>();
         let (deployment_store, deployment_writer) = reflector::store::<Deployment>();
 
-        crate::spawn_reflector::<Machine>(machine_writer, client.clone(), "Machine");
-        crate::spawn_reflector::<AttestationKey>(ak_writer, client.clone(), "AttestationKey");
-        crate::spawn_reflector::<Secret>(secret_writer, client.clone(), "Secret");
-        crate::spawn_reflector::<Deployment>(deployment_writer, client.clone(), "Deployment");
+        let watch = &clients.watch_client;
+        crate::spawn_reflector::<Machine>(machine_writer, watch.clone(), "Machine");
+        crate::spawn_reflector::<AttestationKey>(ak_writer, watch.clone(), "AttestationKey");
+        crate::spawn_reflector::<Secret>(secret_writer, watch.clone(), "Secret");
+        crate::spawn_reflector::<Deployment>(deployment_writer, watch.clone(), "Deployment");
 
         Self {
-            client,
+            client: clients.request_client.clone(),
+            watch_client: watch.clone(),
             machine_store,
             ak_store,
             secret_store,
@@ -360,7 +363,7 @@ async fn secret_reconcile(
 }
 
 pub async fn launch_ak_controller(ctx: Arc<AkContextData>) {
-    let aks: Api<AttestationKey> = Api::default_namespaced(ctx.client.clone());
+    let aks: Api<AttestationKey> = Api::default_namespaced(ctx.watch_client.clone());
     tokio::spawn(
         Controller::new(aks, watcher::Config::default())
             .run(ak_reconcile, controller_error_policy, ctx)
@@ -374,7 +377,7 @@ pub async fn launch_ak_controller(ctx: Arc<AkContextData>) {
 }
 
 pub async fn launch_machine_ak_controller(ctx: Arc<AkContextData>) {
-    let machines: Api<Machine> = Api::default_namespaced(ctx.client.clone());
+    let machines: Api<Machine> = Api::default_namespaced(ctx.watch_client.clone());
     tokio::spawn(
         Controller::new(machines, watcher::Config::default())
             .run(machine_reconcile, controller_error_policy, ctx)
@@ -388,7 +391,7 @@ pub async fn launch_machine_ak_controller(ctx: Arc<AkContextData>) {
 }
 
 pub async fn launch_secret_ak_controller(ctx: Arc<AkContextData>) {
-    let secrets: Api<Secret> = Api::default_namespaced(ctx.client.clone());
+    let secrets: Api<Secret> = Api::default_namespaced(ctx.watch_client.clone());
     tokio::spawn(
         Controller::new(secrets, watcher::Config::default())
             .run(secret_reconcile, controller_error_policy, ctx)

@@ -26,7 +26,9 @@ use trusted_cluster_operator_lib::conditions::COMMITTED_CONDITION;
 use trusted_cluster_operator_lib::issuers::{Issuer, IssuerCa, IssuerSpec};
 
 use trusted_cluster_operator_lib::{ApprovedImage, ApprovedImageStatus, AttestationKey, Machine};
-use trusted_cluster_operator_lib::{TrustedExecutionCluster, endpoints::*, images::*};
+use trusted_cluster_operator_lib::{
+    KubeClients, TrustedExecutionCluster, endpoints::*, images::*, timed_client,
+};
 
 pub mod timer;
 pub use timer::Poller;
@@ -194,30 +196,30 @@ trait K8sPlatform: Send + Sync {
 
 struct Kind {
     public: bool,
-    client: Client,
+    clients: KubeClients,
     namespace: String,
 }
 struct OpenShift {
-    client: Client,
+    clients: KubeClients,
     namespace: String,
 }
 struct OtherK8s {}
 
-fn get_k8s_platform(client: &Client, namespace: &str) -> Box<dyn K8sPlatform> {
-    let client = client.clone();
+fn get_k8s_platform(clients: &KubeClients, namespace: &str) -> Box<dyn K8sPlatform> {
+    let clients = clients.clone();
     let namespace = namespace.to_string();
     match env::var(PLATFORM_ENV).as_deref().unwrap_or("kind") {
         "kind" => Box::new(Kind {
             public: false,
-            client,
+            clients,
             namespace,
         }),
         "kind_public" => Box::new(Kind {
             public: true,
-            client,
+            clients,
             namespace,
         }),
-        "openshift" => Box::new(OpenShift { client, namespace }),
+        "openshift" => Box::new(OpenShift { clients, namespace }),
         _ => Box::new(OtherK8s {}),
     }
 }
@@ -249,7 +251,8 @@ impl K8sPlatform for Kind {
             port,
             ..Default::default()
         };
-        let services: Api<Service> = Api::namespaced(self.client.clone(), &self.namespace);
+        let services: Api<Service> =
+            Api::namespaced(self.clients.request_client.clone(), &self.namespace);
         let service = Service {
             metadata: ObjectMeta {
                 name: Some(format!("{service}-forward")),
@@ -284,7 +287,8 @@ enum OpenShiftHost {
 
 impl OpenShift {
     async fn get_url(&self, service: &str) -> OpenShiftHost {
-        let services: Api<Service> = Api::namespaced(self.client.clone(), &self.namespace);
+        let services: Api<Service> =
+            Api::namespaced(self.clients.request_client.clone(), &self.namespace);
         let Ok(svc) = services.get(service).await else {
             return OpenShiftHost::None;
         };
@@ -313,7 +317,10 @@ impl K8sPlatform for OpenShift {
         cert_name: &str,
         _: &str,
     ) -> Result<()> {
-        let services: Api<Service> = Api::namespaced(self.client.clone(), &self.namespace);
+        let services: Api<Service> =
+            Api::namespaced(self.clients.request_client.clone(), &self.namespace);
+        let watch_services: Api<Service> =
+            Api::namespaced(self.clients.watch_client.clone(), &self.namespace);
         let pp = Default::default();
         let duration = scaled_duration(120);
         let lb = json!({ "spec": { "type": "LoadBalancer" } });
@@ -333,7 +340,7 @@ impl K8sPlatform for OpenShift {
             let ctx = format!(
                 "waiting for ingress on {service} (attempt {attempt}/{EXPOSE_MAX_ATTEMPTS})"
             );
-            let ingress_ready = await_condition(services.clone(), service, has_ingress);
+            let ingress_ready = await_condition(watch_services.clone(), service, has_ingress);
             match timeout(duration, ingress_ready).await {
                 Err(_) => {
                     last_err = Some(anyhow!(ctx));
@@ -369,7 +376,10 @@ impl K8sPlatform for OpenShift {
             return Err(e);
         }
 
-        let certs: Api<Certificate> = Api::namespaced(self.client.clone(), &self.namespace);
+        let certs: Api<Certificate> =
+            Api::namespaced(self.clients.request_client.clone(), &self.namespace);
+        let watch_certs: Api<Certificate> =
+            Api::namespaced(self.clients.watch_client.clone(), &self.namespace);
         let cert = certs.get(cert_name).await?;
         let old_revision = cert.status.and_then(|st| st.revision).unwrap_or(0);
         let cert_patch = match url {
@@ -397,11 +407,12 @@ impl K8sPlatform for OpenShift {
             cert.and_then(|c| c.status.as_ref().and_then(chk))
                 .unwrap_or(false)
         };
-        let cert_done = await_condition(certs, cert_name, cert_reissued);
+        let cert_done = await_condition(watch_certs, cert_name, cert_reissued);
         let ctx = format!("waiting for cert {cert_name} to have a rev newer than {old_revision}");
         timeout(duration, cert_done).await.context(ctx)??;
 
-        let deployments: Api<Deployment> = Api::namespaced(self.client.clone(), &self.namespace);
+        let deployments: Api<Deployment> =
+            Api::namespaced(self.clients.request_client.clone(), &self.namespace);
         deployments.restart(deployment).await?;
 
         Ok(())
@@ -438,7 +449,7 @@ impl K8sPlatform for OtherK8s {
 }
 
 pub async fn get_cluster_url(
-    client: &Client,
+    clients: &KubeClients,
     namespace: &str,
     service: &str,
     port: Option<i32>,
@@ -450,7 +461,7 @@ pub async fn get_cluster_url(
             None => full_url,
         });
     }
-    get_k8s_platform(client, namespace)
+    get_k8s_platform(clients, namespace)
         .get_cluster_url(service, port)
         .await
 }
@@ -458,7 +469,7 @@ pub async fn get_cluster_url(
 static INIT: Once = Once::new();
 
 pub struct TestContext {
-    client: Client,
+    clients: KubeClients,
     test_namespace: String,
     manifests_dir: String,
     test_name: String,
@@ -471,11 +482,11 @@ impl TestContext {
             let _ = env_logger::builder().is_test(true).try_init();
         });
 
-        let client = setup_test_client().await?;
+        let clients = setup_test_clients().await?;
         let namespace = test_namespace_name();
 
         let ctx = Self {
-            client,
+            clients,
             test_namespace: namespace,
             manifests_dir: String::new(),
             test_name: test_name.to_string(),
@@ -499,7 +510,15 @@ impl TestContext {
     }
 
     pub fn client(&self) -> &Client {
-        &self.client
+        &self.clients.request_client
+    }
+
+    pub fn watch_client(&self) -> &Client {
+        &self.clients.watch_client
+    }
+
+    pub fn clients(&self) -> &KubeClients {
+        &self.clients
     }
 
     pub fn namespace(&self) -> &str {
@@ -537,7 +556,7 @@ impl TestContext {
             "Creating test namespace: {}",
             self.test_namespace
         );
-        let namespace_api: Api<Namespace> = Api::all(self.client.clone());
+        let namespace_api: Api<Namespace> = Api::all(self.clients.request_client.clone());
         let namespace = Namespace {
             metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
                 name: Some(self.test_namespace.clone()),
@@ -558,7 +577,8 @@ impl TestContext {
         K: kube::Resource<DynamicType = (), Scope = k8s_openapi::NamespaceResourceScope> + Clone,
         K: k8s_openapi::serde::de::DeserializeOwned + std::fmt::Debug + Send + 'static,
     {
-        let api: Api<K> = Api::namespaced(self.client.clone(), &self.test_namespace);
+        let api: Api<K> =
+            Api::namespaced(self.clients.request_client.clone(), &self.test_namespace);
         let list = api.list(&Default::default()).await?;
         if let Some(item) = list.items.first() {
             return Err(anyhow!("Resource still present: {item:?}"));
@@ -568,7 +588,7 @@ impl TestContext {
 
     async fn delete_trusted_execution_cluster(&self) -> Result<()> {
         let tec_api: Api<TrustedExecutionCluster> =
-            Api::namespaced(self.client.clone(), &self.test_namespace);
+            Api::namespaced(self.clients.request_client.clone(), &self.test_namespace);
         let dp = DeleteParams::default();
 
         let tec_list = tec_api.list(&Default::default()).await?;
@@ -596,14 +616,15 @@ impl TestContext {
     }
 
     async fn cleanup_namespace(&self) -> Result<()> {
-        let namespace_api: Api<Namespace> = Api::all(self.client.clone());
+        let namespace_api: Api<Namespace> = Api::all(self.clients.request_client.clone());
+        let watch_namespaces: Api<Namespace> = Api::all(self.clients.watch_client.clone());
         let dp = DeleteParams::default();
 
         match namespace_api.get(&self.test_namespace).await {
             Ok(_) => {
                 namespace_api.delete(&self.test_namespace, &dp).await?;
                 let timeout = scaled_timeout(300);
-                wait_for_resource_deleted(&namespace_api, &self.test_namespace, timeout).await?;
+                wait_for_resource_deleted(&watch_namespaces, &self.test_namespace, timeout).await?;
                 test_info!(&self.test_name, "Deleted namespace {}", self.test_namespace);
             }
             Err(kube::Error::Api(ae)) if ae.code == 404 => {
@@ -646,8 +667,8 @@ impl TestContext {
         issuer_name: &str,
     ) -> Result<()> {
         let ns = &self.test_namespace;
-        let domain = get_cluster_url(&self.client, ns, service_name, None).await?;
-        let certs: Api<Certificate> = Api::namespaced(self.client.clone(), ns);
+        let domain = get_cluster_url(&self.clients, ns, service_name, None).await?;
+        let certs: Api<Certificate> = Api::namespaced(self.clients.request_client.clone(), ns);
         let cert = Certificate {
             metadata: ObjectMeta {
                 name: Some(cert_name.to_string()),
@@ -682,7 +703,7 @@ impl TestContext {
             },
             ..Default::default()
         };
-        let issuers: Api<Issuer> = Api::namespaced(self.client.clone(), ns);
+        let issuers: Api<Issuer> = Api::namespaced(self.clients.request_client.clone(), ns);
         issuers.create(&Default::default(), &root_issuer).await?;
         let root_cert = Certificate {
             metadata: ObjectMeta {
@@ -701,7 +722,7 @@ impl TestContext {
             },
             ..Default::default()
         };
-        let certs: Api<Certificate> = Api::namespaced(self.client.clone(), ns);
+        let certs: Api<Certificate> = Api::namespaced(self.clients.request_client.clone(), ns);
         certs.create(&Default::default(), &root_cert).await?;
         let issuer_name = "issuer";
         let issuer = Issuer {
@@ -729,7 +750,8 @@ impl TestContext {
         self.create_certificate(svc, ATT_REG_CERT, ATT_REG_SECRET, issuer_name)
             .await?;
 
-        let secrets: Api<Secret> = Api::namespaced(self.client.clone(), &self.test_namespace);
+        let secrets: Api<Secret> =
+            Api::namespaced(self.clients.request_client.clone(), &self.test_namespace);
         for secret in [REG_SECRET, TRUSTEE_SECRET, ATT_REG_SECRET] {
             wait_for_resource_created(&secrets, secret, scaled_timeout(60)).await?;
         }
@@ -876,7 +898,7 @@ impl TestContext {
         std::fs::write(&le_rb_dst, le_rb_content)?;
 
         test_info!(&self.test_name, "Preparing RBAC kustomization");
-        let platform = get_k8s_platform(&self.client, &self.test_namespace);
+        let platform = get_k8s_platform(&self.clients, &self.test_namespace);
         let kustomization_src = workspace_root.join("config/rbac/kustomization.yaml.in");
         let kustomization_content = std::fs::read_to_string(&kustomization_src)?;
         let mut kustom_value: serde_yaml::Value = serde_yaml::from_str(&kustomization_content)?;
@@ -942,7 +964,7 @@ impl TestContext {
         );
 
         if get_virt_provider()? == VirtProvider::Kubevirt {
-            let platform = get_k8s_platform(&self.client, &self.test_namespace);
+            let platform = get_k8s_platform(&self.clients, &self.test_namespace);
             let port = ATTESTATION_KEY_REGISTER_PORT;
             let address = platform.get_cluster_url(ATTESTATION_KEY_REGISTER_SERVICE, Some(port));
             spec_map.insert(
@@ -976,7 +998,7 @@ impl TestContext {
             depl.and_then(chk).unwrap_or(false)
         };
 
-        let depls: Api<Deployment> = Api::namespaced(self.client.clone(), ns);
+        let depls: Api<Deployment> = Api::namespaced(self.clients.watch_client.clone(), ns);
         for depl in [
             "trusted-cluster-operator",
             REGISTER_SERVER_DEPLOYMENT,
@@ -991,14 +1013,14 @@ impl TestContext {
         }
 
         let svc = ATTESTATION_KEY_REGISTER_SERVICE;
-        let services: Api<Service> = Api::namespaced(self.client.clone(), ns);
+        let services: Api<Service> = Api::namespaced(self.clients.watch_client.clone(), ns);
         for svc in [REGISTER_SERVER_SERVICE, TRUSTEE_SERVICE, svc] {
             let done = await_condition(services.clone(), svc, |s: Option<&Service>| s.is_some());
             let ctx = format!("waiting for service {svc} to exist");
             timeout(scaled_duration(60), done).await.context(ctx)??;
         }
 
-        let platform = get_k8s_platform(&self.client, &self.test_namespace);
+        let platform = get_k8s_platform(&self.clients, &self.test_namespace);
         let svc = REGISTER_SERVER_SERVICE;
         let depl = REGISTER_SERVER_DEPLOYMENT;
         let test_name = &self.test_name;
@@ -1010,9 +1032,10 @@ impl TestContext {
         let depl = ATTESTATION_KEY_REGISTER_DEPLOYMENT;
         platform.expose(svc, depl, ATT_REG_CERT, test_name).await?;
 
-        let tecs: Api<TrustedExecutionCluster> = Api::namespaced(self.client.clone(), ns);
+        let tecs: Api<TrustedExecutionCluster> =
+            Api::namespaced(self.clients.request_client.clone(), ns);
         let trustee_addr =
-            get_cluster_url(&self.client, ns, TRUSTEE_SERVICE, Some(TRUSTEE_PORT)).await?;
+            get_cluster_url(&self.clients, ns, TRUSTEE_SERVICE, Some(TRUSTEE_PORT)).await?;
         let json = json!({
             "spec": {
                 "publicTrusteeAddr": trustee_addr
@@ -1028,12 +1051,13 @@ impl TestContext {
             &self.test_name,
             "Waiting for image-pcrs ConfigMap to be created"
         );
-        let configmap_api: Api<ConfigMap> = Api::namespaced(self.client.clone(), ns);
+        let configmap_api: Api<ConfigMap> =
+            Api::namespaced(self.clients.request_client.clone(), ns);
         wait_for_resource_created(&configmap_api, "image-pcrs", scaled_timeout(60)).await?;
 
         let info = format!("Waiting for ApprovedImage {APPROVED_IMAGE_NAME} to be Committed");
         test_info!(&self.test_name, "{info}");
-        let images: Api<ApprovedImage> = Api::namespaced(self.client.clone(), ns);
+        let images: Api<ApprovedImage> = Api::namespaced(self.clients.watch_client.clone(), ns);
         let image_ready = |img: Option<&ApprovedImage>| {
             let chk_cond = |c: &Condition| c.type_ == COMMITTED_CONDITION && c.status == "True";
             let chk_status =
@@ -1078,9 +1102,13 @@ macro_rules! setup {
     (delayed_approved_image) => {{ $crate::TestContext::new(TEST_NAME, true) }};
 }
 
-async fn setup_test_client() -> Result<Client> {
-    let client = Client::try_default().await?;
-    Ok(client)
+async fn setup_test_clients() -> Result<KubeClients> {
+    let request_client = timed_client().await?;
+    let watch_client = Client::try_default().await?;
+    Ok(KubeClients {
+        request_client,
+        watch_client,
+    })
 }
 
 fn test_namespace_name() -> String {

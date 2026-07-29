@@ -36,6 +36,7 @@ named_test!(
     async fn test_trusted_execution_cluster_uninstall() -> anyhow::Result<()> {
         let test_ctx = setup!().await?;
         let client = test_ctx.client();
+        let watch = test_ctx.watch_client();
         let namespace = test_ctx.namespace();
 
         let tec_api: Api<TrustedExecutionCluster> = Api::namespaced(client.clone(), namespace);
@@ -91,7 +92,8 @@ named_test!(
         ));
 
         // Wait for the AttestationKey to be approved (operator should match Machine IP and approve it)
-        let done = await_condition(attestation_keys.clone(), &ak_name, ak_approved);
+        let watch_aks: Api<AttestationKey> = Api::namespaced(watch.clone(), namespace);
+        let done = await_condition(watch_aks.clone(), &ak_name, ak_approved);
         let ctx = format!("waiting for AttestationKey {ak_name} to be approved");
         timeout(scaled_duration(30), done).await.context(ctx)??;
 
@@ -103,20 +105,22 @@ named_test!(
         api.delete(TEC_NAME, &dp).await?;
 
         // Wait until it disappears
-        wait_for_resource_deleted(&api, TEC_NAME, scaled_timeout(120)).await?;
+        let watch_tec: Api<TrustedExecutionCluster> = Api::namespaced(watch.clone(), namespace);
+        wait_for_resource_deleted(&watch_tec, TEC_NAME, scaled_timeout(120)).await?;
 
-        let deployments_api: Api<Deployment> = Api::namespaced(client.clone(), namespace);
+        let watch_depls: Api<Deployment> = Api::namespaced(watch.clone(), namespace);
         let timeout = scaled_timeout(120);
-        wait_for_resource_deleted(&deployments_api, TRUSTEE_DEPLOYMENT, timeout).await?;
-        wait_for_resource_deleted(&deployments_api, REGISTER_SERVER_DEPLOYMENT, timeout).await?;
+        wait_for_resource_deleted(&watch_depls, TRUSTEE_DEPLOYMENT, timeout).await?;
+        wait_for_resource_deleted(&watch_depls, REGISTER_SERVER_DEPLOYMENT, timeout).await?;
 
-        let images_api: Api<ApprovedImage> = Api::namespaced(client.clone(), namespace);
-        wait_for_resource_deleted(&images_api, APPROVED_IMAGE_NAME, scaled_timeout(120)).await?;
+        let watch_images: Api<ApprovedImage> = Api::namespaced(watch.clone(), namespace);
+        wait_for_resource_deleted(&watch_images, APPROVED_IMAGE_NAME, scaled_timeout(120)).await?;
 
-        wait_for_resource_deleted(&machines, &machine_name, scaled_timeout(120)).await?;
-        wait_for_resource_deleted(&attestation_keys, &ak_name, scaled_timeout(120)).await?;
-        let secrets_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
-        wait_for_resource_deleted(&secrets_api, &ak_name, scaled_timeout(120)).await?;
+        let watch_machines: Api<Machine> = Api::namespaced(watch.clone(), namespace);
+        wait_for_resource_deleted(&watch_machines, &machine_name, scaled_timeout(120)).await?;
+        wait_for_resource_deleted(&watch_aks, &ak_name, scaled_timeout(120)).await?;
+        let watch_secrets: Api<Secret> = Api::namespaced(watch.clone(), namespace);
+        wait_for_resource_deleted(&watch_secrets, &ak_name, scaled_timeout(120)).await?;
 
         test_ctx.cleanup().await?;
 
@@ -128,9 +132,10 @@ named_test! {
 async fn test_image_pcrs_configmap_updates() -> anyhow::Result<()> {
     let test_ctx = setup!().await?;
     let client = test_ctx.client();
+    let watch = test_ctx.watch_client();
     let namespace = test_ctx.namespace();
 
-    let configmap_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+    let configmap_api: Api<ConfigMap> = Api::namespaced(watch.clone(), namespace);
     let populated = |cm: Option<&ConfigMap>| {
         let data = cm.and_then(|cm| cm.data.as_ref());
         let json = data.and_then(|data| data.get("image-pcrs.json"));
@@ -141,7 +146,8 @@ async fn test_image_pcrs_configmap_updates() -> anyhow::Result<()> {
     let ctx = "waiting for ConfigMap image-pcrs to be populated";
     timeout(scaled_duration(180), done).await.context(ctx)??;
 
-    let image_pcrs_cm = configmap_api.get("image-pcrs").await?;
+    let cm_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+    let image_pcrs_cm = cm_api.get("image-pcrs").await?;
     assert_eq!(image_pcrs_cm.metadata.name.as_deref(), Some("image-pcrs"));
 
     let data = image_pcrs_cm.data.as_ref()
@@ -219,12 +225,13 @@ named_test! {
 async fn test_image_disallow() -> anyhow::Result<()> {
     let test_ctx = setup!().await?;
     let client = test_ctx.client();
+    let watch = test_ctx.watch_client();
     let namespace = test_ctx.namespace();
 
     let images: Api<ApprovedImage> = Api::namespaced(client.clone(), namespace);
     images.delete(APPROVED_IMAGE_NAME, &DeleteParams::default()).await?;
 
-    let configmap_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+    let configmap_api: Api<ConfigMap> = Api::namespaced(watch.clone(), namespace);
     let chk_removed = |cm: Option<&ConfigMap>| {
         let data = cm.and_then(|cm| cm.data.as_ref());
         let json = data.and_then(|data| data.get(RV_JSON_KEY));
@@ -243,6 +250,7 @@ named_test! {
 async fn test_attestation_key_lifecycle() -> anyhow::Result<()> {
     let test_ctx = setup!().await?;
     let client = test_ctx.client();
+    let watch = test_ctx.watch_client();
     let namespace = test_ctx.namespace();
 
     let tec_api: Api<TrustedExecutionCluster> = Api::namespaced(client.clone(), namespace);
@@ -297,7 +305,8 @@ async fn test_attestation_key_lifecycle() -> anyhow::Result<()> {
     ));
 
     // Timeout for the AttestationKey to be approved, have owner reference, and have a Secret created
-    let approved = await_condition(attestation_keys.clone(), &ak_name, ak_approved);
+    let watch_aks: Api<AttestationKey> = Api::namespaced(watch.clone(), namespace);
+    let approved = await_condition(watch_aks.clone(), &ak_name, ak_approved);
     let ctx = format!("waiting for AttestationKey {ak_name} to be approved");
     timeout(scaled_duration(30), approved).await.context(ctx)??;
     let chk_machine_owner = |ak: Option<&AttestationKey>| {
@@ -305,16 +314,16 @@ async fn test_attestation_key_lifecycle() -> anyhow::Result<()> {
         let refs = ak.and_then(|ak| ak.metadata.owner_references.as_ref());
         refs.map(|refs| refs.iter().any(chk_owner)).unwrap_or(false)
     };
-    let has_machine_owner = await_condition(attestation_keys.clone(), &ak_name, chk_machine_owner);
+    let has_machine_owner = await_condition(watch_aks.clone(), &ak_name, chk_machine_owner);
     let ctx = format!("waiting for AttestationKey {ak_name} to be owned by Machine {machine_name}");
     timeout(scaled_duration(30), has_machine_owner).await.context(ctx)??;
-    let secrets_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
+    let secrets: Api<Secret> = Api::namespaced(watch.clone(), namespace);
     let chk_ak_owner = |secret: Option<&Secret>| {
         let chk_owner = |owner: &OwnerReference| owner.kind == "AttestationKey" && owner.name == ak_name;
         let refs = secret.and_then(|s| s.metadata.owner_references.as_ref());
         refs.map(|refs| refs.iter().any(chk_owner)).unwrap_or(false)
     };
-    let has_ak_owner = await_condition(secrets_api.clone(), &ak_name, chk_ak_owner);
+    let has_ak_owner = await_condition(secrets.clone(), &ak_name, chk_ak_owner);
     let ctx = format!("waiting for Secret {ak_name} to be owned by AttestationKey {ak_name}");
     timeout(scaled_duration(30), has_ak_owner).await.context(ctx)??;
 
@@ -327,11 +336,12 @@ async fn test_attestation_key_lifecycle() -> anyhow::Result<()> {
     machines.delete(&machine_name, &dp).await?;
     test_ctx.info(format!("Deleted Machine: {machine_name}"));
 
-    wait_for_resource_deleted(&machines, &machine_name, scaled_timeout(120)).await?;
+    let watch_machines: Api<Machine> = Api::namespaced(watch.clone(), namespace);
+    wait_for_resource_deleted(&watch_machines, &machine_name, scaled_timeout(120)).await?;
     test_ctx.info("Machine successfully deleted");
-    wait_for_resource_deleted(&attestation_keys, &ak_name, scaled_timeout(120)).await?;
+    wait_for_resource_deleted(&watch_aks, &ak_name, scaled_timeout(120)).await?;
     test_ctx.info("AttestationKey successfully deleted");
-    wait_for_resource_deleted(&secrets_api, &ak_name, scaled_timeout(120)).await?;
+    wait_for_resource_deleted(&secrets, &ak_name, scaled_timeout(120)).await?;
     test_ctx.info("Secret successfully deleted");
 
     test_ctx.cleanup().await?;
@@ -344,6 +354,7 @@ named_test! {
 async fn test_nonexistent_approved_image() -> anyhow::Result<()> {
     let test_ctx = setup!().await?;
     let client = test_ctx.client();
+    let watch = test_ctx.watch_client();
     let namespace = test_ctx.namespace();
 
     let images: Api<ApprovedImage> = Api::namespaced(client.clone(), namespace);
@@ -364,7 +375,8 @@ async fn test_nonexistent_approved_image() -> anyhow::Result<()> {
         let cs = img.and_then(|img| img.status.as_ref()).and_then(|s| s.conditions.as_ref());
         cs.map(|cs| cs.iter().any(pending)).unwrap_or(false)
     };
-    let done = await_condition(images, "coreos1", is_pending);
+    let watch_images: Api<ApprovedImage> = Api::namespaced(watch.clone(), namespace);
+    let done = await_condition(watch_images, "coreos1", is_pending);
     let ctx = "waiting for ApprovedImage coreos1 to be PodPending";
     timeout(scaled_duration(30), done).await.context(ctx)??;
 
@@ -377,11 +389,13 @@ named_test! {
 async fn test_approved_image_readoption() -> anyhow::Result<()> {
     let test_ctx = setup!(delayed_approved_image).await?;
     let client = test_ctx.client();
+    let watch = test_ctx.watch_client();
     let namespace = test_ctx.namespace();
 
     let clusters: Api<TrustedExecutionCluster> = Api::namespaced(client.clone(), namespace);
     let images: Api<ApprovedImage> = Api::namespaced(client.clone(), namespace);
-    let configmaps: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+    let watch_images: Api<ApprovedImage> = Api::namespaced(watch.clone(), namespace);
+    let configmaps: Api<ConfigMap> = Api::namespaced(watch.clone(), namespace);
 
     let cluster_spec = clusters.get(TEC_NAME).await?.spec;
     let image_spec = images.get(APPROVED_IMAGE_NAME).await?.spec;
@@ -390,14 +404,14 @@ async fn test_approved_image_readoption() -> anyhow::Result<()> {
         let refs = img.and_then(|img| img.metadata.owner_references.as_ref());
         refs.is_some_and(|refs| refs.iter().any(|o| o.kind == "TrustedExecutionCluster"))
     };
-    let done = await_condition(images.clone(), APPROVED_IMAGE_NAME, owned);
+    let done = await_condition(watch_images.clone(), APPROVED_IMAGE_NAME, owned);
     let ctx = "waiting for ApprovedImage to be owned by TrustedExecutionCluster";
     timeout(scaled_duration(30), done).await.context(ctx)??;
 
     test_ctx.info(format!("Deleting TrustedExecutionCluster {TEC_NAME}"));
     clusters.delete(TEC_NAME, &Default::default()).await?;
     wait_for_resource_deleted(&configmaps, TRUSTEE_CONFIG_MAP, scaled_timeout(60)).await?;
-    wait_for_resource_deleted(&images, APPROVED_IMAGE_NAME, scaled_timeout(60)).await?;
+    wait_for_resource_deleted(&watch_images, APPROVED_IMAGE_NAME, scaled_timeout(60)).await?;
     test_ctx.info(format!("Configmap {TRUSTEE_CONFIG_MAP} was removed"));
 
     let image = ApprovedImage {

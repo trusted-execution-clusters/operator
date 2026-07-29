@@ -27,6 +27,31 @@ use anyhow::{Context, Result, anyhow};
 use conditions::*;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, OwnerReference, Time};
 use kube::{Api, Client, Resource};
+use std::time::Duration;
+
+/// Read timeout for non-watch Kubernetes API calls.
+pub const KUBE_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Create a [`Client`] with [`KUBE_READ_TIMEOUT`] applied.
+///
+/// Use this for request/response API calls. For long-lived watch streams, use
+/// [`Client::try_default`] instead so the connection never times out on idle.
+pub async fn timed_client() -> Result<Client> {
+    let mut config = kube::Config::infer().await?;
+    config.read_timeout = Some(KUBE_READ_TIMEOUT);
+    Ok(Client::try_from(config)?)
+}
+
+/// A pair of Kubernetes clients
+///
+/// `client` has a read timeout for request/response API calls.
+/// `watch` has no read timeout, keeping it safe for long-lived watch streams
+/// (Controllers, Reflectors, `await_condition`).
+#[derive(Clone)]
+pub struct KubeClients {
+    pub request_client: Client,
+    pub watch_client: Client,
+}
 
 #[macro_export]
 macro_rules! update_status {

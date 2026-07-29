@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 use trusted_cluster_operator_lib::endpoints::*;
 use trusted_cluster_operator_lib::{
-    generate_owner_reference, get_trusted_execution_cluster, Machine, MachineSpec,
+    generate_owner_reference, get_trusted_execution_cluster, timed_client, Machine, MachineSpec,
 };
 
 #[derive(Parser)]
@@ -237,7 +237,7 @@ async fn main() {
     let err = "failed to create Kubernetes client";
     let app = Router::new()
         .route(&endpoint, get(register_handler))
-        .with_state(Client::try_default().await.expect(err));
+        .with_state(timed_client().await.expect(err));
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     let service = app.into_make_service();
 

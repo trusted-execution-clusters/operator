@@ -133,15 +133,16 @@ async fn job_reconcile(job: Arc<Job>, client: Arc<Client>) -> Result<Action, Con
     Ok(Action::await_change())
 }
 
-pub async fn launch_rv_job_controller(client: Client) {
-    let jobs: Api<Job> = Api::default_namespaced(client.clone());
+pub async fn launch_rv_job_controller(clients: KubeClients) {
+    let jobs: Api<Job> = Api::default_namespaced(clients.watch_client);
     let watcher = watcher::Config {
         label_selector: Some(format!("{JOB_LABEL_KEY}={PCR_COMMAND_NAME}")),
         ..Default::default()
     };
+    let client = Arc::new(clients.request_client);
     tokio::spawn(
         Controller::new(jobs, watcher)
-            .run(job_reconcile, controller_error_policy, Arc::new(client))
+            .run(job_reconcile, controller_error_policy, client)
             .for_each(controller_info),
     );
 }
@@ -339,14 +340,15 @@ async fn image_remove_reconcile(
     Ok(Action::await_change())
 }
 
-pub async fn launch_rv_image_controller(client: Client) {
-    let images: Api<ApprovedImage> = Api::default_namespaced(client.clone());
-    let jobs: Api<Job> = Api::default_namespaced(client.clone());
+pub async fn launch_rv_image_controller(clients: KubeClients) {
+    let images: Api<ApprovedImage> = Api::default_namespaced(clients.watch_client.clone());
+    let jobs: Api<Job> = Api::default_namespaced(clients.watch_client);
     let wc = watcher::Config::default().labels(&format!("{JOB_LABEL_KEY}={PCR_COMMAND_NAME}"));
+    let client = Arc::new(clients.request_client);
     tokio::spawn(
         Controller::new(images, Default::default())
             .owns(jobs, wc)
-            .run(image_reconcile, controller_error_policy, Arc::new(client))
+            .run(image_reconcile, controller_error_policy, client)
             .for_each(controller_info),
     );
 }

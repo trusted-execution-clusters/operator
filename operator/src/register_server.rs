@@ -24,7 +24,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use crate::trustee;
 use operator::*;
-use trusted_cluster_operator_lib::{Machine, TrustedExecutionCluster, endpoints::*};
+use trusted_cluster_operator_lib::{KubeClients, Machine, TrustedExecutionCluster, endpoints::*};
 
 /// Finalizer name to discard decryption keys when a machine is deleted
 const MACHINE_FINALIZER: &str = "finalizer.machine.trusted-execution-clusters.io";
@@ -196,11 +196,12 @@ async fn keygen_reconcile(
     .map_err(|e| anyhow!("failed to reconcile on machine: {e}").into())
 }
 
-pub async fn launch_keygen_controller(client: Client) {
-    let machines: Api<Machine> = Api::default_namespaced(client.clone());
+pub async fn launch_keygen_controller(clients: KubeClients) {
+    let machines: Api<Machine> = Api::default_namespaced(clients.watch_client);
+    let client = Arc::new(clients.request_client);
     tokio::spawn(
         Controller::new(machines, Default::default())
-            .run(keygen_reconcile, controller_error_policy, Arc::new(client))
+            .run(keygen_reconcile, controller_error_policy, client)
             .for_each(controller_info),
     );
 }

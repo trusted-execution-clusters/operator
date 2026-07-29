@@ -36,10 +36,10 @@ impl SingleAttestationContext {
 
 impl SingleAttestationContext {
     async fn new(vm_name: &str, test_ctx: &TestContext) -> Result<Self> {
-        let client = test_ctx.client();
         let namespace = test_ctx.namespace();
 
-        let backend = virt::create_backend(client.clone(), namespace, vm_name).await?;
+        let backend =
+            virt::create_backend(test_ctx.clients().clone(), namespace, vm_name).await?;
 
         test_ctx.info(format!("Creating VM: {vm_name}"));
         backend.create_vm().await?;
@@ -83,15 +83,15 @@ async fn test_attestation() -> anyhow::Result<()> {
 virt_test! {
 async fn test_parallel_vm_attestation() -> anyhow::Result<()> {
     let test_ctx = setup!().await?;
-    let client = test_ctx.client();
+    let clients = test_ctx.clients().clone();
     let namespace = test_ctx.namespace();
     test_ctx.info("Testing parallel VM attestation - launching 2 VMs simultaneously");
 
     // Launch both VMs in parallel
     let vm1_name = "test-coreos-vm1";
     let vm2_name = "test-coreos-vm2";
-    let backend1 = virt::create_backend(client.clone(), namespace, vm1_name).await?;
-    let backend2 = virt::create_backend(client.clone(), namespace, vm2_name).await?;
+    let backend1 = virt::create_backend(clients.clone(), namespace, vm1_name).await?;
+    let backend2 = virt::create_backend(clients.clone(), namespace, vm2_name).await?;
 
     test_ctx.info("Creating VM1 and VM2 in parallel");
     let (vm1_result, vm2_result) = tokio::join!(backend1.create_vm(), backend2.create_vm());
@@ -198,10 +198,12 @@ async fn test_vm_reboot_delete_machine() -> anyhow::Result<()> {
     let att_ctx = SingleAttestationContext::new(vm_name, &test_ctx).await?;
 
     let machines: Api<Machine> = Api::namespaced(test_ctx.client().clone(), test_ctx.namespace());
+    let watch_machines: Api<Machine> =
+        Api::namespaced(test_ctx.watch_client().clone(), test_ctx.namespace());
     let list = machines.list(&Default::default()).await?;
     let name = list.items[0].metadata.name.as_ref().unwrap();
     machines.delete(name, &Default::default()).await?;
-    wait_for_resource_deleted(&machines, name, scaled_timeout(120)).await?;
+    wait_for_resource_deleted(&watch_machines, name, scaled_timeout(120)).await?;
 
     test_ctx.info("Performing reboot, expecting missing resource");
     let boot_id = att_ctx.backend.get_boot_id().await?;

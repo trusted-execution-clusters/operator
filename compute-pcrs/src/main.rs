@@ -69,7 +69,12 @@ async fn main() -> Result<()> {
         pcrs,
     };
     image_pcrs.0.insert(args.resource_name.clone(), image_pcr);
-    update_image_pcrs!(config_maps, image_pcrs_map, image_pcrs);
+    let image_pcrs_json = serde_json::to_string(&image_pcrs)?;
+    let data = std::collections::BTreeMap::from([(PCR_CONFIG_FILE.to_string(), image_pcrs_json)]);
+    image_pcrs_map.data = Some(data);
+    config_maps
+        .replace(PCR_CONFIG_MAP, &Default::default(), &image_pcrs_map)
+        .await?;
 
     let approved_images: Api<ApprovedImage> = Api::default_namespaced(client);
     let image = approved_images.get(&args.resource_name).await?;

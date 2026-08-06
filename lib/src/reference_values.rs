@@ -21,15 +21,3 @@ pub struct ImagePcr {
 
 #[derive(Default, Deserialize, Serialize)]
 pub struct ImagePcrs(pub BTreeMap<String, ImagePcr>);
-
-#[macro_export]
-macro_rules! update_image_pcrs {
-    ($api:ident, $map:ident, $pcrs:ident) => {
-        let image_pcrs_json = serde_json::to_string(&$pcrs)?;
-        let map = (PCR_CONFIG_FILE.to_string(), image_pcrs_json.to_string());
-        let data = std::collections::BTreeMap::from([map]);
-        $map.data = Some(data);
-        $api.replace(PCR_CONFIG_MAP, &Default::default(), &$map)
-            .await?
-    };
-}

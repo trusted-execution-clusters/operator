@@ -8,9 +8,10 @@
 //
 // Use in other crates is not an intended purpose.
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
-use k8s_openapi::api::core::v1::{Secret, SecretVolumeSource, Volume, VolumeMount};
+use k8s_openapi::api::apps::v1::Deployment;
+use k8s_openapi::api::core::v1::{ConfigMap, Secret, SecretVolumeSource, Volume, VolumeMount};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
 use k8s_openapi::jiff::Timestamp;
 use kube::Resource;
@@ -24,6 +25,50 @@ use tokio::time::timeout;
 
 // Re-export common functions from the lib
 pub use trusted_cluster_operator_lib::generate_owner_reference;
+use trusted_cluster_operator_lib::{
+    ApprovedImage, AttestationKey, Machine, TrustedExecutionCluster,
+};
+
+/// Unified context shared across all controllers.
+/// Stores give local cache access to avoid repeated API-server reads.
+pub struct OperatorContext {
+    pub client: Client,
+    pub tec_store: Store<TrustedExecutionCluster>,
+    pub cm_store: Store<ConfigMap>,
+    pub deployment_store: Store<Deployment>,
+    pub machine_store: Store<Machine>,
+    pub ak_store: Store<AttestationKey>,
+    pub secret_store: Store<Secret>,
+    pub image_store: Store<ApprovedImage>,
+}
+
+impl OperatorContext {
+    pub fn new(client: Client) -> Self {
+        Self {
+            client,
+            tec_store: reflector::store().0,
+            cm_store: reflector::store().0,
+            deployment_store: reflector::store().0,
+            machine_store: reflector::store().0,
+            ak_store: reflector::store().0,
+            secret_store: reflector::store().0,
+            image_store: reflector::store().0,
+        }
+    }
+
+    /// Return the single TrustedExecutionCluster from the cache, or an error if more than one exists.
+    pub fn get_opt_tec(&self) -> Result<Option<TrustedExecutionCluster>> {
+        let state = self.tec_store.state();
+        if state.len() > 1 {
+            let ns = self.client.default_namespace();
+            return Err(anyhow!(
+                "More than one TrustedExecutionCluster found in namespace {ns}. \
+                 trusted-cluster-operator does not support more than one TrustedExecutionCluster."
+            ));
+        }
+        Ok(state.into_iter().next().map(Arc::unwrap_or_clone))
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ControllerError {

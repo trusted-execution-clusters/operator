@@ -4,7 +4,6 @@
 //
 // SPDX-License-Identifier: MIT
 
-use crate::attestation_key_register::AkContextData;
 use anyhow::{Context, Result};
 use base64::{Engine as _, engine::general_purpose};
 use chrono::{DateTime, Utc};
@@ -27,10 +26,11 @@ use kube::{
     runtime::reflector::ObjectRef,
 };
 use log::info;
-use operator::{TLS_DIR, create_or_info_if_exists, read_certificate};
+use operator::{OperatorContext, TLS_DIR, create_or_info_if_exists, read_certificate};
 use serde::{Serialize, Serializer};
 use serde_json::{Value::String as JsonString, json};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use trusted_cluster_operator_lib::endpoints::*;
 use trusted_cluster_operator_lib::reference_values::*;
@@ -100,21 +100,18 @@ fn recompute_reference_values(image_pcrs: ImagePcrs) -> Vec<ReferenceValue> {
         .collect()
 }
 
-pub async fn update_reference_values(client: Client) -> Result<()> {
-    let config_maps: Api<ConfigMap> = Api::default_namespaced(client);
-
-    let image_pcrs_map = config_maps.get(PCR_CONFIG_MAP).await?;
-    let reference_values = recompute_reference_values(get_image_pcrs(image_pcrs_map)?);
+pub async fn update_reference_values(client: &Client, image_pcrs: ImagePcrs) -> Result<()> {
+    let reference_values = recompute_reference_values(image_pcrs);
     let rv_json = serde_json::to_string(&reference_values)?;
-
-    let mut trustee_map = config_maps.get(TRUSTEE_DATA_MAP).await?;
-    let err = format!("ConfigMap {TRUSTEE_DATA_MAP} existed, but had no data");
-    let trustee_data = trustee_map.data.as_mut().context(err)?;
-    trustee_data.insert(REFERENCE_VALUES_FILE.to_string(), rv_json);
-
-    config_maps
-        .replace(TRUSTEE_DATA_MAP, &Default::default(), &trustee_map)
-        .await?;
+    let config_maps: Api<ConfigMap> = Api::default_namespaced(client.clone());
+    let patch = Patch::Apply(&json!({
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": { "name": TRUSTEE_DATA_MAP },
+        "data": { REFERENCE_VALUES_FILE: rv_json }
+    }));
+    let pp = PatchParams::apply("trusted-cluster-operator").force();
+    config_maps.patch(TRUSTEE_DATA_MAP, &pp, &patch).await?;
     info!("Recomputed reference values");
     Ok(())
 }
@@ -149,58 +146,76 @@ fn generate_secret_volume(id: &str) -> (Volume, VolumeMount) {
     )
 }
 
-pub async fn mount_secret(client: Client, id: &str) -> Result<()> {
-    let result = do_mount_secret(client, id, true).await;
+pub async fn mount_secret(ctx: &OperatorContext, id: &str) -> Result<()> {
+    let result = do_mount_secret(ctx, id, true).await;
     info!("Mounted secret {id} to {TRUSTEE_DEPLOYMENT}");
     result
 }
 
-pub async fn unmount_secret(client: Client, id: &str) -> Result<()> {
-    let result = do_mount_secret(client, id, false).await;
+pub async fn unmount_secret(ctx: &OperatorContext, id: &str) -> Result<()> {
+    let result = do_mount_secret(ctx, id, false).await;
     info!("Unmounted secret {id} from {TRUSTEE_DEPLOYMENT}");
     result
 }
 
-pub async fn do_mount_secret(client: Client, id: &str, add: bool) -> Result<()> {
-    let deployments: Api<Deployment> = Api::default_namespaced(client);
-    let mut deployment = deployments.get(TRUSTEE_DEPLOYMENT).await?;
+pub async fn do_mount_secret(ctx: &OperatorContext, id: &str, add: bool) -> Result<()> {
+    let client = &ctx.client;
+    let ns = client.default_namespace().to_string();
+    let obj_ref = ObjectRef::new(TRUSTEE_DEPLOYMENT).within(&ns);
+    let Some(deployment) = ctx.deployment_store.get(&obj_ref).map(Arc::unwrap_or_clone) else {
+        info!("{TRUSTEE_DEPLOYMENT} not found in cache, skipping secret mount for {id}");
+        return Ok(());
+    };
 
     let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no spec");
-    let depl_spec = deployment.spec.as_mut().context(err)?;
+    let depl_spec = deployment.spec.as_ref().context(err)?;
     let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no pod spec");
-    let pod_spec = depl_spec.template.spec.as_mut().context(err)?;
+    let pod_spec = depl_spec.template.spec.as_ref().context(err)?;
     let err = format!("Deployment {TRUSTEE_DEPLOYMENT} existed, but had no containers");
-    let container = pod_spec.containers.get_mut(0).context(err)?;
-    let vol_mounts = container.volume_mounts.get_or_insert_default();
+    let container = pod_spec.containers.first().context(err)?;
+
+    let mut volumes: Vec<Volume> = pod_spec.volumes.clone().unwrap_or_default();
+    let mut vol_mounts: Vec<VolumeMount> = container.volume_mounts.clone().unwrap_or_default();
 
     if add {
         let (volume, volume_mount) = generate_secret_volume(id);
-        pod_spec.volumes.get_or_insert_default().push(volume);
+        volumes.push(volume);
         vol_mounts.push(volume_mount);
     } else {
-        let vol_result = pod_spec.volumes.as_mut().and_then(|vs| {
-            let pos = vs.iter().position(|v| v.name == id);
-            pos.map(|p| vs.swap_remove(p))
-        });
-        if vol_result.is_none() {
+        let pos = volumes.iter().position(|v| v.name == id);
+        if let Some(p) = pos {
+            volumes.swap_remove(p);
+        } else {
             info!("Secret {id} was to be dropped, but volume had already been removed");
         }
-        let vol_mount_result = container.volume_mounts.as_mut().and_then(|vms| {
-            let pos = vms.iter().position(|v| v.name == id);
-            pos.map(|p| vms.swap_remove(p))
-        });
-        if vol_mount_result.is_none() {
+        let pos = vol_mounts.iter().position(|v| v.name == id);
+        if let Some(p) = pos {
+            vol_mounts.swap_remove(p);
+        } else {
             info!("Secret {id} was to be dropped, but volume mount had already been removed");
         }
     }
 
-    deployments
-        .replace(TRUSTEE_DEPLOYMENT, &Default::default(), &deployment)
-        .await?;
+    let patch = Patch::Apply(json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": { "name": TRUSTEE_DEPLOYMENT },
+        "spec": {
+            "template": {
+                "spec": {
+                    "volumes": volumes,
+                    "containers": [{ "name": "kbs", "volumeMounts": vol_mounts }]
+                }
+            }
+        }
+    }));
+    let deployments: Api<Deployment> = Api::default_namespaced(client.clone());
+    let pp = PatchParams::apply("trusted-cluster-operator").force();
+    deployments.patch(TRUSTEE_DEPLOYMENT, &pp, &patch).await?;
     Ok(())
 }
 
-pub async fn update_attestation_keys(ctx: &AkContextData) -> Result<()> {
+pub async fn update_attestation_keys(ctx: &OperatorContext) -> Result<()> {
     let client = &ctx.client;
     let ak_secrets: Vec<String> = ctx
         .secret_store
@@ -223,12 +238,8 @@ pub async fn update_attestation_keys(ctx: &AkContextData) -> Result<()> {
         .collect();
 
     let ns = client.default_namespace().to_string();
-    let Some(deployment) = ctx
-        .deployment_store
-        .get(&ObjectRef::new(TRUSTEE_DEPLOYMENT).within(&ns))
-        .map(std::sync::Arc::unwrap_or_clone)
-    else {
-        // Trustee deployment is not (yet or no longer) present — nothing to patch.
+    let obj_ref = ObjectRef::new(TRUSTEE_DEPLOYMENT).within(&ns);
+    let Some(deployment) = ctx.deployment_store.get(&obj_ref).map(Arc::unwrap_or_clone) else {
         info!("{TRUSTEE_DEPLOYMENT} not found in cache, skipping attestation key volume update");
         return Ok(());
     };
@@ -308,13 +319,10 @@ pub async fn update_attestation_keys(ctx: &AkContextData) -> Result<()> {
     let vol_mounts_changed = container.volume_mounts.as_ref() != Some(&vol_mounts);
 
     if volumes_changed || vol_mounts_changed {
-        // Patch the deployment with updated volumes and volumeMounts
-        let patch = json!({
+        let patch = Patch::Apply(&json!({
             "apiVersion": "apps/v1",
             "kind": "Deployment",
-            "metadata": {
-                "name": TRUSTEE_DEPLOYMENT
-            },
+            "metadata": { "name": TRUSTEE_DEPLOYMENT },
             "spec": {
                 "template": {
                     "spec": {
@@ -326,15 +334,10 @@ pub async fn update_attestation_keys(ctx: &AkContextData) -> Result<()> {
                     }
                 }
             }
-        });
+        }));
 
-        deployments
-            .patch(
-                TRUSTEE_DEPLOYMENT,
-                &PatchParams::apply("trusted-cluster-operator").force(),
-                &Patch::Apply(&patch),
-            )
-            .await?;
+        let pp = PatchParams::apply("trusted-cluster-operator").force();
+        deployments.patch(TRUSTEE_DEPLOYMENT, &pp, &patch).await?;
         info!("Successfully patched {TRUSTEE_DEPLOYMENT} with attestation key volumes");
     } else {
         info!("No changes to attestation key volumes, skipping deployment update");
@@ -671,60 +674,29 @@ mod tests {
     #[tokio::test]
     async fn test_update_rvs_success() {
         let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
-            (0, &Method::GET) => {
-                assert!(req.uri().path().contains(PCR_CONFIG_MAP));
-                Ok(serde_json::to_string(&dummy_pcrs_map()).unwrap())
-            }
-            (1, &Method::GET) | (2, &Method::PUT) => {
+            (0, &Method::PATCH) => {
                 assert!(req.uri().path().contains(TRUSTEE_DATA_MAP));
                 Ok(serde_json::to_string(&dummy_trustee_map()).unwrap())
             }
             _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
         };
-        count_check!(3, clos, |client| {
-            assert!(update_reference_values(client).await.is_ok());
-        });
-    }
-
-    #[tokio::test]
-    async fn test_update_rvs_no_pcr_map() {
-        let clos = async |req: Request<_>, _| match (req.uri().path(), req.method()) {
-            (p, &Method::GET) if p.contains(PCR_CONFIG_MAP) => Err(StatusCode::NOT_FOUND),
-            _ => panic!("unexpected API interaction: {req:?}"),
-        };
         count_check!(1, clos, |client| {
-            assert!(update_reference_values(client).await.is_err());
+            assert!(update_reference_values(&client, dummy_pcrs()).await.is_ok());
         });
     }
 
     #[tokio::test]
     async fn test_update_rvs_no_trustee_map() {
-        let clos = async |req: Request<_>, ctr| match (ctr, req.uri().path()) {
-            (0, p) if p.contains(PCR_CONFIG_MAP) => {
-                Ok(serde_json::to_string(&dummy_pcrs_map()).unwrap())
-            }
-            (1, p) if p.contains(TRUSTEE_DATA_MAP) => Err(StatusCode::NOT_FOUND),
-            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        let clos = async |req: Request<_>, _| match req.method() {
+            &Method::PATCH => Err(StatusCode::NOT_FOUND),
+            _ => panic!("unexpected API interaction: {req:?}"),
         };
-        count_check!(2, clos, |client| {
-            assert!(update_reference_values(client).await.is_err())
-        });
-    }
-
-    #[tokio::test]
-    async fn test_update_rvs_no_trustee_data() {
-        let clos = async |req: Request<_>, ctr| match (ctr, req.uri().path()) {
-            (0, p) if p.contains(PCR_CONFIG_MAP) => {
-                Ok(serde_json::to_string(&dummy_pcrs_map()).unwrap())
-            }
-            (1, p) if p.contains(TRUSTEE_DATA_MAP) => {
-                Ok(serde_json::to_string(&ConfigMap::default()).unwrap())
-            }
-            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
-        };
-        count_check!(2, clos, |client| {
-            let err = update_reference_values(client).await.err().unwrap();
-            assert!(err.to_string().contains("but had no data"));
+        count_check!(1, clos, |client| {
+            assert!(
+                update_reference_values(&client, dummy_pcrs())
+                    .await
+                    .is_err()
+            )
         });
     }
 
@@ -736,6 +708,10 @@ mod tests {
 
     fn dummy_deployment() -> Deployment {
         Deployment {
+            metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+                name: Some(TRUSTEE_DEPLOYMENT.to_string()),
+                ..Default::default()
+            },
             spec: Some(DeploymentSpec {
                 replicas: Some(1),
                 template: PodTemplateSpec {
@@ -751,65 +727,74 @@ mod tests {
         }
     }
 
+    fn op_ctx_with_deployment(client: Client, deployment: Deployment) -> OperatorContext {
+        use kube::runtime::{reflector, watcher};
+        let (deployment_store, mut writer) = reflector::store::<Deployment>();
+        writer.apply_watcher_event(&watcher::Event::Init);
+        writer.apply_watcher_event(&watcher::Event::InitApply(deployment));
+        writer.apply_watcher_event(&watcher::Event::InitDone);
+        let mut ctx = OperatorContext::new(client);
+        ctx.deployment_store = deployment_store;
+        ctx
+    }
+
     #[tokio::test]
     async fn test_mount_secret_success() {
         let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
-            (0, &Method::GET) | (1, &Method::PUT) => {
-                Ok(serde_json::to_string(&dummy_deployment()).unwrap())
-            }
+            (0, &Method::PATCH) => Ok(serde_json::to_string(&dummy_deployment()).unwrap()),
             _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
         };
-        count_check!(2, clos, |client| {
-            assert!(mount_secret(client, "id").await.is_ok());
+        count_check!(1, clos, |client| {
+            let ctx = op_ctx_with_deployment(client, dummy_deployment());
+            assert!(mount_secret(&ctx, "id").await.is_ok());
         });
     }
 
     #[tokio::test]
     async fn test_mount_secret_no_depl() {
-        let clos = async |_, _| Err(StatusCode::NOT_FOUND);
-        count_check!(1, clos, |client| {
-            assert!(mount_secret(client, "id").await.is_err());
+        let clos = async |req: Request<_>, _| panic!("unexpected API interaction: {req:?}");
+        count_check!(0, clos, |client| {
+            let ctx = OperatorContext::new(client);
+            // No deployment in cache → silently succeeds (skip)
+            assert!(mount_secret(&ctx, "id").await.is_ok());
         });
     }
 
     #[tokio::test]
     async fn test_mount_secret_no_spec() {
-        let clos = async |_, _| {
+        let clos = async |req: Request<_>, _| panic!("unexpected API interaction: {req:?}");
+        count_check!(0, clos, |client| {
             let mut depl = dummy_deployment();
             depl.spec = None;
-            Ok(serde_json::to_string(&depl).unwrap())
-        };
-        count_check!(1, clos, |client| {
-            let err = mount_secret(client, "id").await.err().unwrap();
+            let ctx = op_ctx_with_deployment(client, depl);
+            let err = mount_secret(&ctx, "id").await.err().unwrap();
             assert!(err.to_string().contains("but had no spec"));
         });
     }
 
     #[tokio::test]
     async fn test_mount_secret_no_pod_spec() {
-        let clos = async |_, _| {
+        let clos = async |req: Request<_>, _| panic!("unexpected API interaction: {req:?}");
+        count_check!(0, clos, |client| {
             let mut depl = dummy_deployment();
             let spec = depl.spec.as_mut().unwrap();
             spec.template.spec = None;
-            Ok(serde_json::to_string(&depl).unwrap())
-        };
-        count_check!(1, clos, |client| {
-            let err = mount_secret(client, "id").await.err().unwrap();
+            let ctx = op_ctx_with_deployment(client, depl);
+            let err = mount_secret(&ctx, "id").await.err().unwrap();
             assert!(err.to_string().contains("but had no pod spec"));
         });
     }
 
     #[tokio::test]
     async fn test_mount_secret_no_containers() {
-        let clos = async |_, _| {
+        let clos = async |req: Request<_>, _| panic!("unexpected API interaction: {req:?}");
+        count_check!(0, clos, |client| {
             let mut depl = dummy_deployment();
             let spec = depl.spec.as_mut().unwrap();
             let pod_spec = spec.template.spec.as_mut().unwrap();
             pod_spec.containers = vec![];
-            Ok(serde_json::to_string(&depl).unwrap())
-        };
-        count_check!(1, clos, |client| {
-            let err = mount_secret(client, "id").await.err().unwrap();
+            let ctx = op_ctx_with_deployment(client, depl);
+            let err = mount_secret(&ctx, "id").await.err().unwrap();
             assert!(err.to_string().contains("but had no containers"));
         });
     }
@@ -817,31 +802,29 @@ mod tests {
     #[tokio::test]
     async fn test_unmount_secret() {
         let clos = async |req: Request<Body>, ctr| match (ctr, req.method()) {
-            (0, &Method::GET) => {
-                let mut depl = dummy_deployment();
-                let spec = depl.spec.as_mut().unwrap();
-                let pod_spec = spec.template.spec.as_mut().unwrap();
-                pod_spec.volumes = Some(vec![Volume {
-                    name: "id".to_string(),
-                    ..Default::default()
-                }]);
-                let container = pod_spec.containers.get_mut(0).unwrap();
-                container.volume_mounts = Some(vec![VolumeMount {
-                    name: "id".to_string(),
-                    ..Default::default()
-                }]);
-                Ok(serde_json::to_string(&depl).unwrap())
-            }
-            (1, &Method::PUT) => {
+            (0, &Method::PATCH) => {
                 let bytes = req.into_body().collect_bytes().await.unwrap().to_vec();
                 let body = String::from_utf8_lossy(&bytes);
-                assert!(!body.contains("id"));
+                assert!(!body.contains("\"id\""));
                 Ok(serde_json::to_string(&dummy_deployment()).unwrap())
             }
             _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
         };
-        count_check!(2, clos, |client| {
-            assert!(unmount_secret(client, "id").await.is_ok());
+        count_check!(1, clos, |client| {
+            let mut depl = dummy_deployment();
+            let spec = depl.spec.as_mut().unwrap();
+            let pod_spec = spec.template.spec.as_mut().unwrap();
+            pod_spec.volumes = Some(vec![Volume {
+                name: "id".to_string(),
+                ..Default::default()
+            }]);
+            let container = pod_spec.containers.get_mut(0).unwrap();
+            container.volume_mounts = Some(vec![VolumeMount {
+                name: "id".to_string(),
+                ..Default::default()
+            }]);
+            let ctx = op_ctx_with_deployment(client, depl);
+            assert!(unmount_secret(&ctx, "id").await.is_ok());
         });
     }
 

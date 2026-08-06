@@ -13,21 +13,13 @@ use k8s_openapi::apimachinery::pkg::{
     apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference},
     util::intstr::IntOrString,
 };
-use kube::{
-    Api, Client, Resource,
-    api::{Patch, PatchParams},
-    runtime::{
-        Controller,
-        controller::Action,
-        finalizer,
-        finalizer::Event,
-        reflector::{self, ObjectRef, Store},
-        watcher,
-    },
-};
+use kube::api::{Patch, PatchParams};
+use kube::runtime::{Controller, controller::Action, reflector::ObjectRef, watcher};
+use kube::runtime::{finalizer, finalizer::Event};
+use kube::{Api, Client, Resource};
 use log::{info, warn};
 use serde_json::json;
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc};
 
 use trusted_cluster_operator_lib::conditions::ATTESTATION_KEY_MACHINE_APPROVE;
 use trusted_cluster_operator_lib::endpoints::*;
@@ -35,48 +27,8 @@ use trusted_cluster_operator_lib::{AttestationKey, AttestationKeyStatus, Machine
 
 use crate::conditions::attestation_key_approved_condition;
 use crate::trustee;
-use operator::{ControllerError, LONG_REQUEUE, TLS_DIR, controller_error_policy};
+use operator::{ControllerError, LONG_REQUEUE, OperatorContext, TLS_DIR, controller_error_policy};
 use operator::{create_or_info_if_exists, read_certificate, upsert_condition};
-
-/// Shared context for the three attestation-key controllers.
-/// Stores give local cache access to avoid repeated API-server reads.
-pub struct AkContextData {
-    pub client: Client,
-    pub machine_store: Store<Machine>,
-    pub ak_store: Store<AttestationKey>,
-    pub secret_store: Store<Secret>,
-    pub deployment_store: Store<Deployment>,
-}
-
-impl AkContextData {
-    pub fn new(client: Client) -> Self {
-        let (machine_store, machine_writer) = reflector::store::<Machine>();
-        let (ak_store, ak_writer) = reflector::store::<AttestationKey>();
-        let (secret_store, secret_writer) = reflector::store::<Secret>();
-        let (deployment_store, deployment_writer) = reflector::store::<Deployment>();
-
-        crate::spawn_reflector::<Machine>(machine_writer, client.clone(), "Machine");
-        crate::spawn_reflector::<AttestationKey>(ak_writer, client.clone(), "AttestationKey");
-        crate::spawn_reflector::<Secret>(secret_writer, client.clone(), "Secret");
-        crate::spawn_reflector::<Deployment>(deployment_writer, client.clone(), "Deployment");
-
-        Self {
-            client,
-            machine_store,
-            ak_store,
-            secret_store,
-            deployment_store,
-        }
-    }
-
-    pub async fn sync_caches(&self, timeout: Duration) -> Result<()> {
-        crate::sync_cache(&self.machine_store, "Machine", timeout).await?;
-        crate::sync_cache(&self.ak_store, "AttestationKey", timeout).await?;
-        crate::sync_cache(&self.secret_store, "Secret", timeout).await?;
-        crate::sync_cache(&self.deployment_store, "Deployment", timeout).await?;
-        Ok(())
-    }
-}
 
 const INTERNAL_ATTESTATION_KEY_REGISTER_PORT: i32 = 8001;
 const ATTESTATION_KEY_SECRET_FINALIZER: &str =
@@ -185,7 +137,7 @@ pub async fn create_attestation_key_register_service(
 
 async fn ak_reconcile(
     ak: Arc<AttestationKey>,
-    ctx: Arc<AkContextData>,
+    ctx: Arc<OperatorContext>,
 ) -> Result<Action, ControllerError> {
     let ak_name = ak.metadata.name.clone().unwrap_or_default();
     info!("Attestation Key reconciliation for: {ak_name}");
@@ -201,7 +153,7 @@ async fn ak_reconcile(
 
 async fn machine_reconcile(
     machine: Arc<Machine>,
-    ctx: Arc<AkContextData>,
+    ctx: Arc<OperatorContext>,
 ) -> Result<Action, ControllerError> {
     info!(
         "Machine reconciliation for: {}",
@@ -228,7 +180,7 @@ async fn machine_reconcile(
     Ok(LONG_REQUEUE)
 }
 
-async fn approve_ak(ak: &AttestationKey, machine: &Machine, ctx: &AkContextData) -> Result<()> {
+async fn approve_ak(ak: &AttestationKey, machine: &Machine, ctx: &OperatorContext) -> Result<()> {
     let name = ak.metadata.name.clone().unwrap_or_default();
     let client = &ctx.client;
     let aks: Api<AttestationKey> = Api::default_namespaced(client.clone());
@@ -274,10 +226,8 @@ async fn approve_ak(ak: &AttestationKey, machine: &Machine, ctx: &AkContextData)
 
     let secret_name = name.clone();
     let ns = client.default_namespace().to_string();
-    let secret_exists = ctx
-        .secret_store
-        .get(&ObjectRef::new(&secret_name).within(&ns))
-        .is_some();
+    let obj_ref = ObjectRef::new(&secret_name).within(&ns);
+    let secret_exists = ctx.secret_store.get(&obj_ref).is_some();
 
     if !secret_exists {
         let public_key_data = ByteString(ak.spec.public_key.as_bytes().to_vec());
@@ -305,7 +255,7 @@ async fn approve_ak(ak: &AttestationKey, machine: &Machine, ctx: &AkContextData)
 
 async fn secret_reconcile(
     secret: Arc<Secret>,
-    ctx: Arc<AkContextData>,
+    ctx: Arc<OperatorContext>,
 ) -> Result<Action, ControllerError> {
     let secret_name = secret.metadata.name.clone().unwrap_or_default();
 
@@ -357,7 +307,7 @@ async fn secret_reconcile(
     .map_err(|e| anyhow!("failed to reconcile attestation key secret: {e}").into())
 }
 
-pub async fn launch_ak_controller(ctx: Arc<AkContextData>) {
+pub async fn launch_ak_controller(ctx: Arc<OperatorContext>) {
     let aks: Api<AttestationKey> = Api::default_namespaced(ctx.client.clone());
     tokio::spawn(
         Controller::new(aks, watcher::Config::default())
@@ -371,7 +321,7 @@ pub async fn launch_ak_controller(ctx: Arc<AkContextData>) {
     );
 }
 
-pub async fn launch_machine_ak_controller(ctx: Arc<AkContextData>) {
+pub async fn launch_machine_ak_controller(ctx: Arc<OperatorContext>) {
     let machines: Api<Machine> = Api::default_namespaced(ctx.client.clone());
     tokio::spawn(
         Controller::new(machines, watcher::Config::default())
@@ -385,7 +335,7 @@ pub async fn launch_machine_ak_controller(ctx: Arc<AkContextData>) {
     );
 }
 
-pub async fn launch_secret_ak_controller(ctx: Arc<AkContextData>) {
+pub async fn launch_secret_ak_controller(ctx: Arc<OperatorContext>) {
     let secrets: Api<Secret> = Api::default_namespaced(ctx.client.clone());
     tokio::spawn(
         Controller::new(secrets, watcher::Config::default())

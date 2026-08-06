@@ -48,6 +48,9 @@ const COMPONENT_VERSION: &str = match option_env!("COMPONENT_VERSION") {
 
 /// Default registry
 const TEC_REGISTRY: &str = "quay.io/trusted-execution-clusters";
+/// Keep a read timeout to allow hanging operations to retry (same as write timeout). This breaks
+/// exec/attach operations without traffic for more than 5 minutes, but we do not use those.
+const KUBE_READ_TIMEOUT: Duration = Duration::from_secs(295);
 
 fn is_installed(status: Option<TrustedExecutionClusterStatus>) -> bool {
     let chk = |c: &Condition| c.type_ == INSTALLED_CONDITION && c.status == "True";
@@ -235,7 +238,9 @@ async fn install_attestation_key_register(
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
-    let kube_client = Client::try_default().await?;
+    let mut config = kube::Config::infer().await?;
+    config.read_timeout = Some(KUBE_READ_TIMEOUT);
+    let kube_client = Client::try_from(config)?;
     info!("trusted execution clusters operator");
 
     const CACHE_SYNC_TIMEOUT: Duration = Duration::from_secs(60);

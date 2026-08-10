@@ -3,8 +3,9 @@
 // SPDX-License-Identifier: MIT
 
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
+use operator::{condition_status, transition_time};
+use trusted_cluster_operator_lib::conditions::*;
 use trusted_cluster_operator_lib::{AttestationKeyStatus, TrustedExecutionClusterStatus};
-use trusted_cluster_operator_lib::{condition_status, conditions::*, transition_time};
 
 pub fn known_trustee_address_condition(
     known: bool,

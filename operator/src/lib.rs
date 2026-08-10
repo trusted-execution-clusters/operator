@@ -14,13 +14,17 @@ use k8s_openapi::api::core::v1::{Secret, SecretVolumeSource, Volume, VolumeMount
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
 use k8s_openapi::jiff::Timestamp;
 use kube::Resource;
+use kube::api::Patch;
 use kube::runtime::reflector::{self, Store};
 use kube::runtime::watcher::watcher;
 use kube::{Api, Client, runtime::controller::Action};
 use log::{info, warn};
+use serde::Serialize;
 use std::fmt::{Debug, Display};
 use std::{sync::Arc, time::Duration};
 use tokio::time::timeout;
+use trusted_cluster_operator_lib::{ApprovedImageStatus, AttestationKeyStatus};
+use trusted_cluster_operator_lib::{TrustedExecutionClusterStatus, conditions::*};
 
 // Re-export common functions from the lib
 pub use trusted_cluster_operator_lib::generate_owner_reference;
@@ -29,6 +33,84 @@ pub use trusted_cluster_operator_lib::generate_owner_reference;
 pub enum ControllerError {
     #[error("{0}")]
     Anyhow(#[from] anyhow::Error),
+}
+
+pub async fn update_status<S: Serialize, K>(api: &Api<K>, name: &str, status: S) -> Result<()>
+where
+    K: Resource<DynamicType = ()> + serde::de::DeserializeOwned + Clone + Debug,
+{
+    let patch = Patch::Merge(serde_json::json!({"status": status}));
+    api.patch_status(name, &Default::default(), &patch).await?;
+    Ok(())
+}
+
+pub fn condition_status(status: bool) -> String {
+    match status {
+        true => "True".to_string(),
+        false => "False".to_string(),
+    }
+}
+
+pub trait Conditions {
+    fn conditions(&self) -> &Option<Vec<Condition>>;
+}
+
+impl Conditions for TrustedExecutionClusterStatus {
+    fn conditions(&self) -> &Option<Vec<Condition>> {
+        &self.conditions
+    }
+}
+
+impl Conditions for AttestationKeyStatus {
+    fn conditions(&self) -> &Option<Vec<Condition>> {
+        &self.conditions
+    }
+}
+
+impl Conditions for ApprovedImageStatus {
+    fn conditions(&self) -> &Option<Vec<Condition>> {
+        &self.conditions
+    }
+}
+
+pub fn transition_time<S: Conditions>(
+    existing_status: &Option<S>,
+    type_: &str,
+    new_status: &str,
+) -> Time {
+    let get = |s: &S| s.conditions().clone();
+    let conditions = existing_status.as_ref().and_then(get);
+    let find = |c: &Condition| type_ == c.type_ && new_status == c.status;
+    let existing = conditions.and_then(|cs| cs.into_iter().find(find));
+    let time = existing.map(|c| c.last_transition_time);
+    time.unwrap_or(Time(Timestamp::now()))
+}
+
+pub fn committed_condition(
+    reason: &str,
+    generation: Option<i64>,
+    existing_status: &Option<ApprovedImageStatus>,
+) -> Condition {
+    let status = condition_status(reason == COMMITTED_REASON);
+    let type_ = COMMITTED_CONDITION;
+    Condition {
+        type_: type_.to_string(),
+        reason: reason.to_string(),
+        message: match reason {
+            NOT_COMMITTED_REASON_COMPUTING => "Computation is ongoing. Check jobs for progress.",
+            NOT_COMMITTED_REASON_NO_DIGEST => {
+                "Image did not specify a digest. \
+                 Only images with a digest are supported to avoid ambiguity."
+            }
+            NOT_COMMITTED_REASON_PENDING => "Pod is pending, check pods for details",
+            NOT_COMMITTED_REASON_FAILED => "Computation failed, check operator log for details",
+            _ => "",
+        }
+        .to_string(),
+        last_transition_time: transition_time(existing_status, type_, &status),
+        status,
+        observed_generation: generation,
+    }
 }
 
 pub fn controller_error_policy<R, E: Display, C>(_obj: Arc<R>, error: &E, _ctx: Arc<C>) -> Action {

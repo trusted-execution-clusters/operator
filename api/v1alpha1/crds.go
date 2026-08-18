@@ -28,6 +28,7 @@ var (
 // +kubebuilder:rbac:groups="",resources=configmaps;services;secrets,verbs=create;get;list;patch;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=create;delete;get;list;patch;update;watch
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=create;delete;patch;update
 // +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=trustedexecutionclusters;machines;approvedimages;attestationkeys,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=trustedexecutionclusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=machines/finalizers,verbs=update

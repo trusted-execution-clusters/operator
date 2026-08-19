@@ -27,12 +27,15 @@ use trusted_cluster_operator_lib::{AttestationKey, AttestationKeyStatus, Machine
 
 use crate::conditions::attestation_key_approved_condition;
 use crate::trustee;
-use operator::{ControllerError, LONG_REQUEUE, OperatorContext, TLS_DIR, controller_error_policy};
-use operator::{create_or_info_if_exists, read_certificate, upsert_condition};
+use operator::{
+    ControllerError, KIND_LABEL_KEY, LONG_REQUEUE, OperatorContext, TLS_DIR,
+    controller_error_policy, create_or_info_if_exists, read_certificate, upsert_condition,
+};
 
 const INTERNAL_ATTESTATION_KEY_REGISTER_PORT: i32 = 8001;
 const ATTESTATION_KEY_SECRET_FINALIZER: &str =
     "trusted-execution-clusters.io/attestationkey-secret-finalizer";
+const ATTESTATION_KEY_LABEL_VALUE: &str = "attestationkey";
 
 pub async fn create_attestation_key_register_deployment(
     client: Client,
@@ -238,6 +241,10 @@ async fn approve_ak(ak: &AttestationKey, machine: &Machine, ctx: &OperatorContex
         let secret = Secret {
             metadata: ObjectMeta {
                 name: Some(secret_name.clone()),
+                labels: Some(BTreeMap::from([(
+                    KIND_LABEL_KEY.to_string(),
+                    ATTESTATION_KEY_LABEL_VALUE.to_string(),
+                )])),
                 owner_references: Some(vec![owner_reference]),
                 finalizers: Some(vec![ATTESTATION_KEY_SECRET_FINALIZER.to_string()]),
                 ..Default::default()
@@ -258,19 +265,6 @@ async fn secret_reconcile(
     ctx: Arc<OperatorContext>,
 ) -> Result<Action, ControllerError> {
     let secret_name = secret.metadata.name.clone().unwrap_or_default();
-
-    // Only handle secrets owned by AttestationKey
-    let is_ak_secret = secret
-        .metadata
-        .owner_references
-        .as_ref()
-        .map(|owners| owners.iter().any(|owner| owner.kind == "AttestationKey"))
-        .unwrap_or(false);
-
-    if !is_ak_secret {
-        return Ok(Action::await_change());
-    }
-
     info!("Secret reconciliation for AttestationKey secret: {secret_name}");
 
     let secrets: Api<Secret> = Api::default_namespaced(ctx.client.clone());
@@ -337,8 +331,10 @@ pub async fn launch_machine_ak_controller(ctx: Arc<OperatorContext>) {
 
 pub async fn launch_secret_ak_controller(ctx: Arc<OperatorContext>) {
     let secrets: Api<Secret> = Api::default_namespaced(ctx.client.clone());
+    let wc = watcher::Config::default()
+        .labels(&format!("{KIND_LABEL_KEY}={ATTESTATION_KEY_LABEL_VALUE}"));
     tokio::spawn(
-        Controller::new(secrets, watcher::Config::default())
+        Controller::new(secrets, wc)
             .run(secret_reconcile, controller_error_policy, ctx)
             .for_each(|res| async move {
                 match res {

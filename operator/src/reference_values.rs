@@ -29,11 +29,10 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use crate::COMPONENT_VERSION;
 use crate::trustee::{self, get_image_pcrs};
-use operator::{ControllerError, LONG_REQUEUE, OperatorContext, upsert_condition};
+use operator::{ControllerError, KIND_LABEL_KEY, LONG_REQUEUE, OperatorContext, upsert_condition};
 use operator::{controller_error_policy, controller_info, create_or_info_if_exists};
 use trusted_cluster_operator_lib::{conditions::*, reference_values::*, *};
 
-const JOB_LABEL_KEY: &str = "kind";
 const APPROVED_IMAGE_ANNOTATION: &str = "approved-image";
 const PCR_COMMAND_NAME: &str = "compute-pcrs";
 const PCR_LABEL: &str = "org.coreos.pcrs";
@@ -145,7 +144,7 @@ async fn job_reconcile(
 pub async fn launch_rv_job_controller(ctx: Arc<OperatorContext>) {
     let jobs: Api<Job> = Api::default_namespaced(ctx.client.clone());
     let watcher = watcher::Config {
-        label_selector: Some(format!("{JOB_LABEL_KEY}={PCR_COMMAND_NAME}")),
+        label_selector: Some(format!("{KIND_LABEL_KEY}={PCR_COMMAND_NAME}")),
         ..Default::default()
     };
     tokio::spawn(
@@ -181,7 +180,7 @@ async fn compute_fresh_pcrs(client: Client, image: &ApprovedImage) -> anyhow::Re
         metadata: ObjectMeta {
             name: Some(job_name.clone()),
             labels: Some(BTreeMap::from([(
-                JOB_LABEL_KEY.to_string(),
+                KIND_LABEL_KEY.to_string(),
                 PCR_COMMAND_NAME.to_string(),
             )])),
             owner_references: Some(vec![generate_owner_reference(image)?]),
@@ -348,7 +347,7 @@ async fn image_remove_reconcile(
 pub async fn launch_rv_image_controller(ctx: Arc<OperatorContext>) {
     let images: Api<ApprovedImage> = Api::default_namespaced(ctx.client.clone());
     let jobs: Api<Job> = Api::default_namespaced(ctx.client.clone());
-    let wc = watcher::Config::default().labels(&format!("{JOB_LABEL_KEY}={PCR_COMMAND_NAME}"));
+    let wc = watcher::Config::default().labels(&format!("{KIND_LABEL_KEY}={PCR_COMMAND_NAME}"));
     tokio::spawn(
         Controller::new(images, Default::default())
             .owns(jobs, wc)

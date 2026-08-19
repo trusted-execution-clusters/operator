@@ -103,6 +103,7 @@ macro_rules! create_or_info_if_exists {
     };
 }
 
+pub const KIND_LABEL_KEY: &str = "kind";
 pub const TLS_DIR: &str = "/etc/tls";
 /// As per kube-rs docs, it's possible to miss events and requeue_after = None should only be used
 /// when it is known another requeue is imminent. Use this requeue duration for cases where no

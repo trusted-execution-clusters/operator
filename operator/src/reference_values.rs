@@ -138,7 +138,7 @@ async fn job_reconcile(
     delete.map_err(Into::<anyhow::Error>::into)?;
     let image_pcrs = cached_image_pcrs(&ctx)?;
     trustee::update_reference_values(&ctx.client, image_pcrs).await?;
-    Ok(Action::await_change())
+    Ok(LONG_REQUEUE)
 }
 
 pub async fn launch_rv_job_controller(ctx: Arc<OperatorContext>) {
@@ -542,7 +542,7 @@ mod tests {
             let ctx = Arc::new(op_ctx_with_cm(client, PCR_CONFIG_MAP, dummy_pcrs_map()));
             let job = Arc::new(dummy_job());
             let result = job_reconcile(job, ctx).await.unwrap();
-            assert_eq!(result, Action::await_change());
+            assert_eq!(result, LONG_REQUEUE);
         });
     }
 

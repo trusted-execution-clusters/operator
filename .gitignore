@@ -13,6 +13,7 @@ trusted-cluster-gen
 /config/rbac/role.yaml
 /config/rbac/kustomization.yaml
 /lib/src/kopium
+/logs
 /target
 bundle/manifests/
 bundle/metadata/

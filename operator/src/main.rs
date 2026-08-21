@@ -10,16 +10,21 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use env_logger::Env;
 use futures_util::StreamExt;
+use k8s_openapi::api::apps::v1::Deployment;
+use k8s_openapi::api::core::v1::{ConfigMap, Secret};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use kube::runtime::controller::{Action, Controller};
-use kube::runtime::reflector::{self, Store};
+use kube::runtime::reflector;
 use kube::runtime::watcher;
 use kube::{Api, Client};
 use log::{info, warn};
 
-use operator::{generate_owner_reference, upsert_condition};
-use trusted_cluster_operator_lib::{TrustedExecutionCluster, TrustedExecutionClusterStatus};
-use trusted_cluster_operator_lib::{conditions::*, images::*, update_status};
+use operator::OperatorContext;
+use operator::{generate_owner_reference, spawn_reflector, sync_cache, upsert_condition};
+use trusted_cluster_operator_lib::{
+    ApprovedImage, AttestationKey, Machine, TrustedExecutionCluster, TrustedExecutionClusterStatus,
+    conditions::*, images::*, update_status,
+};
 
 mod attestation_key_register;
 mod conditions;
@@ -43,29 +48,9 @@ const COMPONENT_VERSION: &str = match option_env!("COMPONENT_VERSION") {
 
 /// Default registry
 const TEC_REGISTRY: &str = "quay.io/trusted-execution-clusters";
-
-struct ClusterContext {
-    client: Client,
-    tec_store: Store<TrustedExecutionCluster>,
-}
-
-impl ClusterContext {
-    fn new(client: Client) -> Self {
-        let (tec_store, tec_writer) = reflector::store::<TrustedExecutionCluster>();
-
-        spawn_reflector::<TrustedExecutionCluster>(
-            tec_writer,
-            client.clone(),
-            "TrustedExecutionCluster",
-        );
-
-        Self { client, tec_store }
-    }
-
-    async fn sync_cache_tec(&self, timeout: Duration) -> Result<()> {
-        sync_cache(&self.tec_store, "TrustedExecutionCluster", timeout).await
-    }
-}
+/// Keep a read timeout to allow hanging operations to retry (same as write timeout). This breaks
+/// exec/attach operations without traffic for more than 5 minutes, but we do not use those.
+const KUBE_READ_TIMEOUT: Duration = Duration::from_secs(295);
 
 fn is_installed(status: Option<TrustedExecutionClusterStatus>) -> bool {
     let chk = |c: &Condition| c.type_ == INSTALLED_CONDITION && c.status == "True";
@@ -77,7 +62,7 @@ fn is_installed(status: Option<TrustedExecutionClusterStatus>) -> bool {
 
 async fn reconcile(
     cluster: Arc<TrustedExecutionCluster>,
-    ctx: Arc<ClusterContext>,
+    ctx: Arc<OperatorContext>,
 ) -> Result<Action, ControllerError> {
     let generation = cluster.metadata.generation;
     let known_address = cluster.spec.public_trustee_addr.is_some();
@@ -142,7 +127,7 @@ async fn reconcile(
         warn!("Installation of a component failed: {e:?}\nRequeueing...");
         return Ok(Action::requeue(Duration::from_secs(60)));
     }
-    reference_values::adopt_approved_images(kube_client, &cluster).await?;
+    reference_values::adopt_approved_images(&ctx, &cluster).await?;
 
     let installed_condition = installed_condition(INSTALLED_REASON, generation, existing_status);
     let changed = upsert_condition(&mut conditions, installed_condition);
@@ -253,39 +238,71 @@ async fn install_attestation_key_register(
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
-    let kube_client = Client::try_default().await?;
-    info!("trusted execution clusters operator",);
+    let mut config = kube::Config::infer().await?;
+    config.read_timeout = Some(KUBE_READ_TIMEOUT);
+    let kube_client = Client::try_from(config)?;
+    info!("trusted execution clusters operator");
 
     const CACHE_SYNC_TIMEOUT: Duration = Duration::from_secs(60);
 
-    // Launch controllers that do not depend on reflector caches first.
-    register_server::launch_keygen_controller(kube_client.clone()).await;
+    // Create all reflector stores and spawn background watchers.
+    let (tec_store, tec_writer) = reflector::store::<TrustedExecutionCluster>();
+    let (cm_store, cm_writer) = reflector::store::<ConfigMap>();
+    let (deployment_store, deployment_writer) = reflector::store::<Deployment>();
+    let (machine_store, machine_writer) = reflector::store::<Machine>();
+    let (ak_store, ak_writer) = reflector::store::<AttestationKey>();
+    let (secret_store, secret_writer) = reflector::store::<Secret>();
+    let (image_store, image_writer) = reflector::store::<ApprovedImage>();
 
-    // Spawn reflectors (starts background list-watch immediately).
-    let ak_ctx = Arc::new(attestation_key_register::AkContextData::new(
-        kube_client.clone(),
-    ));
-    let ctx = Arc::new(ClusterContext::new(kube_client.clone()));
+    let tec_kind = "TrustedExecutionCluster";
+    spawn_reflector::<TrustedExecutionCluster>(tec_writer, kube_client.clone(), tec_kind);
+    spawn_reflector::<ConfigMap>(cm_writer, kube_client.clone(), "ConfigMap");
+    spawn_reflector::<Deployment>(deployment_writer, kube_client.clone(), "Deployment");
+    spawn_reflector::<Machine>(machine_writer, kube_client.clone(), "Machine");
+    spawn_reflector::<AttestationKey>(ak_writer, kube_client.clone(), "AttestationKey");
+    spawn_reflector::<Secret>(secret_writer, kube_client.clone(), "Secret");
+    spawn_reflector::<ApprovedImage>(image_writer, kube_client.clone(), "ApprovedImage");
+
+    let mut ctx = OperatorContext::new(kube_client.clone());
+    ctx.tec_store = tec_store;
+    ctx.cm_store = cm_store;
+    ctx.deployment_store = deployment_store;
+    ctx.machine_store = machine_store;
+    ctx.ak_store = ak_store;
+    ctx.secret_store = secret_store;
+    ctx.image_store = image_store;
+    let ctx = Arc::new(ctx);
 
     // Best-effort wait for caches; controllers will work with
     // partially-filled stores if the sync times out.
-    if let Err(e) = ak_ctx.sync_caches(CACHE_SYNC_TIMEOUT).await {
-        warn!("AK cache sync incomplete, controllers will retry: {e}");
+    macro_rules! sync {
+        ($($name:expr => $store:expr),+ $(,)?) => {$(
+            if let Err(e) = sync_cache(&$store, $name, CACHE_SYNC_TIMEOUT).await {
+                warn!("{} cache sync incomplete, controllers will retry: {e}", $name);
+            }
+        )+};
     }
-    if let Err(e) = ctx.sync_cache_tec(CACHE_SYNC_TIMEOUT).await {
-        warn!("TEC cache sync incomplete, controller will retry: {e}");
+    sync! {
+        "TrustedExecutionCluster" => ctx.tec_store,
+        "ConfigMap" => ctx.cm_store,
+        "Deployment" => ctx.deployment_store,
+        "Machine" => ctx.machine_store,
+        "AttestationKey" => ctx.ak_store,
+        "Secret" => ctx.secret_store,
+        "ApprovedImage" => ctx.image_store,
     }
 
     info!("Starting controllers");
 
     let cl: Api<TrustedExecutionCluster> = Api::default_namespaced(kube_client.clone());
 
-    attestation_key_register::launch_ak_controller(ak_ctx.clone()).await;
-    attestation_key_register::launch_machine_ak_controller(ak_ctx.clone()).await;
-    attestation_key_register::launch_secret_ak_controller(ak_ctx).await;
+    register_server::launch_keygen_controller(ctx.clone()).await;
+    attestation_key_register::launch_ak_controller(ctx.clone()).await;
+    attestation_key_register::launch_machine_ak_controller(ctx.clone()).await;
+    attestation_key_register::launch_secret_ak_controller(ctx.clone()).await;
     reference_values::create_pcrs_config_map(kube_client.clone()).await?;
-    reference_values::launch_rv_image_controller(kube_client.clone()).await;
-    reference_values::launch_rv_job_controller(kube_client.clone()).await;
+    reference_values::launch_rv_image_controller(ctx.clone()).await;
+    reference_values::launch_rv_job_controller(ctx.clone()).await;
 
     Controller::new(cl, watcher::Config::default())
         .run(reconcile, controller_error_policy, ctx)
@@ -301,30 +318,23 @@ mod tests {
     use k8s_openapi::api::apps::v1::Deployment;
     use k8s_openapi::api::core::v1::{ConfigMap, Service};
     use k8s_openapi::{apimachinery::pkg::apis::meta::v1::Time, jiff::Timestamp};
-    use kube::api::ObjectList;
     use kube::client::Body;
-    use trusted_cluster_operator_lib::ApprovedImage;
+    use kube::runtime::{reflector, watcher};
 
     use super::*;
     use trusted_cluster_operator_test_utils::mock_client::*;
 
-    fn dummy_cluster_ctx(client: Client) -> ClusterContext {
-        ClusterContext {
-            client,
-            tec_store: reflector::store::<TrustedExecutionCluster>().0,
-        }
-    }
-
-    /// Build a Store pre-populated with two distinct TrustedExecutionCluster objects.
-    fn two_cluster_tec_store() -> Store<TrustedExecutionCluster> {
-        let (store, mut writer) = reflector::store::<TrustedExecutionCluster>();
+    fn op_ctx_with_two_tecs(client: Client) -> OperatorContext {
+        let (tec_store, mut writer) = reflector::store::<TrustedExecutionCluster>();
         let mut second = dummy_cluster();
         second.metadata.name = Some("test2".to_string());
         writer.apply_watcher_event(&watcher::Event::Init);
         writer.apply_watcher_event(&watcher::Event::InitApply(dummy_cluster()));
         writer.apply_watcher_event(&watcher::Event::InitApply(second));
         writer.apply_watcher_event(&watcher::Event::InitDone);
-        store
+        let mut ctx = OperatorContext::new(client);
+        ctx.tec_store = tec_store;
+        ctx
     }
 
     #[tokio::test]
@@ -340,7 +350,7 @@ mod tests {
         count_check!(1, clos, |client| {
             let mut cluster = dummy_cluster();
             cluster.metadata.deletion_timestamp = Some(Time(Timestamp::now()));
-            let result = reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client))).await;
+            let result = reconcile(Arc::new(cluster), Arc::new(OperatorContext::new(client))).await;
             assert_eq!(result.unwrap(), LONG_REQUEUE);
         });
     }
@@ -356,13 +366,9 @@ mod tests {
                 panic!("unexpected API interaction: {req:?}, counter {ctr}");
             }
         };
-        let store = two_cluster_tec_store();
         count_check!(1, clos, |client| {
             let cluster = Arc::new(dummy_cluster());
-            let ctx = Arc::new(ClusterContext {
-                client,
-                tec_store: store,
-            });
+            let ctx = Arc::new(op_ctx_with_two_tecs(client));
             let result = reconcile(cluster, ctx).await;
             assert_eq!(result.unwrap(), Action::requeue(Duration::from_secs(60)));
         });
@@ -374,13 +380,9 @@ mod tests {
             r if r.method() == Method::PATCH => Err(StatusCode::INTERNAL_SERVER_ERROR),
             _ => panic!("unexpected API interaction: {req:?}"),
         };
-        let store = two_cluster_tec_store();
         count_check!(1, clos, |client| {
             let cluster = Arc::new(dummy_cluster());
-            let ctx = Arc::new(ClusterContext {
-                client,
-                tec_store: store,
-            });
+            let ctx = Arc::new(op_ctx_with_two_tecs(client));
             let result = reconcile(cluster, ctx).await;
             assert!(result.is_err());
         });
@@ -420,7 +422,7 @@ mod tests {
             cluster.status = Some(TrustedExecutionClusterStatus {
                 conditions: Some(vec![foreign_condition]),
             });
-            let result = reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client))).await;
+            let result = reconcile(Arc::new(cluster), Arc::new(OperatorContext::new(client))).await;
             assert_eq!(result.unwrap(), LONG_REQUEUE);
         });
     }
@@ -440,6 +442,8 @@ mod tests {
             observed_generation: None,
         };
 
+        // adopt_approved_images now reads from image_store (empty) — no GET needed.
+        // 8 POSTs for install, then 1 PATCH for final status.
         let clos = async |req: Request<Body>, ctr| {
             if ctr < 8 && req.method() == Method::POST {
                 use serde_json::to_string;
@@ -458,14 +462,7 @@ mod tests {
                     _ => unreachable!("unexpected counter {ctr}"),
                 };
                 Ok(resp.unwrap())
-            } else if ctr == 8 && req.method() == Method::GET {
-                let object_list = ObjectList::<ApprovedImage> {
-                    items: Vec::new(),
-                    types: Default::default(),
-                    metadata: Default::default(),
-                };
-                Ok(serde_json::to_string(&object_list).unwrap())
-            } else if ctr == 9 && req.method() == Method::PATCH {
+            } else if ctr == 8 && req.method() == Method::PATCH {
                 let body = req.into_body().collect_bytes().await.unwrap().to_vec();
                 let body = String::from_utf8_lossy(&body);
                 assert!(body.contains("ForeignCondition"),);
@@ -496,8 +493,8 @@ mod tests {
         cluster.status = Some(TrustedExecutionClusterStatus {
             conditions: Some(vec![pre_existing_installed, foreign_condition]),
         });
-        count_check!(10, clos, |client| {
-            let result = reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client))).await;
+        count_check!(9, clos, |client| {
+            let result = reconcile(Arc::new(cluster), Arc::new(OperatorContext::new(client))).await;
             assert_eq!(result.unwrap(), LONG_REQUEUE);
         });
     }
@@ -514,7 +511,7 @@ mod tests {
         count_check!(1, clos1, |client| {
             let mut cluster = dummy_cluster();
             cluster.metadata.deletion_timestamp = Some(Time(Timestamp::now()));
-            reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client)))
+            reconcile(Arc::new(cluster), Arc::new(OperatorContext::new(client)))
                 .await
                 .unwrap();
         });
@@ -548,7 +545,7 @@ mod tests {
             let mut cluster = dummy_cluster();
             cluster.metadata.deletion_timestamp = Some(Time(Timestamp::now()));
             cluster.status = Some(TrustedExecutionClusterStatus { conditions });
-            reconcile(Arc::new(cluster), Arc::new(dummy_cluster_ctx(client)))
+            reconcile(Arc::new(cluster), Arc::new(OperatorContext::new(client)))
                 .await
                 .unwrap();
         });

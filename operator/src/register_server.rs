@@ -17,6 +17,7 @@ use kube::runtime::{
     controller::{Action, Controller},
     finalizer,
     finalizer::Event,
+    reflector::ObjectRef,
 };
 use kube::{Api, Client, Resource};
 use log::info;
@@ -24,7 +25,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use crate::trustee;
 use operator::*;
-use trusted_cluster_operator_lib::{Machine, TrustedExecutionCluster, endpoints::*};
+use trusted_cluster_operator_lib::{Machine, endpoints::*};
 
 /// Finalizer name to discard decryption keys when a machine is deleted
 const MACHINE_FINALIZER: &str = "finalizer.machine.trusted-execution-clusters.io";
@@ -127,26 +128,23 @@ pub async fn create_register_server_service(
 
 async fn keygen_reconcile(
     machine: Arc<Machine>,
-    client: Arc<Client>,
+    ctx: Arc<OperatorContext>,
 ) -> Result<Action, ControllerError> {
-    let kube_client_clone = Arc::unwrap_or_clone(client.clone());
-    let machines: Api<Machine> = Api::default_namespaced(kube_client_clone.clone());
+    let machines: Api<Machine> = Api::default_namespaced(ctx.client.clone());
     finalizer(&machines, MACHINE_FINALIZER, machine, |ev| async move {
         match ev {
             Event::Apply(machine) => {
-                let kube_client = Arc::unwrap_or_clone(client);
                 let id = &machine.spec.id.clone();
                 async {
                     let owner_reference = generate_owner_reference(&Arc::unwrap_or_clone(machine))?;
-                    trustee::generate_secret(kube_client.clone(), id, owner_reference).await?;
-                    trustee::mount_secret(kube_client, id).await
+                    trustee::generate_secret(ctx.client.clone(), id, owner_reference).await?;
+                    trustee::mount_secret(&ctx, id).await
                 }
                 .await
                 .map(|_| LONG_REQUEUE)
                 .map_err(|e| finalizer::Error::<ControllerError>::ApplyFailed(e.into()))
             }
             Event::Cleanup(machine) => {
-                let kube_client = Arc::unwrap_or_clone(client);
                 let id = &machine.spec.id;
 
                 // Check if the TrustedExecutionCluster is being deleted
@@ -157,24 +155,20 @@ async fn keygen_reconcile(
                         .find(|owner| owner.kind == "TrustedExecutionCluster")
                 {
                     let tec_name = &tec_owner.name;
-                    let tecs: Api<TrustedExecutionCluster> =
-                        Api::default_namespaced(kube_client.clone());
-
-                    match tecs.get(tec_name).await {
-                        Ok(tec) if tec.metadata.deletion_timestamp.is_some() => {
-                            // TEC is being deleted, skip unmount_secret
+                    let ns = ctx.client.default_namespace().to_string();
+                    match ctx.tec_store.get(&ObjectRef::new(tec_name).within(&ns)) {
+                        Some(tec) if tec.metadata.deletion_timestamp.is_some() => {
                             info!(
                                 "TrustedExecutionCluster {tec_name} is being deleted, \
-                                     skipping unmount_secret for Machine {}",
+                                 skipping unmount_secret for Machine {}",
                                 machine.metadata.name.as_deref().unwrap_or("unknown")
                             );
                             return Ok(LONG_REQUEUE);
                         }
-                        Err(kube::Error::Api(ae)) if ae.code == 404 => {
-                            // TEC already deleted, skip unmount_secret
+                        None => {
                             info!(
                                 "TrustedExecutionCluster {tec_name} not found, \
-                                     skipping unmount_secret for Machine {}",
+                                 skipping unmount_secret for Machine {}",
                                 machine.metadata.name.as_deref().unwrap_or("unknown")
                             );
                             return Ok(LONG_REQUEUE);
@@ -185,7 +179,7 @@ async fn keygen_reconcile(
                     }
                 }
 
-                trustee::unmount_secret(kube_client, id)
+                trustee::unmount_secret(&ctx, id)
                     .await
                     .map(|_| LONG_REQUEUE)
                     .map_err(|e| finalizer::Error::<ControllerError>::CleanupFailed(e.into()))
@@ -196,11 +190,11 @@ async fn keygen_reconcile(
     .map_err(|e| anyhow!("failed to reconcile on machine: {e}").into())
 }
 
-pub async fn launch_keygen_controller(client: Client) {
-    let machines: Api<Machine> = Api::default_namespaced(client.clone());
+pub async fn launch_keygen_controller(ctx: Arc<OperatorContext>) {
+    let machines: Api<Machine> = Api::default_namespaced(ctx.client.clone());
     tokio::spawn(
         Controller::new(machines, Default::default())
-            .run(keygen_reconcile, controller_error_policy, Arc::new(client))
+            .run(keygen_reconcile, controller_error_policy, ctx)
             .for_each(controller_info),
     );
 }

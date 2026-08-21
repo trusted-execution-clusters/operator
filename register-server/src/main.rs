@@ -10,7 +10,7 @@ use axum::{http::StatusCode, routing::get, Router};
 use axum_server::tls_openssl::OpenSSLConfig;
 use clap::Parser;
 use clevis_pin_trustee_lib::{
-    AttestationKey, Config as ClevisConfig, Registration, Server as ClevisServer,
+    AttestationKey, Config as ClevisConfig, NumRetries, Registration, Server as ClevisServer,
 };
 use env_logger::Env;
 use ignition_config::v3_6::{
@@ -27,6 +27,10 @@ use trusted_cluster_operator_lib::endpoints::*;
 use trusted_cluster_operator_lib::{
     generate_owner_reference, get_trusted_execution_cluster, Machine, MachineSpec,
 };
+
+/// Allow for an operator::KUBE_READ_TIMEOUT to hit (5 minutes) plus one minute,
+/// thus 360s / 5s (clevis-pin-trustee's delay)
+const RETRIES: u32 = 72;
 
 #[derive(Parser)]
 #[command(name = "register-server")]
@@ -119,7 +123,8 @@ fn generate_ignition(id: &str, endpoint_info: &EndpointInfo) -> IgnitionConfig {
             cert: trustee_cert,
         }],
         path: format!("default/{id}/root"),
-        num_retries: None,
+        // TODO retry forever once we don't need a debugging shell
+        num_retries: Some(NumRetries::Finite(RETRIES)),
         initdata: None,
         // TODO add initdata, e.g.
         // #[derive(Serialize)]

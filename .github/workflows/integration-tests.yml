@@ -77,6 +77,8 @@ jobs:
       - name: "Run integration tests"
         run: |
           eval $(ssh-agent -s)
+          # Lowest timeout is 1 minute, allow for one read timeout (5 minutes) retry
+          export TEST_TIMEOUT_MULTIPLIER=6
           make integration-tests
       - name: "Gather must-gather"
         if: always()

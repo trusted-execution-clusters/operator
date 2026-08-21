@@ -138,7 +138,7 @@ pub async fn get_opt_trusted_execution_cluster(
     Ok(list.items.into_iter().next())
 }
 
-/// Get the single TrustedExecutionCluster in the namespace
+/// Get the single TrustedExecutionCluster in the namespace (uncached)
 pub async fn get_trusted_execution_cluster(client: Client) -> Result<TrustedExecutionCluster> {
     let namespace = client.default_namespace().to_string();
     let cluster = get_opt_trusted_execution_cluster(client).await;

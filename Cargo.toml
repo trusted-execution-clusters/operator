@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: CC0-1.0
 
 [workspace]
-members = ["attestation-key-register", "compute-pcrs", "lib", "operator", "register-server", "test_utils", "tests"]
+members = ["attestation-key-register", "compute-pcrs", "kbs-event-proxy", "lib", "operator", "register-server", "test_utils", "tests"]
 resolver = "3"
 
 [workspace.package]

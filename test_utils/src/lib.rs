@@ -825,11 +825,14 @@ impl TestContext {
             .unwrap_or_else(|_| format!("{repo}/registration-server:{tag}"));
         let att_reg_img = env::var(RELATED_IMAGE_ATTESTATION_KEY_REGISTER)
             .unwrap_or_else(|_| format!("{repo}/attestation-key-register:{tag}"));
+        let proxy_img = env::var(RELATED_IMAGE_KBS_EVENT_PROXY)
+            .unwrap_or_else(|_| format!("{repo}/kbs-event-proxy:{tag}"));
         args.extend(&["-image", &operator_img]);
         args.extend(&["-pcrs-compute-image", &compute_pcrs_img]);
         args.extend(&["-trustee-image", &trustee_image]);
         args.extend(&["-register-server-image", &reg_srv_img]);
         args.extend(&["-attestation-key-register-image", &att_reg_img]);
+        args.extend(&["-kbs-event-proxy-image", &proxy_img]);
         let primary_approved_arg = format!("{},{approved_image}", constants::APPROVED_IMAGE_NAME);
         args.extend(&["-approved-image", &primary_approved_arg]);
         let approved_args: Vec<String> = approved_images

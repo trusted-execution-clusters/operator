@@ -66,6 +66,7 @@ type Args struct {
 	pcrsComputeImage            string
 	registerServerImage         string
 	attestationKeyRegisterImage string
+	kbsEventProxyImage          string
 	approvedImages              approvedImageSlice
 }
 
@@ -78,6 +79,7 @@ func main() {
 	flag.StringVar(&args.pcrsComputeImage, "pcrs-compute-image", "quay.io/trusted-execution-clusters/compute-pcrs:latest", "Container image with the Trusted Execution Clusters compute-pcrs binary")
 	flag.StringVar(&args.registerServerImage, "register-server-image", "quay.io/trusted-execution-clusters/register-server:latest", "Register server image to use in the deployment")
 	flag.StringVar(&args.attestationKeyRegisterImage, "attestation-key-register-image", "quay.io/trusted-execution-clusters/attestation-key-register:latest", "Attestation key register image to use in the deployment")
+	flag.StringVar(&args.kbsEventProxyImage, "kbs-event-proxy-image", "quay.io/trusted-execution-clusters/kbs-event-proxy:latest", "KBS event proxy sidecar image")
 	flag.Var(&args.approvedImages, "approved-image", "When set, defines an initial approved image. It must be a comma-separated name,image-ref pair. Must be a bootable container image with SHA reference. Can be set multiple times.")
 	flag.Parse()
 
@@ -145,6 +147,10 @@ func generateOperator(args *Args) error {
 						{
 							Name:  "RELATED_IMAGE_ATTESTATION_KEY_REGISTER",
 							Value: args.attestationKeyRegisterImage,
+						},
+						{
+							Name:  "RELATED_IMAGE_KBS_EVENT_PROXY",
+							Value: args.kbsEventProxyImage,
 						},
 					},
 				},

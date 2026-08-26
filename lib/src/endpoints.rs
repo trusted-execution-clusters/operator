@@ -5,6 +5,7 @@
 pub const TRUSTEE_SERVICE: &str = "kbs-service";
 pub const TRUSTEE_DEPLOYMENT: &str = "trustee-deployment";
 pub const TRUSTEE_PORT: i32 = 8080;
+pub const KBS_INTERNAL_PORT: i32 = 8081;
 pub const TRUSTEE_APP_LABEL: &str = "kbs";
 pub const REGISTER_SERVER_SERVICE: &str = "register-server";
 pub const REGISTER_SERVER_DEPLOYMENT: &str = "register-server";

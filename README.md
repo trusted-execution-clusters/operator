@@ -18,6 +18,7 @@ The operator relies on Rust crates for its functionality.
 -   `/register-server`: A server that provides Clevis PINs for key retrieval with random UUIDs.
 -   `/attestation-key-register`: A server that accepts attestation key registrations from VMs and creates AttestationKey resources.
 -   `/compute-pcrs`: A program to compute PCR reference values using the [compute-pcrs library](https://github.com/trusted-execution-clusters/compute-pcrs) and insert them into a ConfigMap, run as a Job.
+-   `/kbs-event-proxy`: A reverse proxy sidecar for KBS that emits Kubernetes events for attestation activity. See [design doc](docs/design/kbs-event-proxy.md).
 
 ### Other crates
 

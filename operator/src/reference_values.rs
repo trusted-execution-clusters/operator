@@ -7,21 +7,17 @@ use anyhow::{Context, Result, anyhow};
 use compute_pcrs_lib::Pcr;
 use futures_util::StreamExt;
 use k8s_openapi::api::core::v1::ObjectReference;
-use k8s_openapi::{
-    api::{
-        batch::v1::{Job, JobSpec},
-        core::v1::{ConfigMap, Container, ImageVolumeSource, Volume, VolumeMount},
-        core::v1::{Pod, PodSpec, PodTemplateSpec},
-    },
-    jiff::Timestamp,
+use k8s_openapi::api::{
+    batch::v1::{Job, JobSpec},
+    core::v1::{Container, ImageVolumeSource, Volume, VolumeMount},
+    core::v1::{Pod, PodSpec, PodTemplateSpec},
 };
-use kube::api::{DeleteParams, ListParams, ObjectMeta, Patch, PatchParams};
+use kube::api::{DeleteParams, ListParams, ObjectMeta, Patch};
 use kube::runtime::{
     controller::{Action, Controller},
     events::EventType,
     finalizer,
     finalizer::Event,
-    reflector::ObjectRef,
     watcher,
 };
 use kube::{Api, Client, Resource};
@@ -34,45 +30,23 @@ use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use crate::COMPONENT_VERSION;
-use crate::trustee::{self, get_image_pcrs};
+use crate::trustee;
 use operator::{ControllerError, KIND_LABEL_KEY, LONG_REQUEUE, OperatorContext, upsert_condition};
 use operator::{controller_error_policy, controller_info, create_or_info_if_exists};
 use trusted_cluster_operator_lib::{conditions::*, record_event, reference_values::*, *};
 
 const APPROVED_IMAGE_ANNOTATION: &str = "approved-image";
 const PCR_COMMAND_NAME: &str = "compute-pcrs";
+/// Requeue to recheck PCR jobs status.
+const PCR_COMPUTING_REQUEUE: Duration = Duration::from_secs(30);
 const PCR_LABEL: &str = "org.coreos.pcrs";
 /// Finalizer name to discard reference values when an image is no longer approved
 const APPROVED_IMAGE_FINALIZER: &str = "finalizer.approved-image.trusted-execution-clusters.io";
-
-fn cached_image_pcrs(ctx: &OperatorContext) -> Result<ImagePcrs> {
-    let obj_ref = ObjectRef::new(PCR_CONFIG_MAP).within(ctx.client.default_namespace());
-    let err_ctx = format!("missing ConfigMap {PCR_CONFIG_MAP}");
-    let cm = ctx.cm_store.get(&obj_ref).context(err_ctx)?;
-    get_image_pcrs(cm.as_ref())
-}
 
 /// Synchronize with compute_pcrs_cli::Output
 #[derive(Deserialize)]
 struct ComputePcrsOutput {
     pcrs: Vec<Pcr>,
-}
-
-pub async fn create_pcrs_config_map(client: Client) -> Result<()> {
-    let empty_data = BTreeMap::from([(
-        PCR_CONFIG_FILE.to_string(),
-        serde_json::to_string(&ImagePcrs::default())?,
-    )]);
-    let config_map = ConfigMap {
-        metadata: ObjectMeta {
-            name: Some(PCR_CONFIG_MAP.to_string()),
-            ..Default::default()
-        },
-        data: Some(empty_data),
-        ..Default::default()
-    };
-    create_or_info_if_exists!(client, ConfigMap, config_map);
-    Ok(())
 }
 
 async fn fetch_pcr_label(image_ref: &oci_client::Reference) -> Result<Option<Vec<Pcr>>> {
@@ -140,8 +114,8 @@ async fn job_reconcile(
     // Foreground deletion: Delete the pod too
     let delete = jobs.delete(name, &DeleteParams::foreground()).await;
     delete.map_err(Into::<anyhow::Error>::into)?;
-    let image_pcrs = cached_image_pcrs(&ctx)?;
-    trustee::update_reference_values(&ctx, image_pcrs).await?;
+    trustee::update_reference_values(&ctx).await?;
+
     if let Some(owner) = job
         .metadata
         .owner_references
@@ -181,6 +155,21 @@ pub async fn launch_rv_job_controller(ctx: Arc<OperatorContext>) {
             .run(job_reconcile, controller_error_policy, ctx)
             .for_each(controller_info),
     );
+}
+
+/// Deletes the compute-pcrs Job for `boot_image`
+// 404 is success: the Job may already have been deleted.
+pub(crate) async fn delete_compute_pcrs_job(client: &Client, boot_image: &str) -> Result<()> {
+    let job_name = get_job_name(boot_image)?;
+    let jobs: Api<Job> = Api::default_namespaced(client.clone());
+    match jobs.delete(&job_name, &DeleteParams::foreground()).await {
+        Ok(_) => info!("Deleted Job {job_name} for PCR recomputation"),
+        Err(kube::Error::Api(ae)) if ae.code == 404 => {
+            info!("Job {job_name} already absent");
+        }
+        Err(e) => return Err(e.into()),
+    }
+    Ok(())
 }
 
 // Name job by sanitized image name, plus a hash to disambiguate
@@ -330,21 +319,23 @@ async fn image_add_reconcile(
     }
     let image_ref: ObjectReference = image.object_ref(&());
     let (action, reason) = match handle_new_image(ctx, image).await {
-        Ok(reason) => {
-            if reason == NOT_COMMITTED_REASON_COMPUTING {
-                record_event(
-                    &ctx.recorder,
-                    &image_ref,
-                    EventType::Normal,
-                    "ComputationStarted",
-                    format!("PCR computation started for {name}"),
-                    "Computing",
-                    None,
-                )
-                .await;
-            }
-            (LONG_REQUEUE, reason)
+        Ok(NOT_COMMITTED_REASON_COMPUTING) => {
+            record_event(
+                &ctx.recorder,
+                &image_ref,
+                EventType::Normal,
+                "ComputationStarted",
+                format!("PCR computation started for {name}"),
+                "Computing",
+                None,
+            )
+            .await;
+            (
+                Action::requeue(PCR_COMPUTING_REQUEUE),
+                NOT_COMMITTED_REASON_COMPUTING,
+            )
         }
+        Ok(reason) => (LONG_REQUEUE, reason),
         Err(e) => {
             warn!("PCR computation for {name} failed: {e}");
             record_event(
@@ -368,8 +359,16 @@ async fn image_add_reconcile(
     let changed = upsert_condition(&mut conditions, committed);
     if changed {
         let images: Api<ApprovedImage> = Api::default_namespaced(ctx.client.clone());
-        update_status!(images, &name, ApprovedImageStatus { conditions })
-            .map_err(|e| finalizer::Error::<ControllerError>::ApplyFailed(e.into()))?;
+        update_status!(
+            images,
+            &name,
+            ApprovedImageStatus {
+                conditions,
+                pcrs: image.status.as_ref().and_then(|s| s.pcrs.clone()),
+                first_seen: image.status.as_ref().and_then(|s| s.first_seen.clone()),
+            }
+        )
+        .map_err(|e| finalizer::Error::<ControllerError>::ApplyFailed(e.into()))?;
     }
     Ok(action)
 }
@@ -426,15 +425,29 @@ pub async fn handle_new_image(
     image: &ApprovedImage,
 ) -> Result<&'static str> {
     let resource_name = image.metadata.name.as_ref().unwrap();
-    let boot_image = image.spec.image.as_ref();
-    let mut image_pcrs = cached_image_pcrs(ctx)?;
-    if let Some(pcr) = image_pcrs.0.get(resource_name)
-        && pcr.reference == boot_image
+    let boot_image: &str = &image.spec.image;
+
+    let is_committed = image
+        .status
+        .as_ref()
+        .and_then(|s| s.conditions.as_ref())
+        .is_some_and(|cs| {
+            cs.iter()
+                .any(|c| c.type_ == COMMITTED_CONDITION && c.status == "True")
+        });
+    if is_committed
+        && image
+            .status
+            .as_ref()
+            .and_then(|s| s.pcrs.as_ref())
+            .is_some()
     {
-        info!("Image {boot_image} was to be allowed, but already was allowed");
-        let res = trustee::update_reference_values(ctx, image_pcrs);
-        return res.await.map(|_| COMMITTED_REASON);
+        info!("Image {boot_image} was to be allowed, but already was committed");
+        // Trustee Deployment reconcile restores RVs after Trustee restarts.
+        // New PCRs are pushed from the label path and job_reconcile.
+        return Ok(COMMITTED_REASON);
     }
+
     let image_ref: oci_client::Reference = boot_image.parse()?;
     if image_ref.digest().is_none() {
         warn!(
@@ -445,7 +458,6 @@ pub async fn handle_new_image(
     }
     let label = fetch_pcr_label(&image_ref).await;
 
-    // Whether to compute pcrs or not.
     let should_compute_pcrs = match label {
         Err(ref e) => {
             warn!("Fetching PCR label for {image_ref} failed: {e}. Falling back to computation.");
@@ -466,40 +478,32 @@ pub async fn handle_new_image(
             .map(|_| NOT_COMMITTED_REASON_COMPUTING);
     }
 
-    let image_pcr = ImagePcr {
-        first_seen: Timestamp::now(),
-        pcrs: label.unwrap().unwrap(),
-        reference: boot_image.to_string(),
+    let pcrs = label.unwrap().unwrap();
+    let status_pcrs = pcrs_to_status(&pcrs);
+
+    let committed = committed_condition(COMMITTED_REASON, image.metadata.generation, &image.status);
+    let conditions = Some(vec![committed]);
+    let first_seen = image
+        .status
+        .as_ref()
+        .and_then(|s| s.first_seen.clone())
+        .or_else(|| Some(chrono::Utc::now().to_rfc3339()));
+    let images: Api<ApprovedImage> = Api::default_namespaced(ctx.client.clone());
+    let status = ApprovedImageStatus {
+        conditions,
+        pcrs: Some(status_pcrs),
+        first_seen,
     };
-    image_pcrs.0.insert(resource_name.to_string(), image_pcr);
-    let reason = COMMITTED_REASON;
-    apply_image_pcrs(ctx, image_pcrs).await.map(|_| reason)
+    update_status!(images, resource_name, status)?;
+
+    trustee::update_reference_values(ctx)
+        .await
+        .map(|_| COMMITTED_REASON)
 }
 
 pub async fn disallow_image(ctx: &OperatorContext, resource_name: &str) -> Result<()> {
-    let mut image_pcrs = cached_image_pcrs(ctx)?;
-    if image_pcrs.0.remove(resource_name).is_none() {
-        info!("Image {resource_name} was to be disallowed, but already was not allowed");
-    }
-    apply_image_pcrs(ctx, image_pcrs).await
-}
-
-async fn apply_image_pcrs(ctx: &OperatorContext, image_pcrs: ImagePcrs) -> Result<()> {
-    let image_pcrs_json = serde_json::to_string(&image_pcrs)?;
-    let cm_data = BTreeMap::from([(PCR_CONFIG_FILE.to_string(), image_pcrs_json)]);
-    let cm = ConfigMap {
-        metadata: ObjectMeta {
-            name: Some(PCR_CONFIG_MAP.to_string()),
-            ..Default::default()
-        },
-        data: Some(cm_data),
-        ..Default::default()
-    };
-    let patch = Patch::Apply(serde_json::to_value(&cm)?);
-    let config_maps: Api<ConfigMap> = Api::default_namespaced(ctx.client.clone());
-    let pp = PatchParams::apply("trusted-cluster-operator").force();
-    config_maps.patch(PCR_CONFIG_MAP, &pp, &patch).await?;
-    trustee::update_reference_values(ctx, image_pcrs).await
+    info!("Disallowing image {resource_name}, recomputing reference values");
+    trustee::update_reference_values(ctx).await
 }
 
 #[cfg(test)]
@@ -509,16 +513,11 @@ mod tests {
     use http::{Method, Request, StatusCode};
     use k8s_openapi::api::batch::v1::JobStatus;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
+    use k8s_openapi::jiff::Timestamp;
+    use kube::api::ObjectList;
     use kube::client::Body;
     use trusted_cluster_operator_test_utils::mock_client::*;
     use trusted_cluster_operator_test_utils::test_error_method;
-
-    fn op_ctx_with_cm(client: Client, name: &str, mut cm: ConfigMap) -> OperatorContext {
-        cm.metadata.name = Some(name.to_string());
-        let mut ctx = OperatorContext::new(client);
-        ctx.cm_store = store_with(vec![cm]);
-        ctx
-    }
 
     fn op_ctx_with_images(client: Client, images: Vec<ApprovedImage>) -> OperatorContext {
         let mut ctx = OperatorContext::new(client);
@@ -528,24 +527,6 @@ mod tests {
 
     const DUMMY_IMAGE_REF: &str =
         "quay.io/some-ref@sha256:e71dad00aa0e3d70540e726a0c66407e3004d96e045ab6c253186e327a2419e5";
-
-    #[tokio::test]
-    async fn test_create_pcrs_cm_success() {
-        let clos = |client| create_pcrs_config_map(client);
-        test_create_success::<_, _, ConfigMap>(clos).await;
-    }
-
-    #[tokio::test]
-    async fn test_create_pcrs_cm_exists() {
-        let clos = |client| create_pcrs_config_map(client);
-        test_create_already_exists(clos).await;
-    }
-
-    #[tokio::test]
-    async fn test_create_pcrs_cm_error() {
-        let clos = |client| create_pcrs_config_map(client);
-        test_error_method!(clos, Method::POST);
-    }
 
     fn dummy_image() -> ApprovedImage {
         ApprovedImage {
@@ -577,19 +558,27 @@ mod tests {
 
     #[tokio::test]
     async fn test_job_reconcile_success() {
+        let _ = jsonwebtoken_openssl::install_default();
         let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
             (0, &Method::DELETE) => Ok(serde_json::to_string(&Job::default()).unwrap()),
-            (1, &Method::PATCH) => {
-                assert!(req.uri().path().contains(trustee::TRUSTEE_RV_MAP));
-                Ok(serde_json::to_string(&dummy_trustee_map()).unwrap())
+            (1, &Method::GET) => {
+                let list = ObjectList::<ApprovedImage> {
+                    items: vec![],
+                    types: Default::default(),
+                    metadata: Default::default(),
+                };
+                Ok(serde_json::to_string(&list).unwrap())
             }
             _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
         };
         count_check!(2, clos, |client| {
-            let ctx = Arc::new(op_ctx_with_cm(client, PCR_CONFIG_MAP, dummy_pcrs_map()));
+            let mut auth = dummy_trustee_auth();
+            auth.metadata.name = Some("trustee-auth".to_string());
+            let mut ctx = OperatorContext::new(client);
+            ctx.secret_store = store_with(vec![auth]);
+            ctx.tec_store = store_with(vec![dummy_cluster()]);
             let job = Arc::new(dummy_job());
-            let result = job_reconcile(job, ctx).await.unwrap();
-            assert_eq!(result, LONG_REQUEUE);
+            assert!(job_reconcile(job, Arc::new(ctx)).await.is_err());
         });
     }
 
@@ -619,6 +608,19 @@ mod tests {
             name,
             "compute-pcrs-6c57e93939-quay-io-some-ref-sha256-e71dad00aa0e3d7"
         );
+    }
+
+    #[tokio::test]
+    async fn test_delete_compute_pcrs_job_not_found() {
+        let clos = async |req: Request<_>, _| {
+            assert_eq!(req.method(), &Method::DELETE);
+            Err(StatusCode::NOT_FOUND)
+        };
+        count_check!(1, clos, |client| {
+            delete_compute_pcrs_job(&client, DUMMY_IMAGE_REF)
+                .await
+                .unwrap();
+        });
     }
 
     #[tokio::test]
@@ -688,27 +690,29 @@ mod tests {
         });
     }
 
-    // handle_new_image and its caller image_add_reconcile are
-    // inherently online functions and not tested here
-
     #[tokio::test]
     async fn test_image_remove_reconcile() {
+        let _ = jsonwebtoken_openssl::install_default();
         let image = Arc::new(dummy_image());
         let cluster = Some(dummy_cluster());
         let clos = async |req: Request<_>, ctr| match (ctr, req.method()) {
-            (0, &Method::PATCH) => {
-                assert!(req.uri().path().contains(PCR_CONFIG_MAP));
-                Ok(serde_json::to_string(&dummy_pcrs_map()).unwrap())
-            }
-            (1, &Method::PATCH) => {
-                assert!(req.uri().path().contains(trustee::TRUSTEE_RV_MAP));
-                Ok(serde_json::to_string(&dummy_trustee_map()).unwrap())
+            (0, &Method::GET) => {
+                let list = ObjectList::<ApprovedImage> {
+                    items: vec![],
+                    types: Default::default(),
+                    metadata: Default::default(),
+                };
+                Ok(serde_json::to_string(&list).unwrap())
             }
             _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
         };
-        count_check!(2, clos, |client| {
-            let ctx = op_ctx_with_cm(client, PCR_CONFIG_MAP, dummy_pcrs_map());
-            assert!(image_remove_reconcile(&ctx, image, cluster).await.is_ok());
+        count_check!(1, clos, |client| {
+            let mut auth = dummy_trustee_auth();
+            auth.metadata.name = Some("trustee-auth".to_string());
+            let mut ctx = OperatorContext::new(client);
+            ctx.secret_store = store_with(vec![auth]);
+            ctx.tec_store = store_with(vec![dummy_cluster()]);
+            assert!(image_remove_reconcile(&ctx, image, cluster).await.is_err());
         });
     }
 }

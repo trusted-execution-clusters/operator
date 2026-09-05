@@ -99,6 +99,10 @@ type TrustedExecutionClusterStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// Observed version of the operator that last successfully reconciled this cluster. Operator will trigger reconciliation upgrade if there is drift in this value.
+	// +optional
+	ObservedOperatorVersion *string `json:"observedOperatorVersion,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -189,6 +193,35 @@ type ApprovedImageStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// PCR values computed for this image
+	// +optional
+	Pcrs []Pcr `json:"pcrs,omitempty"`
+
+	// Timestamp when this image was first seen by the operator
+	// +optional
+	FirstSeen *metav1.Time `json:"firstSeen,omitempty"`
+}
+
+type Pcr struct {
+	// PCR register index
+	Id int `json:"id"`
+	// Hex-encoded PCR value
+	Value string `json:"value"`
+	// TPM events that were extended into this PCR register
+	// +optional
+	Events []PcrEvent `json:"events,omitempty"`
+}
+
+type PcrEvent struct {
+	// Human-readable name of the event
+	Name string `json:"name"`
+	// PCR register this event extends
+	Pcr int `json:"pcr"`
+	// Hex-encoded hash value extended into the PCR
+	Hash string `json:"hash"`
+	// Event identifier analogous toTPMEventID variants
+	Id string `json:"id"`
 }
 
 // +kubebuilder:object:root=true

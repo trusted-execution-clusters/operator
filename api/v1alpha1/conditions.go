@@ -34,4 +34,12 @@ const (
 	MachineAkApprovedCondition     string = "AttestationKeyApproved"
 	MachineAkApprovedReason        string = "KeyApproved"
 	MachineAkNotApprovedReason     string = "NoKeyMatched"
+
+	// Operator Upgrade conditions
+	UpgradeCondition              string = "Upgrade"
+	UpgradeInProgress             string = "InProgress"
+	UpgradeComplete               string = "Complete"
+	UpgradeFailed                 string = "Failed"
+	TrusteeUpgradeCondition       string = "TrusteeUpgrade"
+	RelatedImagesUpgradeCondition string = "RelatedImagesUpgrade"
 )

@@ -13,6 +13,7 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 compute-pcrs-lib.workspace = true
+hex.workspace = true
 k8s-openapi.workspace = true
 kube.workspace = true
 log.workspace = true
@@ -23,5 +24,6 @@ serde_json.workspace = true
 # Only a generate dependency, not a Rust dependency. Included here for auto-updates.
 kopium = "0.23.0"
 http.workspace = true
+strum = { version = "0.28", features = ["derive"] }
 tokio.workspace = true
 trusted-cluster-operator-test-utils = { path = "../test_utils" }

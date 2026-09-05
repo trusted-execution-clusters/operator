@@ -3,14 +3,14 @@
 //
 // SPDX-License-Identifier: MIT
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
+use chrono::Utc;
 use clap::Parser;
 use compute_pcrs_lib::*;
-use k8s_openapi::{api::core::v1::ConfigMap, jiff::Timestamp};
 use kube::{Api, Client};
 use std::{fs::File, io::Read};
 
-use trusted_cluster_operator_lib::{conditions::INSTALLED_REASON, reference_values::*, *};
+use trusted_cluster_operator_lib::{conditions::COMMITTED_REASON, reference_values::*, *};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -51,36 +51,24 @@ async fn main() -> Result<()> {
         compute_pcr14(&mokvars),
     ];
 
+    let status_pcrs = pcrs_to_status(&pcrs);
+
     let client = Client::try_default().await?;
-    let config_maps: Api<ConfigMap> = Api::default_namespaced(client.clone());
-
-    let mut image_pcrs_map = config_maps.get(PCR_CONFIG_MAP).await?;
-    let image_pcrs_data = image_pcrs_map
-        .data
-        .context("Image PCRs map existed, but had no data")?;
-    let image_pcrs_str = image_pcrs_data
-        .get(PCR_CONFIG_FILE)
-        .context("Image PCRs data existed, but had no file")?;
-    let mut image_pcrs: ImagePcrs = serde_json::from_str(image_pcrs_str)?;
-
-    let image_pcr = ImagePcr {
-        first_seen: Timestamp::now(),
-        reference: args.image,
-        pcrs,
-    };
-    image_pcrs.0.insert(args.resource_name.clone(), image_pcr);
-    let image_pcrs_json = serde_json::to_string(&image_pcrs)?;
-    let data = std::collections::BTreeMap::from([(PCR_CONFIG_FILE.to_string(), image_pcrs_json)]);
-    image_pcrs_map.data = Some(data);
-    config_maps
-        .replace(PCR_CONFIG_MAP, &Default::default(), &image_pcrs_map)
-        .await?;
-
     let approved_images: Api<ApprovedImage> = Api::default_namespaced(client);
     let image = approved_images.get(&args.resource_name).await?;
-    let committed = committed_condition(INSTALLED_REASON, image.metadata.generation, &None);
+    let committed = committed_condition(COMMITTED_REASON, image.metadata.generation, &None);
     let conditions = Some(vec![committed]);
-    let status = ApprovedImageStatus { conditions };
+    // Not used anywhere yet.
+    let first_seen = image
+        .status
+        .as_ref()
+        .and_then(|s| s.first_seen.clone())
+        .or_else(|| Some(Utc::now().to_rfc3339()));
+    let status = ApprovedImageStatus {
+        conditions,
+        pcrs: Some(status_pcrs),
+        first_seen,
+    };
     update_status!(approved_images, &args.resource_name, status)?;
     Ok(())
 }

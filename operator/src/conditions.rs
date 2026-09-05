@@ -133,3 +133,91 @@ pub fn attestation_key_approved_condition(
         observed_generation: generation,
     }
 }
+
+pub fn upgrade_condition(
+    type_: &str,
+    reason: &str,
+    generation: Option<i64>,
+    existing_status: &Option<TrustedExecutionClusterStatus>,
+    detail: Option<&str>,
+) -> Condition {
+    let status = condition_status(reason == UPGRADE_COMPLETE);
+    let message = match (reason, detail) {
+        (UPGRADE_FAILED, Some(d)) => format!("Upgrade failed: {d}. Manual intervention required."),
+        (UPGRADE_IN_PROGRESS, _) => "Operator upgrade is in progress".to_string(),
+        (UPGRADE_COMPLETE, _) => "Operator upgrade completed successfully".to_string(),
+        _ => String::new(),
+    };
+    Condition {
+        type_: type_.to_string(),
+        reason: reason.to_string(),
+        message,
+        last_transition_time: transition_time(existing_status, type_, &status),
+        status,
+        observed_generation: generation,
+    }
+}
+
+// Few tests for the various upgrade conditions.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_upgrade_condition_in_progress_message() {
+        let c = upgrade_condition(UPGRADE_CONDITION, UPGRADE_IN_PROGRESS, None, &None, None);
+        assert_eq!(c.type_, UPGRADE_CONDITION);
+        assert_eq!(c.reason, UPGRADE_IN_PROGRESS);
+        assert_eq!(c.status, "False");
+        assert_eq!(c.message, "Operator upgrade is in progress");
+    }
+
+    #[test]
+    fn test_upgrade_condition_complete_message() {
+        let c = upgrade_condition(UPGRADE_CONDITION, UPGRADE_COMPLETE, None, &None, None);
+        assert_eq!(c.type_, UPGRADE_CONDITION);
+        assert_eq!(c.reason, UPGRADE_COMPLETE);
+        assert_eq!(c.status, "True");
+        assert_eq!(c.message, "Operator upgrade completed successfully");
+    }
+
+    // Trustee upgrade failed message.
+    #[test]
+    fn test_upgrade_condition_trustee_failed_message() {
+        let detail = "Trustee pod failed to become ready";
+        let c = upgrade_condition(UPGRADE_CONDITION, UPGRADE_FAILED, None, &None, Some(detail));
+        assert_eq!(c.type_, UPGRADE_CONDITION);
+        assert_eq!(c.reason, UPGRADE_FAILED);
+        assert_eq!(c.status, "False");
+        assert_eq!(
+            c.message,
+            "Upgrade failed: Trustee pod failed to become ready. Manual intervention required."
+        );
+    }
+
+    // Trustee stage passes, related images stage also passes. Making sure the upgrade condition is set to True.
+    #[test]
+    fn test_upgrade_stage_conditions() {
+        let trustee = upgrade_condition(
+            TRUSTEE_UPGRADE_CONDITION,
+            UPGRADE_COMPLETE,
+            None,
+            &None,
+            None,
+        );
+        assert_eq!(trustee.type_, TRUSTEE_UPGRADE_CONDITION);
+        assert_eq!(trustee.reason, UPGRADE_COMPLETE);
+        assert_eq!(trustee.status, "True");
+
+        let related = upgrade_condition(
+            RELATED_IMAGES_UPGRADE_CONDITION,
+            UPGRADE_COMPLETE,
+            None,
+            &None,
+            None,
+        );
+        assert_eq!(related.type_, RELATED_IMAGES_UPGRADE_CONDITION);
+        assert_eq!(related.reason, UPGRADE_COMPLETE);
+        assert_eq!(related.status, "True");
+    }
+}

@@ -12,6 +12,7 @@ description = "A trusted-cluster-operator optimized compute-pcrs interface"
 
 [dependencies]
 anyhow.workspace = true
+chrono.workspace = true
 clap.workspace = true
 trusted-cluster-operator-lib = { path = "../lib" }
 compute-pcrs-lib.workspace = true

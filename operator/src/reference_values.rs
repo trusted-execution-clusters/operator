@@ -24,7 +24,6 @@ use kube::{Api, Client, Resource};
 use log::{info, warn};
 use oci_client::secrets::RegistryAuth;
 use oci_spec::image::ImageConfiguration;
-use openssl::hash::{MessageDigest, hash};
 use serde::Deserialize;
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
@@ -36,7 +35,6 @@ use operator::{controller_error_policy, controller_info, create_or_info_if_exist
 use trusted_cluster_operator_lib::{conditions::*, record_event, reference_values::*, *};
 
 const APPROVED_IMAGE_ANNOTATION: &str = "approved-image";
-const PCR_COMMAND_NAME: &str = "compute-pcrs";
 /// Requeue to recheck PCR jobs status.
 const PCR_COMPUTING_REQUEUE: Duration = Duration::from_secs(30);
 const PCR_LABEL: &str = "org.coreos.pcrs";
@@ -158,21 +156,8 @@ pub async fn launch_rv_job_controller(ctx: Arc<OperatorContext>) {
     );
 }
 
-// Name job by sanitized image name, plus a hash to disambiguate
-// tags that differed only beyond the truncation limit
-fn get_job_name(boot_image: &str) -> Result<String> {
-    let rfc1035_boot_image = boot_image.replace(['.', ':', '/', '@', '_'], "-");
-    let boot_image_hash = hash(MessageDigest::sha1(), boot_image.as_bytes())?;
-    let mut boot_image_hash_str = hex::encode(boot_image_hash);
-    boot_image_hash_str.truncate(10);
-    let job_name = format!("{PCR_COMMAND_NAME}-{boot_image_hash_str}-{rfc1035_boot_image}");
-    let trimmed: String = job_name.chars().take(63).collect();
-    let trimmed = trimmed.trim_end_matches('-').to_string();
-    Ok(trimmed)
-}
-
 async fn compute_fresh_pcrs(client: Client, image: &ApprovedImage) -> anyhow::Result<()> {
-    let job_name = get_job_name(&image.spec.image)?;
+    let job_name = rfc1035(&image.spec.image, PCR_COMMAND_NAME)?;
     let env = "RELATED_IMAGE_COMPUTE_PCRS";
     let default_image =
         format!("quay.io/trusted-execution-clusters/compute-pcrs:{COMPONENT_VERSION}");
@@ -211,7 +196,7 @@ async fn compute_fresh_pcrs(client: Client, image: &ApprovedImage) -> anyhow::Re
 
 /// Delete the compute-pcrs Job for `boot_image`, if it exists, so it can be re-created.
 pub async fn delete_compute_pcrs_job(client: &Client, boot_image: &str) -> Result<()> {
-    let job_name = get_job_name(boot_image)?;
+    let job_name = rfc1035(boot_image, PCR_COMMAND_NAME)?;
     let jobs: Api<Job> = Api::default_namespaced(client.clone());
     // Blocking Foreground deletion so that, once the Job object is gone, its Pods is guaranteed gone too.
     // We need to wait for the deletion to complete before returning, so the caller can safely re-create the new job with the same deterministic Job name.
@@ -529,7 +514,7 @@ mod tests {
     use kube::api::ObjectList;
     use kube::client::Body;
     use trusted_cluster_operator_test_utils::mock_client::*;
-    use trusted_cluster_operator_test_utils::{constants::DUMMY_IMAGE_REF, test_error_method};
+    use trusted_cluster_operator_test_utils::test_error_method;
 
     fn op_ctx_with_images(client: Client, images: Vec<ApprovedImage>) -> OperatorContext {
         let mut ctx = OperatorContext::new(client);
@@ -590,21 +575,6 @@ mod tests {
             let result = job_reconcile(Arc::new(job), ctx).await;
             assert_eq!(result.unwrap(), Action::requeue(Duration::from_secs(300)));
         });
-    }
-
-    #[test]
-    fn test_get_job_name_trailing_dash() {
-        let name = get_job_name("quay.io/some_ref:some-tag-").unwrap();
-        assert_eq!(name, "compute-pcrs-105a7802d8-quay-io-some-ref-some-tag");
-    }
-
-    #[test]
-    fn test_get_job_name_sha() {
-        let name = get_job_name(DUMMY_IMAGE_REF).unwrap();
-        assert_eq!(
-            name,
-            "compute-pcrs-6c57e93939-quay-io-some-ref-sha256-e71dad00aa0e3d7"
-        );
     }
 
     #[tokio::test]

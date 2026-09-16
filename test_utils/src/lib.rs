@@ -152,7 +152,7 @@ pub enum VirtProvider {
     Azure,
 }
 
-fn get_virt_provider() -> Result<VirtProvider> {
+pub fn get_virt_provider() -> Result<VirtProvider> {
     match env::var(VIRT_PROVIDER_ENV) {
         Ok(val) => match val.to_lowercase().as_str() {
             "kubevirt" => Ok(VirtProvider::Kubevirt),

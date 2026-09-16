@@ -103,6 +103,13 @@ fn machine_id_from_path(path: &str) -> Option<&str> {
     stripped.strip_suffix("/root")
 }
 
+fn machine_id_from_attest_body(body: &[u8]) -> Option<String> {
+    let json: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let body_str = json.get("init-data")?.get("body")?.as_str()?;
+    let toml: toml::Value = toml::from_str(body_str).ok()?;
+    toml.get("data")?.get("uuid")?.as_str().map(String::from)
+}
+
 // -- Kubernetes object lookups --
 
 async fn lookup_cluster_ref(client: &Client) -> Option<ObjectReference> {
@@ -149,6 +156,7 @@ async fn handle_auth_response(state: &ProxyState, req_body: &[u8], resp_headers:
 async fn handle_attest_response(
     state: &ProxyState,
     req_headers: &http::HeaderMap,
+    req_body: &[u8],
     resp_status: StatusCode,
 ) {
     let session_id = match session_id_from_request(req_headers) {
@@ -166,13 +174,41 @@ async fn handle_attest_response(
             .unwrap_or_else(|| "unknown".to_string())
     };
 
-    if !succeeded && let Some(tec_ref) = lookup_cluster_ref(&state.kube_client).await {
+    if succeeded {
+        return;
+    }
+
+    let machine_id = machine_id_from_attest_body(req_body);
+
+    if let Some(id) = &machine_id {
+        let machine_ref = lookup_machine_ref(&state.machine_store, id);
+        let tec_ref = lookup_cluster_ref(&state.kube_client).await;
+        if let Some(ref primary) = machine_ref {
+            record_event(
+                &state.recorder,
+                primary,
+                EventType::Warning,
+                "AttestationFailed",
+                format!("Attestation failed for machine {id} (TEE type: {tee_type})"),
+                "Attesting",
+                tec_ref,
+            )
+            .await;
+            return;
+        }
+    }
+
+    if let Some(tec_ref) = lookup_cluster_ref(&state.kube_client).await {
+        let note = match &machine_id {
+            Some(id) => format!("Attestation failed for machine {id} (TEE type: {tee_type})"),
+            None => format!("Attestation failed for TEE type: {tee_type}"),
+        };
         record_event(
             &state.recorder,
             &tec_ref,
             EventType::Warning,
             "AttestationFailed",
-            format!("Attestation failed for TEE type: {tee_type}"),
+            note,
             "Attesting",
             None,
         )
@@ -310,7 +346,7 @@ async fn proxy_handler(State(state): State<Arc<ProxyState>>, req: Request<Body>)
     if path == KBS_AUTH_PATH && backend.status == StatusCode::OK {
         handle_auth_response(&state, &body_bytes, &backend.headers).await;
     } else if path == KBS_ATTEST_PATH {
-        handle_attest_response(&state, &req_headers, backend.status).await;
+        handle_attest_response(&state, &req_headers, &body_bytes, backend.status).await;
     } else if path.starts_with(KBS_RESOURCE_PATH_PREFIX) {
         handle_resource_response(&state, &path, backend.status).await;
     }

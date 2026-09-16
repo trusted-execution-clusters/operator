@@ -133,16 +133,11 @@ fn generate_ignition(id: &str, endpoint_info: &EndpointInfo) -> IgnitionConfig {
         path: format!("default/{id}/root"),
         // TODO retry forever once we don't need a debugging shell
         num_retries: Some(NumRetries::Finite(RETRIES)),
-        initdata: None,
-        // TODO add initdata, e.g.
-        // #[derive(Serialize)]
-        // struct Initdata {
-        //     uuid: String,
-        // }
-        // let initdata = Initdata {
-        //     uuid: id.to_string(),
-        // };
-        // ... initdata: serde_json::to_string(&initdata)?,
+        initdata: if std::env::var("VIRT_PROVIDER").ok().as_deref() == Some("azure") {
+            Some(serde_json::json!({"uuid": id.to_string()}).to_string())
+        } else {
+            None
+        },
         attestation_key,
     };
 

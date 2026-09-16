@@ -101,6 +101,17 @@ func main() {
 	}
 }
 
+func operatorEnv(args *Args) []corev1.EnvVar {
+	return []corev1.EnvVar{
+		{Name: "RELATED_IMAGE_TRUSTEE", Value: args.trusteeImage},
+		{Name: "RELATED_IMAGE_COMPUTE_PCRS", Value: args.pcrsComputeImage},
+		{Name: "RELATED_IMAGE_REGISTRATION_SERVER", Value: args.registerServerImage},
+		{Name: "RELATED_IMAGE_ATTESTATION_KEY_REGISTER", Value: args.attestationKeyRegisterImage},
+		{Name: "RELATED_IMAGE_KBS_EVENT_PROXY", Value: args.kbsEventProxyImage},
+		{Name: "VIRT_PROVIDER", Value: os.Getenv("VIRT_PROVIDER")},
+	}
+}
+
 func generateOperator(args *Args) error {
 	ns := &corev1.Namespace{
 		TypeMeta: metav1.TypeMeta{
@@ -131,28 +142,7 @@ func generateOperator(args *Args) error {
 					Name:    name,
 					Image:   args.image,
 					Command: []string{"/usr/bin/operator"},
-					Env: []corev1.EnvVar{
-						{
-							Name:  "RELATED_IMAGE_TRUSTEE",
-							Value: args.trusteeImage,
-						},
-						{
-							Name:  "RELATED_IMAGE_COMPUTE_PCRS",
-							Value: args.pcrsComputeImage,
-						},
-						{
-							Name:  "RELATED_IMAGE_REGISTRATION_SERVER",
-							Value: args.registerServerImage,
-						},
-						{
-							Name:  "RELATED_IMAGE_ATTESTATION_KEY_REGISTER",
-							Value: args.attestationKeyRegisterImage,
-						},
-						{
-							Name:  "RELATED_IMAGE_KBS_EVENT_PROXY",
-							Value: args.kbsEventProxyImage,
-						},
-					},
+					Env:     operatorEnv(args),
 				},
 			},
 		},

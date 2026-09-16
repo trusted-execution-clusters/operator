@@ -8,7 +8,7 @@ use futures_util::StreamExt;
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::ObjectReference;
 use k8s_openapi::api::core::v1::{
-    Container, ContainerPort, PodSpec, PodTemplateSpec, Service, ServicePort, ServiceSpec,
+    Container, ContainerPort, EnvVar, PodSpec, PodTemplateSpec, Service, ServicePort, ServiceSpec,
 };
 use k8s_openapi::apimachinery::pkg::{
     apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference},
@@ -40,6 +40,15 @@ pub async fn create_register_server_deployment(
     secret: &Option<String>,
 ) -> Result<()> {
     let labels = BTreeMap::from([("app".to_string(), REGISTER_SERVER_APP_LABEL.to_string())]);
+
+    let mut env = Vec::new();
+    if let Ok(virt_provider) = std::env::var("VIRT_PROVIDER") {
+        env.push(EnvVar {
+            name: "VIRT_PROVIDER".to_string(),
+            value: Some(virt_provider),
+            ..Default::default()
+        });
+    }
 
     let mut args = vec!["--port".to_string(), REGISTER_SERVER_PORT.to_string()];
     let volumes = read_certificate(client.clone(), secret).await?;
@@ -77,6 +86,7 @@ pub async fn create_register_server_deployment(
                             ..Default::default()
                         }]),
                         args: Some(args),
+                        env: if env.is_empty() { None } else { Some(env) },
                         volume_mounts: volumes.as_ref().map(|(_, vm)| vec![vm.clone()]),
                         ..Default::default()
                     }],

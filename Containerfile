@@ -28,8 +28,10 @@ COPY register-server/Cargo.toml register-server/
 COPY register-server/src/lib.rs register-server/src/
 COPY attestation-key-register/Cargo.toml attestation-key-register/
 COPY attestation-key-register/src/lib.rs attestation-key-register/src/
+COPY kbs-event-proxy/Cargo.toml kbs-event-proxy/
+COPY kbs-event-proxy/src/main.rs kbs-event-proxy/src/
 
-RUN sed -i 's/members = .*/members = ["lib", "operator", "compute-pcrs", "register-server", "attestation-key-register"]/' Cargo.toml && \
+RUN sed -i 's/members = .*/members = ["lib", "operator", "compute-pcrs", "register-server", "attestation-key-register", "kbs-event-proxy"]/' Cargo.toml && \
     sed -i '/\[dev-dependencies\]/,$d' operator/Cargo.toml && \
     sed -i '/\[dev-dependencies\]/,$d' register-server/Cargo.toml && \
     sed -i '/trusted-cluster-operator-test-utils/d' lib/Cargo.toml
@@ -44,13 +46,14 @@ RUN --mount=type=cache,target=/build/target \
 RUN --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/usr/local/cargo/registry \
     if [ "$build_type" = debug ]; then \
-      cargo build -p operator -p compute-pcrs -p register-server -p attestation-key-register; \
+      cargo build -p operator -p compute-pcrs -p register-server -p attestation-key-register -p kbs-event-proxy; \
     fi
 
 COPY operator/src operator/src
 COPY compute-pcrs/src compute-pcrs/src
 COPY register-server/src register-server/src
 COPY attestation-key-register/src attestation-key-register/src
+COPY kbs-event-proxy/src kbs-event-proxy/src
 
 RUN --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/usr/local/cargo/registry \
@@ -61,6 +64,7 @@ RUN --mount=type=cache,target=/build/target \
       -p compute-pcrs \
       -p register-server \
       -p attestation-key-register \
+      -p kbs-event-proxy \
       $release_flag
 
 RUN --mount=type=cache,target=/build/target \
@@ -70,7 +74,8 @@ RUN --mount=type=cache,target=/build/target \
     cp /build/target/${profile_dir}/operator /output/ && \
     cp /build/target/${profile_dir}/compute-pcrs /output/ && \
     cp /build/target/${profile_dir}/register-server /output/ && \
-    cp /build/target/${profile_dir}/attestation-key-register /output/
+    cp /build/target/${profile_dir}/attestation-key-register /output/ && \
+    cp /build/target/${profile_dir}/kbs-event-proxy /output/
 
 # Distribution stages
 FROM ${deployment_base} AS operator
@@ -87,6 +92,10 @@ COPY --from=builder /output/register-server /usr/bin
 EXPOSE 3030
 ENTRYPOINT ["/usr/bin/register-server"]
 
+FROM ${deployment_base} AS kbs-event-proxy
+COPY --from=builder /output/kbs-event-proxy /usr/bin
+EXPOSE 8080
+ENTRYPOINT ["/usr/bin/kbs-event-proxy"]
 
 FROM builder AS compute-pcrs-data
 RUN rv_line=$(cargo metadata --format-version=1 | jq -r '.packages[] | select(.name == "reference-values") | .source') && \

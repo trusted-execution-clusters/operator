@@ -11,10 +11,10 @@ use anyhow::{Context, Result};
 use k8s_openapi::api::apps::v1::Deployment;
 use kube::Api;
 use std::time::Duration;
-use trusted_cluster_operator_lib::{AttestationKey, Machine, TrustedExecutionCluster};
+use trusted_cluster_operator_lib::{ApprovedImage, AttestationKey, Machine, TrustedExecutionCluster};
 use trusted_cluster_operator_test_utils::constants::APPROVED_IMAGE_NAME;
 use trusted_cluster_operator_test_utils::virt::{self, VmBackend};
-use trusted_cluster_operator_test_utils::{Poller, wait_for_event};
+use trusted_cluster_operator_test_utils::{Poller, VirtProvider, get_virt_provider, wait_for_event};
 
 const ENCRYPTED_ROOT_CTX: &str = "should have an encrypted root device (attestation failed)";
 
@@ -322,6 +322,59 @@ async fn test_attestation_events() -> anyhow::Result<()> {
     test_ctx.info("Event KeyRevoked verified");
 
     test_ctx.info("All expected Kubernetes events verified");
+    att_ctx.cleanup().await?;
+    test_ctx.cleanup().await?;
+    Ok(())
+}
+}
+
+virt_test! {
+async fn test_kbs_proxy_attestation_events() -> anyhow::Result<()> {
+    let test_ctx = setup!().await?;
+    let client = test_ctx.client();
+    let namespace = test_ctx.namespace();
+
+    let vm_name = "test-coreos-proxy-events";
+    let att_ctx = SingleAttestationContext::new(vm_name, &test_ctx).await?;
+
+    test_ctx.info("Verifying encrypted root device");
+    let ctx = format!("VM {ENCRYPTED_ROOT_CTX}");
+    att_ctx.verify_encrypted_root().await.context(ctx)?;
+    test_ctx.info("Attestation successful, verifying KBS proxy events");
+
+    let machines: Api<Machine> = Api::namespaced(client.clone(), namespace);
+    let machine_list = machines.list(&Default::default()).await?;
+    assert_eq!(machine_list.items.len(), 1, "Expected exactly one Machine in namespace");
+    let machine_name = machine_list.items.first()
+        .expect("No Machine found in namespace")
+        .metadata
+        .name
+        .as_ref()
+        .expect("Machine should have a name");
+
+    wait_for_event(client, namespace, machine_name, "AttestationSucceeded", scaled_timeout(60)).await?;
+    test_ctx.info("Event AttestationSucceeded verified on Machine");
+
+    test_ctx.info("Deleting ApprovedImage to trigger attestation failure on next boot");
+    let approved_images: Api<ApprovedImage> = Api::namespaced(client.clone(), namespace);
+    approved_images.delete(APPROVED_IMAGE_NAME, &Default::default()).await?;
+    wait_for_resource_deleted(&approved_images, APPROVED_IMAGE_NAME, scaled_timeout(120)).await?;
+    test_ctx.info("ApprovedImage deleted, reference values cleared in KBS");
+
+    test_ctx.info("Rebooting VM to trigger re-attestation");
+    let _reboot = att_ctx.backend.ssh_exec("sudo systemctl reboot").await;
+
+    if get_virt_provider()? == VirtProvider::Azure {
+        let event = wait_for_event(client, namespace, machine_name, "AttestationFailed", scaled_timeout(300)).await?;
+        let machine_uuid = &machine_list.items[0].spec.id;
+        let note = event.note.as_deref().unwrap_or("");
+        assert!(note.contains(machine_uuid), "AttestationFailed note should contain machine UUID {machine_uuid}, got: {note}");
+        test_ctx.info("Event AttestationFailed verified on Machine with UUID");
+    } else {
+        wait_for_event(client, namespace, "trusted-execution-cluster", "AttestationFailed", scaled_timeout(300)).await?;
+        test_ctx.info("Event AttestationFailed verified on TrustedExecutionCluster");
+    }
+
     att_ctx.cleanup().await?;
     test_ctx.cleanup().await?;
     Ok(())

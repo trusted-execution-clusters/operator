@@ -167,9 +167,19 @@ async fn install_trustee_configuration(
 
     let default = format!("{TEC_REGISTRY}/key-broker-service:{TRUSTEE_VERSION}");
     let trustee_image = env::var(RELATED_IMAGE_TRUSTEE).ok().unwrap_or(default);
-    trustee::generate_kbs_deployment(client, owner_reference, &trustee_image, trustee_secret)
-        .await
-        .context("Failed to create the KBS deployment")?;
+    let default_proxy = format!("{TEC_REGISTRY}/kbs-event-proxy:{COMPONENT_VERSION}");
+    let proxy_image = env::var(RELATED_IMAGE_KBS_EVENT_PROXY)
+        .ok()
+        .unwrap_or(default_proxy);
+    trustee::generate_kbs_deployment(
+        client,
+        owner_reference,
+        &trustee_image,
+        &proxy_image,
+        trustee_secret,
+    )
+    .await
+    .context("Failed to create the KBS deployment")?;
     info!("Generated the KBS deployment");
 
     Ok(())

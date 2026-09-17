@@ -25,10 +25,14 @@ pub use vendor_kopium::virtualmachines;
 
 use anyhow::{Context, Result, anyhow};
 use conditions::*;
+use futures_util::StreamExt;
 use k8s_openapi::api::core::v1::ObjectReference;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, OwnerReference, Time};
-use kube::runtime::events::{Event as K8sEvent, EventType, Recorder};
+use kube::runtime::events::{Event as K8sEvent, EventType, Recorder, Reporter};
+use kube::runtime::reflector::{self, Store};
+use kube::runtime::watcher::watcher;
 use kube::{Api, Client, Resource};
+use std::time::Duration;
 
 #[macro_export]
 macro_rules! update_status {
@@ -150,6 +154,45 @@ pub fn generate_owner_reference<T: Resource<DynamicType = ()>>(
         uid: uid.context(format!("{} had no UID", kind.clone()))?,
         kind,
     })
+}
+
+pub fn new_recorder(client: Client, controller_name: &str) -> Recorder {
+    let reporter = Reporter {
+        controller: controller_name.into(),
+        instance: std::env::var("CONTROLLER_POD_NAME").ok(),
+    };
+    Recorder::new(client, reporter)
+}
+
+pub fn spawn_reflector<K>(writer: reflector::store::Writer<K>, client: Client, name: &'static str)
+where
+    K: Resource<Scope = k8s_openapi::NamespaceResourceScope>,
+    K: Clone + serde::de::DeserializeOwned + std::fmt::Debug + Send + Sync + 'static,
+    K::DynamicType: Default + Eq + std::hash::Hash + Clone,
+{
+    let watcher = watcher(Api::<K>::default_namespaced(client), Default::default());
+    let reflector = reflector::reflector(writer, watcher).for_each(move |res| async move {
+        if let Err(e) = res {
+            log::warn!("{name} reflector error: {e}");
+        }
+    });
+    tokio::spawn(reflector);
+}
+
+pub async fn sync_cache<K>(store: &Store<K>, name: &str, sync_timeout: Duration) -> Result<()>
+where
+    K: 'static + Clone + reflector::Lookup,
+    K::DynamicType: Eq + std::hash::Hash + Clone,
+{
+    let err = anyhow!(
+        "Timed out after {sync_timeout:?} waiting for {name} cache to sync. \
+         Ensure the CRD is installed and the API server is reachable."
+    );
+    tokio::time::timeout(sync_timeout, store.wait_until_ready())
+        .await
+        .map_err(|_| err)?
+        .map_err(|e| anyhow!("Cache writer for {name} was dropped: {e}"))?;
+    Ok(())
 }
 
 pub async fn get_opt_trusted_execution_cluster(

@@ -16,8 +16,10 @@ compute-pcrs-lib.workspace = true
 hex.workspace = true
 k8s-openapi.workspace = true
 kube.workspace = true
+futures-util = "0.3.32"
 log.workspace = true
 serde.workspace = true
+tokio.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

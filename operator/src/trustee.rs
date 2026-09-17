@@ -12,8 +12,8 @@ use futures_util::StreamExt;
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
     ConfigMap, ConfigMapVolumeSource, Container, ContainerPort, EmptyDirVolumeSource, EnvVar,
-    KeyToPath, PodSpec, PodTemplateSpec, Secret, SecretVolumeSource, Service, ServicePort,
-    ServiceSpec, Volume, VolumeMount,
+    EnvVarSource, KeyToPath, ObjectFieldSelector, PodSpec, PodTemplateSpec, Secret,
+    SecretVolumeSource, Service, ServicePort, ServiceSpec, Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::{
     apis::meta::v1::{LabelSelector, OwnerReference},
@@ -488,6 +488,14 @@ fn generate_kbs_config(has_certificate: bool) -> Result<String> {
     let server_err = "http_server is not a table";
     let http_server = http_section.as_table_mut().context(server_err)?;
 
+    // KBS listens on localhost only — the event proxy sidecar handles
+    // external traffic and TLS termination.
+    let internal_socket = format!("127.0.0.1:{KBS_INTERNAL_PORT}");
+    http_server.insert(
+        "sockets".to_string(),
+        toml::Value::Array(vec![toml::Value::String(internal_socket)]),
+    );
+
     if has_certificate {
         let tls_key = toml::Value::String(format!("{TLS_DIR}/tls.key"));
         http_server.insert("private_key".to_string(), tls_key);
@@ -596,7 +604,11 @@ fn generate_kbs_volume_templates() -> [(&'static str, &'static str, Volume); 3] 
     ]
 }
 
-fn generate_kbs_pod_spec(image: &str, tls_volumes: Option<(Volume, VolumeMount)>) -> PodSpec {
+fn generate_kbs_pod_spec(
+    image: &str,
+    proxy_image: &str,
+    tls_volumes: Option<(Volume, VolumeMount)>,
+) -> PodSpec {
     let volume_templates = generate_kbs_volume_templates();
     let mut volumes: Vec<Volume> = volume_templates
         .iter()
@@ -606,7 +618,7 @@ fn generate_kbs_pod_spec(image: &str, tls_volumes: Option<(Volume, VolumeMount)>
             volume
         })
         .collect();
-    let mut volume_mounts: Vec<VolumeMount> = volume_templates
+    let mut kbs_volume_mounts: Vec<VolumeMount> = volume_templates
         .iter()
         .map(|(name, mount_path, _)| VolumeMount {
             name: name.to_string(),
@@ -615,32 +627,91 @@ fn generate_kbs_pod_spec(image: &str, tls_volumes: Option<(Volume, VolumeMount)>
         })
         .collect();
 
+    let has_tls = tls_volumes.is_some();
+    let mut proxy_volume_mounts = Vec::new();
+
     if let Some((volume, volume_mount)) = tls_volumes {
         volumes.push(volume);
-        volume_mounts.push(volume_mount);
+        proxy_volume_mounts.push(volume_mount.clone());
+        kbs_volume_mounts.push(volume_mount);
     }
 
-    PodSpec {
-        containers: vec![Container {
-            command: Some(vec![
-                "/usr/local/bin/kbs".to_string(),
-                "--config-file".to_string(),
-                format!("{TRUSTEE_DATA_DIR}/{KBS_CONFIG_FILE}"),
-            ]),
-            env: Some(vec![EnvVar {
-                name: "RUST_LOG".to_string(),
-                value: Some("debug".to_string()),
-                ..Default::default()
-            }]),
-            image: Some(image.to_string()),
-            name: "kbs".to_string(),
-            ports: Some(vec![ContainerPort {
-                container_port: TRUSTEE_PORT,
-                ..Default::default()
-            }]),
-            volume_mounts: Some(volume_mounts),
+    let backend_scheme = if has_tls { "https" } else { "http" };
+    let mut proxy_command = vec![
+        "/usr/bin/kbs-event-proxy".to_string(),
+        "--backend-url".to_string(),
+        format!("{backend_scheme}://127.0.0.1:{KBS_INTERNAL_PORT}"),
+    ];
+    if has_tls {
+        proxy_command.extend([
+            "--cert-path".to_string(),
+            format!("{TLS_DIR}/tls.crt"),
+            "--key-path".to_string(),
+            format!("{TLS_DIR}/tls.key"),
+        ]);
+    }
+
+    let proxy_env = vec![
+        EnvVar {
+            name: "RUST_LOG".to_string(),
+            value: Some("info".to_string()),
             ..Default::default()
-        }],
+        },
+        EnvVar {
+            name: "CONTROLLER_POD_NAME".to_string(),
+            value_from: Some(EnvVarSource {
+                field_ref: Some(ObjectFieldSelector {
+                    field_path: "metadata.name".to_string(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    ];
+
+    let proxy_container = Container {
+        command: Some(proxy_command),
+        env: Some(proxy_env),
+        image: Some(proxy_image.to_string()),
+        name: "kbs-event-proxy".to_string(),
+        ports: Some(vec![ContainerPort {
+            container_port: TRUSTEE_PORT,
+            ..Default::default()
+        }]),
+        volume_mounts: if proxy_volume_mounts.is_empty() {
+            None
+        } else {
+            Some(proxy_volume_mounts)
+        },
+        ..Default::default()
+    };
+
+    PodSpec {
+        service_account_name: Some("trusted-cluster-operator".to_string()),
+        containers: vec![
+            Container {
+                command: Some(vec![
+                    "/usr/local/bin/kbs".to_string(),
+                    "--config-file".to_string(),
+                    format!("{TRUSTEE_DATA_DIR}/{KBS_CONFIG_FILE}"),
+                ]),
+                env: Some(vec![EnvVar {
+                    name: "RUST_LOG".to_string(),
+                    value: Some("debug".to_string()),
+                    ..Default::default()
+                }]),
+                image: Some(image.to_string()),
+                name: "kbs".to_string(),
+                ports: Some(vec![ContainerPort {
+                    container_port: KBS_INTERNAL_PORT,
+                    ..Default::default()
+                }]),
+                volume_mounts: Some(kbs_volume_mounts),
+                ..Default::default()
+            },
+            proxy_container,
+        ],
         volumes: Some(volumes),
         ..Default::default()
     }
@@ -650,6 +721,7 @@ pub async fn generate_kbs_deployment(
     client: Client,
     owner_reference: OwnerReference,
     image: &str,
+    proxy_image: &str,
     secret: &Option<String>,
 ) -> Result<()> {
     let selector = Some(BTreeMap::from([(
@@ -657,7 +729,7 @@ pub async fn generate_kbs_deployment(
         TRUSTEE_APP_LABEL.to_string(),
     )]));
     let tls_volumes = read_certificate(client.clone(), secret).await?;
-    let pod_spec = generate_kbs_pod_spec(image, tls_volumes);
+    let pod_spec = generate_kbs_pod_spec(image, proxy_image, tls_volumes);
 
     // Inspired by trustee-operator
     let deployment = Deployment {
@@ -943,13 +1015,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_generate_kbs_depl_success() {
-        let clos = |client| generate_kbs_deployment(client, Default::default(), "image", &None);
+        let clos = |client| {
+            generate_kbs_deployment(client, Default::default(), "image", "proxy-image", &None)
+        };
         test_create_success::<_, _, Deployment>(clos).await;
     }
 
     #[tokio::test]
     async fn test_generate_kbs_depl_error() {
-        let clos = |client| generate_kbs_deployment(client, Default::default(), "image", &None);
+        let clos = |client| {
+            generate_kbs_deployment(client, Default::default(), "image", "proxy-image", &None)
+        };
         test_error_method!(clos, Method::POST);
     }
 

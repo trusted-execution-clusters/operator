@@ -16,7 +16,8 @@ The operator consists of several interconnected components:
 4. **Machine Controller**: Reconciles Machine custom resources representing individual nodes. Part of the *operator* pod
 5. **Secret Management**: Generates and manages LUKS. encryption keys and attestation key secrets. Part of the *operator* pod.
 6. **Attestation Server and KBS**: [Trustee](https://github.com/confidential-containers/trustee) deployment handle the attestation request, the reference values and secrets.
-7. **Reference Values calculation**: calculate the reference values provided by the approved images.
+7. **KBS Event Proxy**: Reverse proxy sidecar in the Trustee pod that intercepts attestation traffic and emits Kubernetes events. See [KBS Event Proxy Design](kbs-event-proxy.md).
+8. **Reference Values calculation**: calculate the reference values provided by the approved images.
 
 ## Architecture Components
 

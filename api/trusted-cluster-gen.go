@@ -66,6 +66,7 @@ type Args struct {
 	pcrsComputeImage            string
 	registerServerImage         string
 	attestationKeyRegisterImage string
+	kbsEventProxyImage          string
 	approvedImages              approvedImageSlice
 }
 
@@ -78,6 +79,7 @@ func main() {
 	flag.StringVar(&args.pcrsComputeImage, "pcrs-compute-image", "quay.io/trusted-execution-clusters/compute-pcrs:latest", "Container image with the Trusted Execution Clusters compute-pcrs binary")
 	flag.StringVar(&args.registerServerImage, "register-server-image", "quay.io/trusted-execution-clusters/register-server:latest", "Register server image to use in the deployment")
 	flag.StringVar(&args.attestationKeyRegisterImage, "attestation-key-register-image", "quay.io/trusted-execution-clusters/attestation-key-register:latest", "Attestation key register image to use in the deployment")
+	flag.StringVar(&args.kbsEventProxyImage, "kbs-event-proxy-image", "quay.io/trusted-execution-clusters/kbs-event-proxy:latest", "KBS event proxy sidecar image")
 	flag.Var(&args.approvedImages, "approved-image", "When set, defines an initial approved image. It must be a comma-separated name,image-ref pair. Must be a bootable container image with SHA reference. Can be set multiple times.")
 	flag.Parse()
 
@@ -96,6 +98,17 @@ func main() {
 	}
 	if err := generateApprovedImageCR(&args); err != nil {
 		log.Fatalf("Failed to generate ApprovedImage CR: %v", err)
+	}
+}
+
+func operatorEnv(args *Args) []corev1.EnvVar {
+	return []corev1.EnvVar{
+		{Name: "RELATED_IMAGE_TRUSTEE", Value: args.trusteeImage},
+		{Name: "RELATED_IMAGE_COMPUTE_PCRS", Value: args.pcrsComputeImage},
+		{Name: "RELATED_IMAGE_REGISTRATION_SERVER", Value: args.registerServerImage},
+		{Name: "RELATED_IMAGE_ATTESTATION_KEY_REGISTER", Value: args.attestationKeyRegisterImage},
+		{Name: "RELATED_IMAGE_KBS_EVENT_PROXY", Value: args.kbsEventProxyImage},
+		{Name: "VIRT_PROVIDER", Value: os.Getenv("VIRT_PROVIDER")},
 	}
 }
 
@@ -129,24 +142,7 @@ func generateOperator(args *Args) error {
 					Name:    name,
 					Image:   args.image,
 					Command: []string{"/usr/bin/operator"},
-					Env: []corev1.EnvVar{
-						{
-							Name:  "RELATED_IMAGE_TRUSTEE",
-							Value: args.trusteeImage,
-						},
-						{
-							Name:  "RELATED_IMAGE_COMPUTE_PCRS",
-							Value: args.pcrsComputeImage,
-						},
-						{
-							Name:  "RELATED_IMAGE_REGISTRATION_SERVER",
-							Value: args.registerServerImage,
-						},
-						{
-							Name:  "RELATED_IMAGE_ATTESTATION_KEY_REGISTER",
-							Value: args.attestationKeyRegisterImage,
-						},
-					},
+					Env:     operatorEnv(args),
 				},
 			},
 		},

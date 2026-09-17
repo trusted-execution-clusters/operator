@@ -5,8 +5,8 @@
 
 .PHONY: all build build-tools crds-rs generate manifests cluster-up cluster-down \
 	install-trustee install clean fmt-check clippy lint test test-release release-tarball prepare-release \
-	operator-image compute-pcrs-image reg-server-image attestation-key-register-image image \
-	push-operator push-compute-pcrs push-reg-server push-attestation-key-register push \
+	operator-image compute-pcrs-image reg-server-image attestation-key-register-image kbs-event-proxy-image image \
+	push-operator push-compute-pcrs push-reg-server push-attestation-key-register push-kbs-event-proxy push \
 
 SHELL := /bin/bash
 
@@ -53,6 +53,7 @@ OPERATOR_IMAGE ?= $(REGISTRY)/trusted-cluster-operator:$(TAG)
 COMPUTE_PCRS_IMAGE=$(REGISTRY)/compute-pcrs:$(TAG)
 REG_SERVER_IMAGE=$(REGISTRY)/registration-server:$(TAG)
 ATTESTATION_KEY_REGISTER_IMAGE=$(REGISTRY)/attestation-key-register:$(TAG)
+KBS_EVENT_PROXY_IMAGE=$(REGISTRY)/kbs-event-proxy:$(TAG)
 
 TRUSTEE_IMAGE ?= quay.io/trusted-execution-clusters/key-broker-service:v0.20.0
 TEST_IMAGE ?= quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:20260831
@@ -109,6 +110,7 @@ manifests: trusted-cluster-gen generate
 		-pcrs-compute-image $(COMPUTE_PCRS_IMAGE) \
 		-register-server-image $(REG_SERVER_IMAGE) \
 		-attestation-key-register-image $(ATTESTATION_KEY_REGISTER_IMAGE) \
+		-kbs-event-proxy-image $(KBS_EVENT_PROXY_IMAGE) \
 		-approved-image coreos,$(APPROVED_IMAGE)
 
 cluster-up:
@@ -134,8 +136,10 @@ reg-server-image:
 	$(CONTAINER_CLI) build $(IMAGE_BUILD_OPTIONS) --target register-server -t $(REG_SERVER_IMAGE) -f Containerfile .
 attestation-key-register-image:
 	$(CONTAINER_CLI) build $(IMAGE_BUILD_OPTIONS) --target attestation-key-register -t $(ATTESTATION_KEY_REGISTER_IMAGE) -f Containerfile .
+kbs-event-proxy-image:
+	$(CONTAINER_CLI) build $(IMAGE_BUILD_OPTIONS) --target kbs-event-proxy -t $(KBS_EVENT_PROXY_IMAGE) -f Containerfile .
 
-image: operator-image compute-pcrs-image reg-server-image attestation-key-register-image
+image: operator-image compute-pcrs-image reg-server-image attestation-key-register-image kbs-event-proxy-image
 
 define push-image
 $(CONTAINER_CLI) push $(1) $(PUSH_FLAGS)
@@ -150,8 +154,10 @@ push-reg-server: reg-server-image
 	$(call push-image,$(REG_SERVER_IMAGE))
 push-attestation-key-register: attestation-key-register-image
 	$(call push-image,$(ATTESTATION_KEY_REGISTER_IMAGE))
+push-kbs-event-proxy: kbs-event-proxy-image
+	$(call push-image,$(KBS_EVENT_PROXY_IMAGE))
 
-push: push-operator push-compute-pcrs push-reg-server push-attestation-key-register
+push: push-operator push-compute-pcrs push-reg-server push-attestation-key-register push-kbs-event-proxy
 
 release-tarball: manifests
 	tar -cf trusted-execution-operator-$(TAG).tar config

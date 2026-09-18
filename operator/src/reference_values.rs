@@ -189,8 +189,7 @@ async fn compute_fresh_pcrs(client: Client, image: &ApprovedImage) -> anyhow::Re
         }),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, Job, job);
-    Ok(())
+    create_or_info_if_exists(client, &job).await
 }
 
 /// Delete the compute-pcrs Job for `boot_image`, if it exists, so it can be re-created.

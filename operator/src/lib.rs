@@ -14,11 +14,11 @@ use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{ConfigMap, Secret, SecretVolumeSource, Volume, VolumeMount};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
 use k8s_openapi::jiff::Timestamp;
-use kube::Resource;
 use kube::runtime::events::{Recorder, Reporter};
 use kube::runtime::reflector::{self, Store};
 use kube::runtime::watcher::watcher;
 use kube::{Api, Client, runtime::controller::Action};
+use kube::{Resource, ResourceExt};
 use log::{info, warn};
 use std::fmt::{Debug, Display};
 use std::{sync::Arc, time::Duration};
@@ -106,19 +106,22 @@ pub fn new_recorder(client: Client, controller_name: &str) -> Recorder {
     Recorder::new(client, reporter)
 }
 
-#[macro_export]
-macro_rules! create_or_info_if_exists {
-    ($client:expr, $type:ident, $resource:ident) => {
-        let api: Api<$type> = kube::Api::default_namespaced($client);
-        let name = $resource.metadata.name.clone().unwrap();
-        match api.create(&Default::default(), &$resource).await {
-            Ok(_) => info!("Create {} {}", $type::kind(&()), name),
-            Err(kube::Error::Api(ae)) if ae.code == 409 => {
-                info!("{} {} already exists", $type::kind(&()), name);
-            }
-            Err(e) => return Err(e.into()),
+pub async fn create_or_info_if_exists<K>(client: Client, resource: &K) -> Result<()>
+where
+    K: Resource<Scope = k8s_openapi::NamespaceResourceScope, DynamicType = ()>,
+    K: Clone + Debug + serde::de::DeserializeOwned + serde::Serialize,
+    K::DynamicType: Default,
+{
+    let api: Api<K> = Api::default_namespaced(client);
+    let name = resource.name_unchecked();
+    match api.create(&Default::default(), resource).await {
+        Ok(_) => info!("Create {} {name}", K::kind(&())),
+        Err(kube::Error::Api(ae)) if ae.code == 409 => {
+            info!("{} {name} already exists", K::kind(&()));
         }
-    };
+        Err(e) => return Err(e.into()),
+    }
+    Ok(())
 }
 
 pub const KIND_LABEL_KEY: &str = "kind";

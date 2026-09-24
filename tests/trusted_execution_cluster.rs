@@ -9,7 +9,7 @@ use chrono::Utc;
 use compute_pcrs_lib::Pcr;
 use compute_pcrs_lib::tpmevents::{TPMEvent, TPMEventID};
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{Pod, Secret};
+use k8s_openapi::api::core::v1::{Node, NodeSpec, Pod, Secret};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, ObjectMeta, OwnerReference};
 use kube::api::{ListParams, LogParams, Patch, PatchParams};
 use kube::runtime::wait::await_condition;
@@ -24,6 +24,7 @@ use trusted_cluster_operator_lib::{
 };
 use trusted_cluster_operator_test_utils::constants::*;
 use trusted_cluster_operator_test_utils::*;
+const NODE_FINALIZER: &str = "trusted-execution-clusters.io/node";
 
 fn ak_approved(ak: Option<&AttestationKey>) -> bool {
     let is_approved = |c: &Condition| c.type_ == "Approved" && c.status == "True";
@@ -57,6 +58,7 @@ named_test!(
             },
             spec: trusted_cluster_operator_lib::MachineSpec {
                 id: machine_uuid.clone(),
+                provider_id: None,
             },
             status: None,
         };
@@ -198,6 +200,7 @@ async fn test_attestation_key_lifecycle() -> anyhow::Result<()> {
         },
         spec: trusted_cluster_operator_lib::MachineSpec {
             id: machine_uuid.clone(),
+            provider_id: None,
         },
         status: None,
     };
@@ -312,6 +315,7 @@ async fn test_luks_key_sync() -> anyhow::Result<()> {
         },
         spec: trusted_cluster_operator_lib::MachineSpec {
             id: machine1_uuid.clone(),
+            provider_id: None,
         },
         status: None,
     };
@@ -327,6 +331,7 @@ async fn test_luks_key_sync() -> anyhow::Result<()> {
         },
         spec: trusted_cluster_operator_lib::MachineSpec {
             id: machine2_uuid.clone(),
+            provider_id: None,
         },
         status: None,
     };
@@ -505,6 +510,7 @@ async fn test_attestation_key_sync() -> anyhow::Result<()> {
         },
         spec: trusted_cluster_operator_lib::MachineSpec {
             id: machine1_uuid.clone(),
+            provider_id: None,
         },
         status: None,
     };
@@ -520,6 +526,7 @@ async fn test_attestation_key_sync() -> anyhow::Result<()> {
         },
         spec: trusted_cluster_operator_lib::MachineSpec {
             id: machine2_uuid.clone(),
+            provider_id: None,
         },
         status: None,
     };
@@ -741,6 +748,83 @@ async fn test_combined_image_pcrs() -> anyhow::Result<()> {
 
     // In practical terms it emulates a grub + kernel upgrade
     test_ctx.verify_expected_pcrs(&[&primary_pcrs!(), &secondary_pcrs!()]).await?;
+
+    test_ctx.cleanup().await?;
+    Ok(())
+}
+}
+
+named_test! {
+async fn test_node_deletion() -> anyhow::Result<()> {
+    let test_ctx = setup!().await?;
+    let client = test_ctx.client();
+    let namespace = test_ctx.namespace();
+
+    let tec_api: Api<TrustedExecutionCluster> = Api::namespaced(client.clone(), namespace);
+    let tec = tec_api.get(TEC_NAME).await?;
+    let owner_reference = generate_owner_reference(&tec)?;
+
+    // A unique providerID correlates the Node and the Machine.
+    let machine_uuid = uuid::Uuid::new_v4().to_string();
+    let machine_name = format!("test-machine-{}", &machine_uuid[..8]);
+    let node_name = format!("test-node-{}", &machine_uuid[..8]);
+    let provider_id = format!("test:///{machine_uuid}");
+
+    // Create a Machine already bound to the providerID.
+    let machines: Api<Machine> = Api::namespaced(client.clone(), namespace);
+    let machine = Machine {
+        metadata: ObjectMeta {
+            name: Some(machine_name.clone()),
+            namespace: Some(namespace.to_string()),
+            owner_references: Some(vec![owner_reference.clone()]),
+            ..Default::default()
+        },
+        spec: trusted_cluster_operator_lib::MachineSpec {
+            id: machine_uuid.clone(),
+            provider_id: Some(provider_id.clone()),
+        },
+        status: None,
+    };
+    machines.create(&Default::default(), &machine).await?;
+    test_ctx.info(format!("Created Machine {machine_name} with providerID {provider_id}"));
+
+    // Create a cluster-scoped Node carrying the same providerID.
+    let nodes: Api<Node> = Api::all(client.clone());
+    let node = Node {
+        metadata: ObjectMeta {
+            name: Some(node_name.clone()),
+            ..Default::default()
+        },
+        spec: Some(NodeSpec {
+            provider_id: Some(provider_id.clone()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    nodes.create(&Default::default(), &node).await?;
+    test_ctx.info(format!("Created Node {node_name} with providerID {provider_id}"));
+
+    // The finalizer must be attached before we delete the Node, otherwise the
+    // deletion completes without ever running the cleanup that deletes the
+    // Machine. Wait for the operator to add it.
+    let has_finalizer = |n: Option<&Node>| {
+        n.and_then(|n| n.metadata.finalizers.as_ref())
+            .is_some_and(|f| f.iter().any(|x| x == NODE_FINALIZER))
+    };
+    let done = await_condition(nodes.clone(), &node_name, has_finalizer);
+    let ctx = format!("waiting for the node finalizer on {node_name}");
+    timeout(scaled_duration(60), done).await.context(ctx)??;
+    test_ctx.info(format!("Finalizer attached to Node {node_name}"));
+
+    // Deleting the Node should trigger the finalizer to delete the matching Machine.
+    nodes.delete(&node_name, &DeleteParams::default()).await?;
+    test_ctx.info(format!("Deleted Node {node_name}"));
+
+    wait_for_resource_deleted(&machines, &machine_name, scaled_timeout(120)).await?;
+    test_ctx.info("Machine deleted after Node deletion");
+
+    // The finalizer must also let the Node itself go.
+    wait_for_resource_deleted(&nodes, &node_name, scaled_timeout(120)).await?;
 
     test_ctx.cleanup().await?;
     Ok(())

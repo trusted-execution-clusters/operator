@@ -58,3 +58,25 @@ pub fn status_to_tpm_events(pcrs: &[ApprovedImageStatusPcrs]) -> Vec<TPMEvent> {
 fn parse_tpm_event_id(s: &str) -> Option<compute_pcrs_lib::tpmevents::TPMEventID> {
     serde_json::from_value(serde_json::Value::String(s.to_string())).ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Detects drift between TPMEventID variants and parse_tpm_event_id.
+    /// If a new event variant is added to compute-pcrs-lib without updating the match in this file, this test will fail with the name of the missing variant.
+    #[test]
+    fn parse_tpm_event_id_covers_all_variants() {
+        use compute_pcrs_lib::tpmevents::TPMEventID;
+        let mut i = 0;
+        while let Some(variant) = TPMEventID::from_repr(i) {
+            let s = format!("{:?}", variant);
+            assert!(
+                parse_tpm_event_id(&s).is_some(),
+                "parse_tpm_event_id does not handle TPMEventID::{s} (repr {i}); \
+                update the match in lib/src/reference_values.rs"
+            );
+            i += 1;
+        }
+    }
+}

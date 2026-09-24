@@ -9,7 +9,9 @@ use base64::{Engine as _, engine::general_purpose};
 use chrono::{DateTime, Utc};
 use clevis_pin_trustee_lib::Key as ClevisKey;
 use futures_util::StreamExt;
-use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
+use k8s_openapi::api::apps::v1::{
+    Deployment, DeploymentSpec, DeploymentStrategy, RollingUpdateDeployment,
+};
 use k8s_openapi::api::core::v1::{
     ConfigMap, ConfigMapVolumeSource, Container, ContainerPort, EmptyDirVolumeSource, EnvVar,
     KeyToPath, PodSpec, PodTemplateSpec, Secret, SecretVolumeSource, Service, ServicePort,
@@ -19,7 +21,7 @@ use k8s_openapi::apimachinery::pkg::{
     apis::meta::v1::{LabelSelector, OwnerReference},
     util::intstr::IntOrString,
 };
-use kube::api::ObjectMeta;
+use kube::api::{ObjectMeta, Patch, PatchParams};
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::{reflector::ObjectRef, watcher};
 use kube::{Api, Client, Resource};
@@ -255,7 +257,8 @@ pub async fn sync_attestation_policy(ctx: &OperatorContext) -> Result<()> {
     Ok(())
 }
 
-async fn trustee_deployment_reconcile(
+// Called directly in main.rs reconcile loop. Needs to have proper visibility between modules, but in the same crate.
+pub(crate) async fn trustee_deployment_reconcile(
     deployment: Arc<Deployment>,
     ctx: Arc<OperatorContext>,
 ) -> Result<Action, ControllerError> {
@@ -530,7 +533,21 @@ pub async fn generate_trustee_data(
         data: Some(data),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, ConfigMap, config_map);
+
+    // reuse the configmap during upgrade to avoid downtime.
+    let cms: Api<ConfigMap> = Api::default_namespaced(client);
+    if cms.get_opt(TRUSTEE_DATA_MAP).await?.is_some() {
+        cms.patch(
+            TRUSTEE_DATA_MAP,
+            &PatchParams::default(),
+            &Patch::Strategic(config_map),
+        )
+        .await?;
+        info!("Patched trustee-data ConfigMap");
+    } else {
+        cms.create(&Default::default(), &config_map).await?;
+        info!("Created trustee-data ConfigMap");
+    }
     Ok(())
 }
 
@@ -654,21 +671,20 @@ fn generate_kbs_pod_spec(image: &str, tls_volumes: Option<(Volume, VolumeMount)>
     }
 }
 
-pub async fn generate_kbs_deployment(
+async fn build_kbs_deployment(
     client: Client,
     owner_reference: OwnerReference,
     image: &str,
     secret: &Option<String>,
-) -> Result<()> {
+) -> Result<Deployment> {
     let selector = Some(BTreeMap::from([(
         "app".to_string(),
         TRUSTEE_APP_LABEL.to_string(),
     )]));
-    let tls_volumes = read_certificate(client.clone(), secret).await?;
+    let tls_volumes = read_certificate(client, secret).await?;
     let pod_spec = generate_kbs_pod_spec(image, tls_volumes);
 
-    // Inspired by trustee-operator
-    let deployment = Deployment {
+    Ok(Deployment {
         metadata: ObjectMeta {
             name: Some(TRUSTEE_DEPLOYMENT.to_string()),
             labels: selector.clone(),
@@ -677,6 +693,14 @@ pub async fn generate_kbs_deployment(
         },
         spec: Some(DeploymentSpec {
             replicas: Some(1),
+            // Adding a rolling update strategy to prevent downtime during upgrade. If new trustee pod fails to come up, oldOne will still continue serving to ensure no downtime.
+            strategy: Some(DeploymentStrategy {
+                type_: Some("RollingUpdate".to_string()),
+                rolling_update: Some(RollingUpdateDeployment {
+                    max_unavailable: Some(IntOrString::Int(0)),
+                    max_surge: Some(IntOrString::Int(1)),
+                }),
+            }),
             selector: LabelSelector {
                 match_labels: selector.clone(),
                 ..Default::default()
@@ -691,8 +715,39 @@ pub async fn generate_kbs_deployment(
             ..Default::default()
         }),
         ..Default::default()
-    };
+    })
+}
+
+// Called during initial install.
+pub async fn generate_kbs_deployment(
+    client: Client,
+    owner_reference: OwnerReference,
+    image: &str,
+    secret: &Option<String>,
+) -> Result<()> {
+    let deployment = build_kbs_deployment(client.clone(), owner_reference, image, secret).await?;
     create_or_info_if_exists!(client, Deployment, deployment);
+    Ok(())
+}
+
+// Called during upgrade.
+// Patches the deployment in place.
+pub async fn apply_kbs_deployment(
+    client: Client,
+    owner_reference: OwnerReference,
+    image: &str,
+    secret: &Option<String>,
+) -> Result<()> {
+    let deployment = build_kbs_deployment(client.clone(), owner_reference, image, secret).await?;
+    let deployments: Api<Deployment> = Api::default_namespaced(client);
+    deployments
+        .patch(
+            TRUSTEE_DEPLOYMENT,
+            &PatchParams::default(),
+            &Patch::Strategic(deployment),
+        )
+        .await?;
+    info!("Applied full Trustee Deployment spec for {image}");
     Ok(())
 }
 
@@ -923,19 +978,40 @@ mod tests {
     #[tokio::test]
     async fn test_generate_trustee_data_success() {
         let clos = |client| generate_trustee_data(client, Default::default(), &None);
-        test_create_success::<_, _, ConfigMap>(clos).await;
+        let server = async |req: Request<_>, ctr| match (ctr, req.method()) {
+            (0, &Method::GET) => Err(StatusCode::NOT_FOUND),
+            (1, &Method::POST) => Ok(serde_json::to_string(&ConfigMap::default()).unwrap()),
+            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        };
+        count_check!(2, server, |client| {
+            assert!(clos(client).await.is_ok());
+        });
     }
 
     #[tokio::test]
     async fn test_generate_trustee_data_already_exists() {
         let clos = |client| generate_trustee_data(client, Default::default(), &None);
-        test_create_already_exists(clos).await;
+        let server = async |req: Request<_>, ctr| match (ctr, req.method()) {
+            (0, &Method::GET) => Ok(serde_json::to_string(&ConfigMap::default()).unwrap()),
+            (1, &Method::PATCH) => Ok(serde_json::to_string(&ConfigMap::default()).unwrap()),
+            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        };
+        count_check!(2, server, |client| {
+            assert!(clos(client).await.is_ok());
+        });
     }
 
     #[tokio::test]
     async fn test_generate_trustee_data_error() {
         let clos = |client| generate_trustee_data(client, Default::default(), &None);
-        test_error_method!(clos, Method::POST);
+        let server = async |req: Request<_>, ctr| match (ctr, req.method()) {
+            (0, &Method::GET) => Ok(serde_json::to_string(&ConfigMap::default()).unwrap()),
+            (1, &Method::PATCH) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+            _ => panic!("unexpected API interaction: {req:?}, counter {ctr}"),
+        };
+        count_check!(2, server, |client| {
+            assert!(clos(client).await.is_err());
+        });
     }
 
     #[tokio::test]

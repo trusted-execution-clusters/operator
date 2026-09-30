@@ -30,3 +30,13 @@ pub const MACHINE_KEY_NOT_PROVISIONED_REASON: &str = "ProvisioningFailed";
 pub const MACHINE_AK_APPROVED_CONDITION: &str = "AttestationKeyApproved";
 pub const MACHINE_AK_APPROVED_REASON: &str = "KeyApproved";
 pub const MACHINE_AK_NOT_APPROVED_REASON: &str = "NoKeyMatched";
+
+// Upgrade conditions
+pub const UPGRADE_CONDITION: &str = "Upgrade";
+pub const UPGRADE_IN_PROGRESS: &str = "InProgress";
+pub const UPGRADE_COMPLETE: &str = "Complete";
+pub const UPGRADE_FAILED: &str = "Failed";
+
+// Upgrade conditions for dependencies.
+pub const TRUSTEE_UPGRADE_CONDITION: &str = "TrusteeUpgrade";
+pub const RELATED_IMAGES_UPGRADE_CONDITION: &str = "RelatedImagesUpgrade";

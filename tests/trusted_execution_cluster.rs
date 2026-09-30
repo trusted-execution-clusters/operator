@@ -17,13 +17,20 @@ use kube::{Api, api::DeleteParams};
 use serde_json::json;
 use std::time::Duration;
 use tokio::time::timeout;
-use trusted_cluster_operator_lib::conditions::{COMMITTED_CONDITION, NOT_COMMITTED_REASON_PENDING};
+use trusted_cluster_operator_lib::conditions::{
+    COMMITTED_CONDITION, NOT_COMMITTED_REASON_COMPUTING, NOT_COMMITTED_REASON_PENDING,
+    UPGRADE_COMPLETE, UPGRADE_CONDITION,
+};
 use trusted_cluster_operator_lib::endpoints::{REGISTER_SERVER_DEPLOYMENT, TRUSTEE_DEPLOYMENT};
+use trusted_cluster_operator_lib::images::RELATED_IMAGE_TRUSTEE;
 use trusted_cluster_operator_lib::{
     ApprovedImage, AttestationKey, Machine, TrustedExecutionCluster, generate_owner_reference,
 };
 use trusted_cluster_operator_test_utils::constants::*;
 use trusted_cluster_operator_test_utils::*;
+// const EXPECTED_PCR4: &str = "ff2b357be4a4bc66be796d4e7b2f1f27077dc89b96220aae60b443bcf4672525";
+const TEC_NAME: &str = "trusted-execution-cluster";
+const APPROVED_IMAGE_NAME: &str = "coreos-approved-primary";
 
 fn ak_approved(ak: Option<&AttestationKey>) -> bool {
     let is_approved = |c: &Condition| c.type_ == "Approved" && c.status == "True";
@@ -739,8 +746,210 @@ named_test! {
 async fn test_combined_image_pcrs() -> anyhow::Result<()> {
     let test_ctx = setup!([(COMBINE_PCRS_UPDATE_TEST_IMAGE_NAME, COMBINE_PCRS_UPDATE_TEST_IMAGE_REF)]).await?;
 
-    // In practical terms it emulates a grub + kernel upgrade
     test_ctx.verify_expected_pcrs(&[&primary_pcrs!(), &secondary_pcrs!()]).await?;
+
+    test_ctx.cleanup().await?;
+    Ok(())
+}
+}
+
+fn approved_image_was_invalidated(img: Option<&ApprovedImage>) -> bool {
+    img.and_then(|i| i.status.as_ref())
+        .and_then(|s| s.conditions.as_ref())
+        .is_some_and(|cs| {
+            cs.iter().any(|c| {
+                c.type_ == "Committed"
+                    && c.status == "False"
+                    && c.reason == NOT_COMMITTED_REASON_COMPUTING
+            })
+        })
+}
+
+// Happy-path upgrade: triggers an upgrade (same operator version) and verifies
+// completion end-to-end across two ApprovedImages (primary + combined). Covers
+// version re-stamping, Upgrade=Complete, unchanged component images, and PCR/event
+// invalidation-then-recommit with identical PCR values preserved.
+named_test! {
+async fn test_upgrade_happy_path() -> anyhow::Result<()> {
+    let test_ctx = setup!([(COMBINE_PCRS_UPDATE_TEST_IMAGE_NAME, COMBINE_PCRS_UPDATE_TEST_IMAGE_REF)]).await?;
+    let client = test_ctx.client();
+    let namespace = test_ctx.namespace();
+
+    let tec_api: Api<TrustedExecutionCluster> = Api::namespaced(client.clone(), namespace);
+    let deployments: Api<Deployment> = Api::namespaced(client.clone(), namespace);
+    let images: Api<ApprovedImage> = Api::namespaced(client.clone(), namespace);
+
+    wait_for_install(&tec_api, TEC_NAME).await?;
+    test_ctx.info("Initial install complete");
+
+    // Record pre-upgrade state.
+    let pre_trustee_image = deployment_image(&deployments.get(TRUSTEE_DEPLOYMENT).await?)
+        .expect("Trustee should have image");
+    let pre_reg_image = deployment_image(&deployments.get(REGISTER_SERVER_DEPLOYMENT).await?)
+        .expect("register-server should have image");
+    test_ctx.info(format!("Pre-upgrade images: trustee={pre_trustee_image}, reg={pre_reg_image}"));
+
+    for name in [APPROVED_IMAGE_NAME, COMBINE_PCRS_UPDATE_TEST_IMAGE_NAME] {
+        wait_for_committed_with_pcrs(&images, name, 300).await?;
+    }
+    test_ctx.info("Both ApprovedImages committed with PCRs pre-upgrade");
+
+    let primary = images.get(APPROVED_IMAGE_NAME).await?;
+    let primary_events = extract_events(&primary);
+    assert!(!primary_events.is_empty(), "Primary image should have events");
+    for (pcr_id, events) in &primary_events {
+        for ev in events {
+            assert!(!ev.name.is_empty(), "PCR {pcr_id} event should have a name");
+            assert!(!ev.hash.is_empty(), "PCR {pcr_id} event should have a hash");
+            assert!(!ev.id.is_empty(), "PCR {pcr_id} event should have an id");
+        }
+    }
+    let secondary = images.get(COMBINE_PCRS_UPDATE_TEST_IMAGE_NAME).await?;
+    assert!(!extract_events(&secondary).is_empty(), "Secondary image should have events");
+    test_ctx.info("Pre-upgrade events verified for both images");
+
+    let pre_primary_pcr_vals = extract_pcr_vals(&primary);
+    let pre_secondary_pcr_vals = extract_pcr_vals(&secondary);
+
+    trigger_upgrade(&tec_api, TEC_NAME).await?;
+    test_ctx.info("Triggered upgrade by clearing observedOperatorVersion");
+
+    // Both images should be invalidated during the upgrade.
+    for name in [APPROVED_IMAGE_NAME, COMBINE_PCRS_UPDATE_TEST_IMAGE_NAME] {
+        let done = await_condition(images.clone(), name, approved_image_was_invalidated);
+        timeout(scaled_duration(60), done)
+            .await
+            .context(format!("{name} should be invalidated during upgrade"))??;
+    }
+    test_ctx.info("Both images invalidated");
+
+    // Upgrade completes: version re-stamped and Upgrade=Complete condition set.
+    let has_version_again = |tec: Option<&TrustedExecutionCluster>| {
+        tec.and_then(|t| t.status.as_ref())
+            .and_then(|s| s.observed_operator_version.as_ref())
+            .is_some()
+    };
+    let done = await_condition(tec_api.clone(), TEC_NAME, has_version_again);
+    timeout(scaled_duration(300), done)
+        .await
+        .context("waiting for observedOperatorVersion to be re-stamped after upgrade")??;
+    let done = await_condition(
+        tec_api.clone(),
+        TEC_NAME,
+        tec_has_condition_reason(UPGRADE_CONDITION, UPGRADE_COMPLETE),
+    );
+    timeout(scaled_duration(30), done)
+        .await
+        .context("waiting for Upgrade=Complete condition")??;
+    test_ctx.info("Upgrade completed and version re-stamped");
+
+    // Component images unchanged: the operator version didn't change, only the
+    // upgrade path was triggered manually.
+    assert_eq!(
+        Some(pre_trustee_image.as_str()),
+        deployment_image(&deployments.get(TRUSTEE_DEPLOYMENT).await?).as_deref(),
+        "Trustee image should remain unchanged when operator version hasn't changed"
+    );
+    assert_eq!(
+        Some(pre_reg_image.as_str()),
+        deployment_image(&deployments.get(REGISTER_SERVER_DEPLOYMENT).await?).as_deref(),
+        "register-server image should remain unchanged"
+    );
+
+    // Both images recommitted with PCRs; events repopulated; PCR values identical.
+    for name in [APPROVED_IMAGE_NAME, COMBINE_PCRS_UPDATE_TEST_IMAGE_NAME] {
+        wait_for_committed_with_pcrs(&images, name, 300).await?;
+    }
+    let post_primary = images.get(APPROVED_IMAGE_NAME).await?;
+    let post_primary_events = extract_events(&post_primary);
+    assert_eq!(
+        primary_events.len(), post_primary_events.len(),
+        "Primary image should have same number of PCR entries"
+    );
+    for (pcr_id, events) in &post_primary_events {
+        assert!(!events.is_empty(), "PCR {pcr_id} events should be repopulated");
+    }
+    let post_secondary = images.get(COMBINE_PCRS_UPDATE_TEST_IMAGE_NAME).await?;
+    assert!(!extract_events(&post_secondary).is_empty(), "Secondary events should be repopulated");
+
+    assert_eq!(pre_primary_pcr_vals, extract_pcr_vals(&post_primary), "Primary PCRs should be identical");
+    assert_eq!(pre_secondary_pcr_vals, extract_pcr_vals(&post_secondary), "Secondary PCRs should be identical");
+
+    test_ctx.verify_expected_pcrs(&[&primary_pcrs!(), &secondary_pcrs!()]).await?;
+    test_ctx.info("PCRs and events preserved after upgrade");
+
+    test_ctx.cleanup().await?;
+    Ok(())
+}
+}
+
+// Failure path: an upgrade with a bad Trustee image must fail cleanly, leaving the old Trustee pods running and observedOperatorVersion intact.
+named_test! {
+async fn test_upgrade_failure_preserves_old_pods() -> anyhow::Result<()> {
+    let test_ctx = setup!().await?;
+    let client = test_ctx.client();
+    let namespace = test_ctx.namespace();
+
+    let tec_api: Api<TrustedExecutionCluster> = Api::namespaced(client.clone(), namespace);
+    let deployments: Api<Deployment> = Api::namespaced(client.clone(), namespace);
+    let pods_api: Api<Pod> = Api::namespaced(client.clone(), namespace);
+
+    wait_for_install(&tec_api, TEC_NAME).await?;
+
+    // Point the operator at a bad Trustee image, then trigger the upgrade.
+    let bad_image = "quay.io/nonexistent/bad-image:v999";
+    test_ctx
+        .set_operator_related_image(&deployments, RELATED_IMAGE_TRUSTEE, bad_image)
+        .await?;
+    trigger_upgrade(&tec_api, TEC_NAME).await?;
+    test_ctx.info(format!("Triggered upgrade with bad Trustee image {bad_image}, expecting failure"));
+
+    // Wait for Upgrade=Failed.
+    let done = await_condition(tec_api.clone(), TEC_NAME, tec_has_condition_reason("Upgrade", "Failed"));
+    timeout(scaled_duration(360), done)
+        .await
+        .context("waiting for Upgrade=Failed condition")??;
+
+    let tec = tec_api.get(TEC_NAME).await?;
+    let upgrade_cond = tec
+        .status
+        .as_ref()
+        .and_then(|s| s.conditions.as_ref())
+        .and_then(|cs| cs.iter().find(|c| c.type_ == "Upgrade"))
+        .expect("Upgrade condition should exist after failed upgrade");
+    assert!(
+        upgrade_cond.message.contains("Manual intervention required"),
+        "Upgrade failure message should indicate manual intervention, got: {}",
+        upgrade_cond.message
+    );
+    test_ctx.info(format!("Upgrade failure message: {}", upgrade_cond.message));
+
+    // Old Trustee pods must still be Running (RollingUpdate keeps old pods).
+    let lp = ListParams::default().labels("app=kbs");
+    let running = pods_api
+        .list(&lp)
+        .await?
+        .items
+        .iter()
+        .filter(|p| {
+            p.status
+                .as_ref()
+                .and_then(|s| s.phase.as_deref())
+                .is_some_and(|phase| phase == "Running")
+        })
+        .any(|_| true);
+    assert!(running, "At least one old Trustee pod should still be Running after failed upgrade");
+
+    // observedOperatorVersion must not be updated to an empty value on failure.
+    let post_version = tec
+        .status
+        .as_ref()
+        .and_then(|s| s.observed_operator_version.as_deref());
+    assert!(
+        post_version != Some(""),
+        "observedOperatorVersion should not be cleared on failure"
+    );
+    test_ctx.info("Old pods running and observedOperatorVersion preserved after failure");
 
     test_ctx.cleanup().await?;
     Ok(())

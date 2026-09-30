@@ -99,6 +99,10 @@ type TrustedExecutionClusterStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// Observed version of the operator that last successfully reconciled this cluster. Operator will trigger reconciliation upgrade if there is drift in this value.
+	// +optional
+	ObservedOperatorVersion *string `json:"observedOperatorVersion,omitempty"`
 }
 
 // +kubebuilder:object:root=true

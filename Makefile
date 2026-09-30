@@ -55,6 +55,12 @@ REG_SERVER_IMAGE=$(REGISTRY)/registration-server:$(TAG)
 ATTESTATION_KEY_REGISTER_IMAGE=$(REGISTRY)/attestation-key-register:$(TAG)
 
 TRUSTEE_IMAGE ?= quay.io/trusted-execution-clusters/key-broker-service:v0.20.0
+
+# Upgrade tests: released versions to upgrade from (always on quay.io)
+UPGRADE_OLD_REGISTRY ?= quay.io/trusted-execution-clusters
+UPGRADE_OLD_TAG ?= v0.2.2
+UPGRADE_OLD_TRUSTEE_TAG ?= v0.17.0
+
 TEST_IMAGE ?= quay.io/trusted-execution-clusters/fedora-coreos-kubevirt:20260831
 # tagged as 42.20251012.2.0
 APPROVED_IMAGE ?= quay.io/trusted-execution-clusters/fedora-coreos@sha256:6997f51fd27d1be1b5fc2e6cc3ebf16c17eb94d819b5d44ea8d6cf5f826ee773
@@ -260,7 +266,14 @@ attestation-tests: generate trusted-cluster-gen crds-rs
 trusted-execution-cluster-tests: generate trusted-cluster-gen crds-rs
 	$(INTEGRATION_TEST_ENV) cargo test --test trusted_execution_cluster $(INTEGRATION_TEST_FLAGS)
 
-integration-tests: attestation-tests trusted-execution-cluster-tests
+upgrade-tests: generate trusted-cluster-gen crds-rs
+	$(INTEGRATION_TEST_ENV) \
+	UPGRADE_OLD_REGISTRY=$(UPGRADE_OLD_REGISTRY) \
+	UPGRADE_OLD_TAG=$(UPGRADE_OLD_TAG) \
+	UPGRADE_OLD_TRUSTEE_TAG=$(UPGRADE_OLD_TRUSTEE_TAG) \
+	cargo test --test upgrade $(INTEGRATION_TEST_FLAGS)
+
+integration-tests: attestation-tests trusted-execution-cluster-tests upgrade-tests
 
 $(LOCALBIN):
 	mkdir -p $(LOCALBIN)

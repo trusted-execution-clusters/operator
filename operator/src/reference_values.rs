@@ -537,20 +537,6 @@ mod tests {
         ctx
     }
 
-    fn dummy_image() -> ApprovedImage {
-        ApprovedImage {
-            metadata: ObjectMeta {
-                name: Some("test".to_string()),
-                uid: Some("test".to_string()),
-                ..Default::default()
-            },
-            spec: ApprovedImageSpec {
-                image: DUMMY_IMAGE_REF.to_string(),
-            },
-            status: None,
-        }
-    }
-
     fn dummy_job() -> Job {
         Job {
             metadata: ObjectMeta {

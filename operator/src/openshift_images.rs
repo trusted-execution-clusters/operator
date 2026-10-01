@@ -157,3 +157,159 @@ pub async fn launch_rv_mc_controller(ctx: Arc<OperatorContext>) {
             .for_each(controller_info),
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::{dummy_image, store_with};
+    use trusted_cluster_operator_test_utils::constants::DUMMY_IMAGE_REF;
+
+    use http::{Method, Request, StatusCode};
+    use kube::client::Body;
+    use machineconfigpools::MachineConfigPoolMachineConfigSelector;
+    use machineconfigpools::MachineConfigPoolMachineConfigSelectorMatchExpressions;
+    use trusted_cluster_operator_test_utils::mock_client::*;
+
+    const MAPI_ROLE: &str = "machineconfiguration.openshift.io/role";
+    const MC_NAME: &str = "worker-cvm";
+
+    fn match_labels() -> BTreeMap<String, String> {
+        BTreeMap::from([(MAPI_ROLE.to_string(), MC_NAME.to_string())])
+    }
+
+    fn dummy_mc() -> MachineConfig {
+        let mut mc = MachineConfig::default();
+        mc.metadata.name = Some(MC_NAME.to_string());
+        mc.metadata.labels = Some(match_labels());
+        mc.spec.os_image_url = Some(DUMMY_IMAGE_REF.to_string());
+        mc
+    }
+
+    fn dummy_mcp() -> MachineConfigPool {
+        let mut mcp = MachineConfigPool::default();
+        mcp.metadata.name = Some(MC_NAME.to_string());
+        mcp.metadata.labels = Some(BTreeMap::from([(
+            MCP_APPROVED_IMAGE_LABEL.to_string(),
+            String::new(),
+        )]));
+        mcp.spec.machine_config_selector = Some(MachineConfigPoolMachineConfigSelector {
+            match_expressions: None,
+            match_labels: Some(match_labels()),
+        });
+        mcp
+    }
+
+    #[test]
+    fn test_is_live_exp() {
+        let mut mcp = dummy_mcp();
+        let label_value = match_labels().get(MAPI_ROLE).unwrap().to_string();
+        let exp = MachineConfigPoolMachineConfigSelectorMatchExpressions {
+            key: MAPI_ROLE.to_string(),
+            operator: "In".to_string(),
+            values: Some(vec![label_value, "whatever".to_string()]),
+        };
+        mcp.spec.machine_config_selector = Some(MachineConfigPoolMachineConfigSelector {
+            match_expressions: Some(vec![exp]),
+            match_labels: None,
+        });
+
+        let mut mc = dummy_mc();
+        let match_labels = mc.metadata.labels.as_mut().unwrap();
+        match_labels.insert("something".to_string(), "else".to_string());
+        assert!(is_live(&mcp, &mc));
+
+        let selector = mcp.spec.machine_config_selector.as_mut().unwrap();
+        let exps = selector.match_expressions.as_mut().unwrap();
+        exps.push(MachineConfigPoolMachineConfigSelectorMatchExpressions {
+            key: "foo".to_string(),
+            operator: "Exists".to_string(),
+            values: None,
+        });
+        assert!(!is_live(&mcp, &mc));
+    }
+
+    #[test]
+    fn test_is_live_label() {
+        let mut mcp = dummy_mcp();
+        let mut mc = dummy_mc();
+        let mut labels = match_labels();
+        labels.insert("something".to_string(), "else".to_string());
+        mc.metadata.labels = Some(labels);
+        assert!(is_live(&mcp, &mc));
+
+        let selector = mcp.spec.machine_config_selector.as_mut().unwrap();
+        let labels = selector.match_labels.as_mut().unwrap();
+        labels.insert("foo".to_string(), "bar".to_string());
+        assert!(!is_live(&mcp, &mc));
+    }
+
+    #[test]
+    fn test_is_live_missing_mcp_label() {
+        let mut mcp = dummy_mcp();
+        mcp.metadata.labels = Some(BTreeMap::from([("foo".to_string(), String::new())]));
+
+        let mut mc = dummy_mc();
+        let mut labels = match_labels();
+        labels.insert("something".to_string(), "else".to_string());
+        mc.metadata.labels = Some(labels);
+
+        assert!(!is_live(&mcp, &mc));
+    }
+
+    #[test]
+    fn test_is_live_nothing() {
+        assert!(!is_live(&Default::default(), &Default::default()));
+    }
+
+    async fn image_success_closure(
+        req: Request<Body>,
+        _counter: u32,
+    ) -> Result<String, StatusCode> {
+        match req.method() {
+            &Method::POST => {
+                let body = get_body_string(req).await;
+                assert!(body.contains(DUMMY_IMAGE_REF));
+                Ok(serde_json::to_string(&dummy_image()).unwrap())
+            }
+            _ => panic!("unexpected API interaction: {req:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_add_mc_image_success() {
+        count_check!(2, image_success_closure, |client| {
+            let ctx = OperatorContext::new(client);
+            add_mc_image(&dummy_mc(), &ctx).await.unwrap();
+        });
+    }
+
+    #[tokio::test]
+    async fn test_add_mc_image_no_url() {
+        let clos = async |req: Request<_>, _| panic!("unexpected API interaction: {req:?}");
+        let mut mc = dummy_mc();
+        mc.spec.os_image_url = None;
+        count_check!(0, clos, |client| {
+            let ctx = OperatorContext::new(client);
+            add_mc_image(&mc, &ctx).await.unwrap();
+        });
+    }
+
+    #[tokio::test]
+    async fn test_add_mc_image_error() {
+        let clos = async |_, _| Err(StatusCode::INTERNAL_SERVER_ERROR);
+        count_check!(1, clos, |client| {
+            let result = add_mc_image(&dummy_mc(), &OperatorContext::new(client)).await;
+            assert!(result.is_err());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_mc_reconcile_new() {
+        count_check!(2, image_success_closure, |client| {
+            let mut ctx = OperatorContext::new(client);
+            ctx.mcp_store = store_with(vec![dummy_mcp()]);
+            let result = mc_reconcile(Arc::new(dummy_mc()), Arc::new(ctx)).await;
+            assert_eq!(result.unwrap(), LONG_REQUEUE);
+        });
+    }
+}

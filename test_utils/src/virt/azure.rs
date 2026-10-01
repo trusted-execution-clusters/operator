@@ -83,7 +83,7 @@ impl VmBackend for AzureBackend {
         let nsg = &format!("{vm}-nsg");
         let nic = &format!("{vm}-nic");
 
-        let location = env::var("AZURE_LOCATION").unwrap_or("eastus".to_string());
+        let location = env::var("AZURE_LOCATION").unwrap_or("westus".to_string());
         let mut args = vec!["group", "create", "--name", &self.resource_group];
         args.extend(["--location", &location]);
         let output = Command::new("az").args(args).output().await?;
@@ -122,8 +122,19 @@ impl VmBackend for AzureBackend {
             return Err(anyhow!(err));
         }
 
+        let hw = env::var("TEST_HW").unwrap_or("SNP".to_string());
+        let size = match hw.as_str() {
+            "SNP" => "Standard_DC2as_v5",
+            "TDX" => "Standard_DC4es_v6",
+            _ => {
+                return Err(anyhow!(
+                    "Invalid TEST_HW value: {hw}. Expected 'SNP' or 'TDX'"
+                ));
+            }
+        };
+
         let mut args = vec!["vm", "create", "--name", vm, "--nics", nic];
-        args.extend(["--image", &self.config.image, "--size", "Standard_DC2as_v5"]);
+        args.extend(["--image", &self.config.image, "--size", size]);
         args.extend(["--os-disk-delete-option", "Delete"]);
         args.extend(["--storage-sku", "StandardSSD_LRS"]);
         args.extend(["--admin-username", "core"]);

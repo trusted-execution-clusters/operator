@@ -15,6 +15,9 @@ use trusted_cluster_operator_lib::{AttestationKey, Machine, TrustedExecutionClus
 use trusted_cluster_operator_test_utils::constants::APPROVED_IMAGE_NAME;
 use trusted_cluster_operator_test_utils::virt::{self, VmBackend};
 use trusted_cluster_operator_test_utils::{Poller, wait_for_event};
+use tokio::time::timeout;
+use kube::runtime::wait::await_condition;
+
 
 const ENCRYPTED_ROOT_CTX: &str = "should have an encrypted root device (attestation failed)";
 
@@ -70,6 +73,49 @@ async fn test_attestation() -> anyhow::Result<()> {
     att_ctx.verify_encrypted_root().await.context(ctx)?;
 
     test_ctx.info("Attestation successful: encrypted root device verified");
+    att_ctx.cleanup().await?;
+    test_ctx.cleanup().await?;
+    Ok(())
+}
+}
+
+virt_test! {
+async fn test_provider_id_registration() -> anyhow::Result<()> {
+    // The providerID is discovered via Azure IMDS by the bind unit, so it is
+    // only reported on Azure. On other platforms, skip the whole test.
+    let virt_provider = std::env::var(VIRT_PROVIDER_ENV).unwrap_or_else(|_| "kind".to_string());
+    if virt_provider != "azure" {
+        println!("VIRT_PROVIDER is {virt_provider}, not azure; skipping test_provider_id_registration");
+        return Ok(());
+    }
+
+    let test_ctx = setup!().await?;
+    let vm_name = "test-vm-provider-id";
+    let att_ctx = SingleAttestationContext::new(vm_name, &test_ctx).await?;
+
+    test_ctx.info("Verifying encrypted root device");
+    let ctx = format!("VM {ENCRYPTED_ROOT_CTX}");
+    att_ctx.verify_encrypted_root().await.context(ctx)?;
+
+    test_ctx.info("Attestation successful: encrypted root device verified");
+
+    test_ctx.info("Verifying providerID registration");
+    let machines: Api<Machine> = Api::namespaced(test_ctx.client().clone(), test_ctx.namespace());
+    let name = machines
+        .list(&Default::default())
+        .await?
+        .items
+        .into_iter()
+        .next()
+        .and_then(|m| m.metadata.name)
+        .context("No Machine was registered for the VM")?;
+
+    let has_provider_id = await_condition(machines, &name, |m: Option<&Machine>| {
+        m.and_then(|m| m.spec.provider_id.as_ref()).is_some()
+    });
+    timeout(scaled_duration(180), has_provider_id)
+        .await
+        .context("providerID did not become available")??;
     att_ctx.cleanup().await?;
     test_ctx.cleanup().await?;
     Ok(())

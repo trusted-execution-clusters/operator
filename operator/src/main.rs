@@ -295,6 +295,7 @@ async fn main() -> Result<()> {
     let cl: Api<TrustedExecutionCluster> = Api::default_namespaced(kube_client.clone());
 
     register_server::launch_keygen_controller(ctx.clone()).await;
+    register_server::launch_node_controller(ctx.clone()).await;
     attestation_key_register::launch_ak_controller(ctx.clone()).await;
     attestation_key_register::launch_machine_ak_controller(ctx.clone()).await;
     attestation_key_register::launch_secret_ak_controller(ctx.clone()).await;

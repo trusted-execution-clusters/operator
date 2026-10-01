@@ -3,24 +3,35 @@
 //
 // SPDX-License-Identifier: MIT
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use axum::extract::State;
+use axum::http::{header, HeaderMap};
 use axum::response::{IntoResponse, Json};
-use axum::{http::StatusCode, routing::get, Router};
+use axum::{
+    http::StatusCode,
+    routing::{get, put},
+    Router,
+};
 use axum_server::tls_openssl::OpenSSLConfig;
+use base64::prelude::{Engine as _, BASE64_STANDARD};
 use clap::Parser;
 use clevis_pin_trustee_lib::{
     AttestationKey, Config as ClevisConfig, NumRetries, Registration, Server as ClevisServer,
 };
 use env_logger::Env;
 use ignition_config::v3_6::{
-    Clevis, ClevisCustom, Config as IgnitionConfig, Filesystem, Luks, Storage,
+    Clevis, ClevisCustom, Config as IgnitionConfig, File, Filesystem, Luks, Resource, Storage,
+    Systemd, Unit,
 };
 use k8s_openapi::api::core::v1::ObjectReference;
 use k8s_openapi::api::core::v1::Secret;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
+use kube::api::{Patch, PatchParams};
 use kube::runtime::events::{EventType, Recorder, Reporter};
-use kube::{Api, Client, Resource};
+use kube::{Api, Client};
+// Imported only for its `object_ref` method; `as _` avoids clashing with
+// `ignition_config::v3_6::Resource`.
+use kube::Resource as _;
 use log::{error, info};
 use std::net::SocketAddr;
 use uuid::Uuid;
@@ -33,6 +44,27 @@ use trusted_cluster_operator_lib::{
 /// Allow for an operator::KUBE_READ_TIMEOUT to hit (5 minutes) plus one minute,
 /// thus 360s / 5s (clevis-pin-trustee's delay)
 const RETRIES: u32 = 72;
+
+/// Resource path where nodes report their providerID and UUID.
+const BIND_RESOURCE: &str = "bind";
+
+/// Script that reports the node's Azure providerID and UUID to the /bind endpoint.
+const GET_PROVIDERID_SCRIPT: &str = include_str!("./get-providerid.sh");
+
+/// It is a oneshot pulled in by multi-user.target and nothing depends on it, so a failure never blocks boot.
+const TEC_BIND_UNIT: &str = "\
+[Unit]
+Description=Bind Azure providerID and UUID to the register-server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/get-providerid.sh
+
+[Install]
+WantedBy=multi-user.target
+";
 
 #[derive(Parser)]
 #[command(name = "register-server")]
@@ -52,6 +84,9 @@ struct Args {
 struct AppState {
     client: Client,
     recorder: Recorder,
+    /// "http" or "https": the scheme the node used to reach us, used to build
+    /// the bind URL and decide whether the node needs our CA.
+    scheme: &'static str,
 }
 
 /// Information about endpoints for clevis configuration
@@ -104,7 +139,27 @@ impl EndpointInfo {
     }
 }
 
-fn generate_ignition(id: &str, endpoint_info: &EndpointInfo) -> IgnitionConfig {
+fn generate_bind_file(id: &str, rs_url: &str, ca_cert: Option<&str>) -> File {
+    let script = GET_PROVIDERID_SCRIPT
+        .replace("<YOUR_UUID>", id)
+        .replace("<YOUR_BIND_SERVER_URL>", rs_url)
+        .replace("<YOUR_CA_CERT>", ca_cert.unwrap_or(""));
+    let mut file = File::new("/usr/local/bin/get-providerid.sh".to_string());
+    file.mode = Some(0o755);
+    file.overwrite = Some(true);
+    file.contents = Some(Resource {
+        source: Some(format!("data:;base64,{}", BASE64_STANDARD.encode(script))),
+        ..Default::default()
+    });
+    file
+}
+
+fn generate_ignition(
+    id: &str,
+    endpoint_info: &EndpointInfo,
+    rs_url: &str,
+    rs_ca_cert: Option<&str>,
+) -> IgnitionConfig {
     let ak_addr = endpoint_info.ak_registration_addr.as_deref();
     let attestation_key = ak_addr.map(|url| {
         let (ak_reg_scheme, ak_reg_cert) = match &endpoint_info.ak_registration_ca_cert {
@@ -166,20 +221,29 @@ fn generate_ignition(id: &str, endpoint_info: &EndpointInfo) -> IgnitionConfig {
     luks.label = Some(luks_root.to_string());
     luks.wipe_volume = Some(true);
 
+    let mut bind_unit = Unit::new("bind.service".to_string());
+    bind_unit.enabled = Some(true);
+    bind_unit.contents = Some(TEC_BIND_UNIT.to_string());
+
     IgnitionConfig {
         storage: Some(Storage {
+            files: Some(vec![generate_bind_file(id, rs_url, rs_ca_cert)]),
             filesystems: Some(vec![fs]),
             luks: Some(vec![luks]),
             ..Default::default()
+        }),
+        systemd: Some(Systemd {
+            units: Some(vec![bind_unit]),
         }),
         ..Default::default()
     }
 }
 
-async fn register_handler(State(state): State<AppState>) -> impl IntoResponse {
+async fn register_handler(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let id = Uuid::new_v4().to_string();
     let kube_client = state.client;
     let recorder = state.recorder;
+    let scheme = state.scheme;
     let internal_error = |e: anyhow::Error| {
         let code = StatusCode::INTERNAL_SERVER_ERROR;
         error!("{e:?}");
@@ -218,18 +282,83 @@ async fn register_handler(State(state): State<AppState>) -> impl IntoResponse {
         }
         Err(e) => return internal_error(e.context("Failed to create machine")),
     }
-    let endpoint_info = match EndpointInfo::create(kube_client).await {
+    let endpoint_info = match EndpointInfo::create(kube_client.clone()).await {
         Ok(info) => info,
         Err(e) => return internal_error(e.context("Failed to get endpoint info")),
     };
 
-    let ignition_config = generate_ignition(&id, &endpoint_info);
+    // Over HTTPS, the node needs our CA to verify the bind request's TLS cert.
+    let rs_ca_cert = match scheme {
+        "https" => match &cluster.spec.register_server_secret {
+            Some(name) => match get_ca(kube_client, name).await {
+                Ok(ca) => Some(ca),
+                Err(e) => return internal_error(e.context("Failed to get register-server CA")),
+            },
+            None => {
+                let e = anyhow!(
+                    "scheme is https but the TrustedExecutionCluster has no \
+                     registerServerSecret, so the node cannot be given a CA to verify \
+                     the bind endpoint"
+                );
+                return internal_error(e);
+            }
+        },
+        _ => None,
+    };
+
+    // Reach the bind endpoint at the same address the node just used to reach us.
+    let rs_url = match headers.get(header::HOST).and_then(|h| h.to_str().ok()) {
+        Some(host) => format!("{scheme}://{host}/{BIND_RESOURCE}"),
+        None => return internal_error(anyhow::anyhow!("Request is missing a Host header")),
+    };
+
+    let ignition_config = generate_ignition(&id, &endpoint_info, &rs_url, rs_ca_cert.as_deref());
     let ignition_json = match serde_json::to_value(&ignition_config) {
         Ok(json) => json,
         Err(e) => return internal_error(e.into()),
     };
 
     (StatusCode::OK, Json(ignition_json))
+}
+
+/// Payload a node reports to /bind: its UUID and the providerID it discovered.
+#[derive(serde::Deserialize)]
+struct BindRequest {
+    uuid: String,
+    #[serde(rename = "providerID")]
+    provider_id: String,
+}
+
+/// Patch the Machine named after the reported UUID with its providerID.
+async fn bind_handler(
+    State(AppState { client, .. }): State<AppState>,
+    Json(req): Json<BindRequest>,
+) -> impl IntoResponse {
+    let machine_name = format!("machine-{}", req.uuid);
+    info!(
+        "Received bind request for {machine_name}: providerID={}",
+        req.provider_id
+    );
+
+    let machines: Api<Machine> = Api::default_namespaced(client);
+    let patch = serde_json::json!({ "spec": { "providerID": req.provider_id } });
+    match machines
+        .patch(
+            &machine_name,
+            &PatchParams::default(),
+            &Patch::Merge(&patch),
+        )
+        .await
+    {
+        Ok(_) => {
+            info!("Patched {machine_name} with its providerID");
+            StatusCode::OK
+        }
+        Err(e) => {
+            error!("Failed to patch {machine_name}: {e:?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
 }
 
 async fn create_machine(
@@ -246,6 +375,7 @@ async fn create_machine(
         },
         spec: MachineSpec {
             id: uuid.to_string(),
+            provider_id: None,
         },
         status: None,
     };
@@ -268,12 +398,20 @@ async fn main() {
         controller: "register-server".into(),
         instance: std::env::var("CONTROLLER_POD_NAME").ok(),
     };
+    let scheme = if args.cert_path.is_some() && args.key_path.is_some() {
+        "https"
+    } else {
+        "http"
+    };
     let state = AppState {
         recorder: Recorder::new(client.clone(), reporter),
         client,
+        scheme,
     };
+    let bind_endpoint = format!("/{BIND_RESOURCE}");
     let app = Router::new()
         .route(&endpoint, get(register_handler))
+        .route(&bind_endpoint, put(bind_handler))
         .with_state(state);
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     let service = app.into_make_service();
@@ -374,6 +512,7 @@ mod tests {
             },
             spec: MachineSpec {
                 id: "test".to_string(),
+                provider_id: None,
             },
             status: None,
         }

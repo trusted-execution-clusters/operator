@@ -89,7 +89,7 @@ pub async fn create_register_server_deployment(
         ..Default::default()
     };
 
-    create_or_info_if_exists!(client, Deployment, deployment);
+    create_or_info_if_exists(client, &deployment).await?;
     info!("Register server deployment created successfully");
     Ok(())
 }
@@ -124,7 +124,7 @@ pub async fn create_register_server_service(
         ..Default::default()
     };
 
-    create_or_info_if_exists!(client, Service, service);
+    create_or_info_if_exists(client, &service).await?;
     info!("Register server service created successfully");
     Ok(())
 }

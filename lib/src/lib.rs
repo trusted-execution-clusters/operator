@@ -20,6 +20,10 @@ pub use kopium::certificaterequests;
 pub use kopium::certificates;
 pub use kopium::clusterissuers;
 pub use kopium::issuers;
+#[cfg(feature = "openshift")]
+pub use kopium::machineconfigpools;
+#[cfg(feature = "openshift")]
+pub use kopium::machineconfigs;
 pub use vendor_kopium::virtualmachineinstances;
 pub use vendor_kopium::virtualmachines;
 

@@ -14,11 +14,11 @@ use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{ConfigMap, Secret, SecretVolumeSource, Volume, VolumeMount};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
 use k8s_openapi::jiff::Timestamp;
-use kube::Resource;
 use kube::runtime::events::{Recorder, Reporter};
 use kube::runtime::reflector::{self, Store};
 use kube::runtime::watcher::watcher;
 use kube::{Api, Client, runtime::controller::Action};
+use kube::{Resource, ResourceExt};
 use log::{info, warn};
 use std::fmt::{Debug, Display};
 use std::{sync::Arc, time::Duration};
@@ -28,6 +28,10 @@ use tokio::time::timeout;
 use kube::api::{Patch, PatchParams};
 use trusted_cluster_operator_lib::Conditions;
 pub use trusted_cluster_operator_lib::generate_owner_reference;
+#[cfg(feature = "openshift")]
+use trusted_cluster_operator_lib::machineconfigpools::MachineConfigPool;
+#[cfg(feature = "openshift")]
+use trusted_cluster_operator_lib::machineconfigs::MachineConfig;
 use trusted_cluster_operator_lib::{
     ApprovedImage, AttestationKey, Machine, TrustedExecutionCluster,
 };
@@ -44,6 +48,10 @@ pub struct OperatorContext {
     pub secret_store: Store<Secret>,
     pub image_store: Store<ApprovedImage>,
     pub deployment_store: Store<Deployment>,
+    #[cfg(feature = "openshift")]
+    pub mc_store: Store<MachineConfig>,
+    #[cfg(feature = "openshift")]
+    pub mcp_store: Store<MachineConfigPool>,
 }
 
 impl OperatorContext {
@@ -59,6 +67,10 @@ impl OperatorContext {
             secret_store: reflector::store().0,
             image_store: reflector::store().0,
             deployment_store: reflector::store().0,
+            #[cfg(feature = "openshift")]
+            mc_store: reflector::store().0,
+            #[cfg(feature = "openshift")]
+            mcp_store: reflector::store().0,
         }
     }
 
@@ -102,19 +114,22 @@ pub fn new_recorder(client: Client, controller_name: &str) -> Recorder {
     Recorder::new(client, reporter)
 }
 
-#[macro_export]
-macro_rules! create_or_info_if_exists {
-    ($client:expr, $type:ident, $resource:ident) => {
-        let api: Api<$type> = kube::Api::default_namespaced($client);
-        let name = $resource.metadata.name.clone().unwrap();
-        match api.create(&Default::default(), &$resource).await {
-            Ok(_) => info!("Create {} {}", $type::kind(&()), name),
-            Err(kube::Error::Api(ae)) if ae.code == 409 => {
-                info!("{} {} already exists", $type::kind(&()), name);
-            }
-            Err(e) => return Err(e.into()),
+pub async fn create_or_info_if_exists<K>(client: Client, resource: &K) -> Result<()>
+where
+    K: Resource<Scope = k8s_openapi::NamespaceResourceScope, DynamicType = ()>,
+    K: Clone + Debug + serde::de::DeserializeOwned + serde::Serialize,
+    K::DynamicType: Default,
+{
+    let api: Api<K> = Api::default_namespaced(client);
+    let name = resource.name_unchecked();
+    match api.create(&Default::default(), resource).await {
+        Ok(_) => info!("Create {} {name}", K::kind(&())),
+        Err(kube::Error::Api(ae)) if ae.code == 409 => {
+            info!("{} {name} already exists", K::kind(&()));
         }
-    };
+        Err(e) => return Err(e.into()),
+    }
+    Ok(())
 }
 
 pub const KIND_LABEL_KEY: &str = "kind";
@@ -165,6 +180,24 @@ where
     K::DynamicType: Default + Eq + std::hash::Hash + Clone,
 {
     let watcher = watcher(Api::<K>::default_namespaced(client), Default::default());
+    let reflector = reflector::reflector(writer, watcher).for_each(move |res| async move {
+        if let Err(e) = res {
+            warn!("{name} reflector error: {e}");
+        }
+    });
+    tokio::spawn(reflector);
+}
+
+pub fn spawn_cluster_reflector<K>(
+    writer: reflector::store::Writer<K>,
+    client: Client,
+    name: &'static str,
+) where
+    K: Resource<Scope = k8s_openapi::ClusterResourceScope>,
+    K: Clone + serde::de::DeserializeOwned + std::fmt::Debug + Send + Sync + 'static,
+    K::DynamicType: Default + Eq + std::hash::Hash + Clone,
+{
+    let watcher = watcher(Api::<K>::all(client), Default::default());
     let reflector = reflector::reflector(writer, watcher).for_each(move |res| async move {
         if let Err(e) = res {
             warn!("{name} reflector error: {e}");

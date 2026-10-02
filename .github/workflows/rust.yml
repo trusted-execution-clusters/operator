@@ -47,6 +47,30 @@ jobs:
         run: cargo build --all-targets
       - name: "cargo test"
         run: cargo test --bins --lib
+  tests-all-features:
+    name: "Tests, all features"
+    runs-on: "ubuntu-24.04"
+    container: "ghcr.io/trusted-execution-clusters/buildroot:fedora"
+    steps:
+      - name: "Check out repository"
+        uses: actions/checkout@v7
+      - name: "Install Rust toolchain"
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: "Install Go toolchain"
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: "Cache build artifacts"
+        uses: Swatinem/rust-cache@v2
+      - name: "Generate optional CRDs"
+        run: make generate-openshift
+      - name: "Build CRDs"
+        run: make crds-rs
+      - name: "cargo test"
+        run: cargo test --bins --lib --all-features
   tests-release-stable:
     name: "Tests (release), stable toolchain"
     runs-on: "ubuntu-24.04"

@@ -24,7 +24,6 @@ use kube::{Api, Client, Resource};
 use log::{info, warn};
 use oci_client::secrets::RegistryAuth;
 use oci_spec::image::ImageConfiguration;
-use openssl::hash::{MessageDigest, hash};
 use serde::Deserialize;
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
@@ -158,21 +157,8 @@ pub async fn launch_rv_job_controller(ctx: Arc<OperatorContext>) {
     );
 }
 
-// Name job by sanitized image name, plus a hash to disambiguate
-// tags that differed only beyond the truncation limit
-fn get_job_name(boot_image: &str) -> Result<String> {
-    let rfc1035_boot_image = boot_image.replace(['.', ':', '/', '@', '_'], "-");
-    let boot_image_hash = hash(MessageDigest::sha1(), boot_image.as_bytes())?;
-    let mut boot_image_hash_str = hex::encode(boot_image_hash);
-    boot_image_hash_str.truncate(10);
-    let job_name = format!("{PCR_COMMAND_NAME}-{boot_image_hash_str}-{rfc1035_boot_image}");
-    let trimmed: String = job_name.chars().take(63).collect();
-    let trimmed = trimmed.trim_end_matches('-').to_string();
-    Ok(trimmed)
-}
-
 async fn compute_fresh_pcrs(client: Client, image: &ApprovedImage) -> anyhow::Result<()> {
-    let job_name = get_job_name(&image.spec.image)?;
+    let job_name = rfc1035(&image.spec.image, PCR_COMMAND_NAME)?;
     let env = "RELATED_IMAGE_COMPUTE_PCRS";
     let default_image =
         format!("quay.io/trusted-execution-clusters/compute-pcrs:{COMPONENT_VERSION}");
@@ -205,8 +191,7 @@ async fn compute_fresh_pcrs(client: Client, image: &ApprovedImage) -> anyhow::Re
         }),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, Job, job);
-    Ok(())
+    create_or_info_if_exists(client, &job).await
 }
 
 async fn adopt_approved_image(
@@ -518,23 +503,6 @@ mod tests {
         ctx
     }
 
-    const DUMMY_IMAGE_REF: &str =
-        "quay.io/some-ref@sha256:e71dad00aa0e3d70540e726a0c66407e3004d96e045ab6c253186e327a2419e5";
-
-    fn dummy_image() -> ApprovedImage {
-        ApprovedImage {
-            metadata: ObjectMeta {
-                name: Some("test".to_string()),
-                uid: Some("test".to_string()),
-                ..Default::default()
-            },
-            spec: ApprovedImageSpec {
-                image: DUMMY_IMAGE_REF.to_string(),
-            },
-            status: None,
-        }
-    }
-
     fn dummy_job() -> Job {
         Job {
             metadata: ObjectMeta {
@@ -591,14 +559,14 @@ mod tests {
     }
 
     #[test]
-    fn test_get_job_name_trailing_dash() {
-        let name = get_job_name("quay.io/some_ref:some-tag-").unwrap();
+    fn test_rfc1035_trailing_dash() {
+        let name = rfc1035("quay.io/some_ref:some-tag-", PCR_COMMAND_NAME).unwrap();
         assert_eq!(name, "compute-pcrs-105a7802d8-quay-io-some-ref-some-tag");
     }
 
     #[test]
-    fn test_get_job_name_sha() {
-        let name = get_job_name(DUMMY_IMAGE_REF).unwrap();
+    fn test_rfc1035_sha() {
+        let name = rfc1035(DUMMY_IMAGE_REF, PCR_COMMAND_NAME).unwrap();
         assert_eq!(
             name,
             "compute-pcrs-6c57e93939-quay-io-some-ref-sha256-e71dad00aa0e3d7"

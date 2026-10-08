@@ -17,6 +17,12 @@ executables := 3 if {
   input["az-snp-vtpm"].tpm.pcr14 in query_reference_value("tpm_pcr14")
 }
 
+# Azure TDX vTPM validation
+executables := 3 if {
+  input["az-tdx-vtpm"].tpm.pcr04 in query_reference_value("tpm_pcr4")
+  input["az-tdx-vtpm"].tpm.pcr14 in query_reference_value("tpm_pcr14")
+}
+
 default configuration := 0
 default hardware := 0
 default file_system := 0

@@ -204,7 +204,10 @@ pub fn dummy_machine(id: &str) -> Machine {
             name: Some(id.to_string()),
             ..Default::default()
         },
-        spec: MachineSpec { id: id.to_string() },
+        spec: MachineSpec {
+            id: id.to_string(),
+            provider_id: None,
+        },
         status: None,
     }
 }

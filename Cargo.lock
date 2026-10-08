@@ -3674,6 +3674,7 @@ dependencies = [
  "anyhow",
  "axum",
  "axum-server",
+ "base64 0.22.1",
  "clap",
  "clevis-pin-trustee-lib",
  "env_logger",

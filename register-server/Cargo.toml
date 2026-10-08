@@ -11,6 +11,7 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
+base64.workspace = true
 axum-server.workspace = true
 clap.workspace = true
 clevis-pin-trustee-lib.workspace = true

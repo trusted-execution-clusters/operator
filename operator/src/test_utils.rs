@@ -11,8 +11,8 @@ use kube::runtime::reflector::{self, Lookup, Store};
 use kube::runtime::watcher;
 use std::collections::BTreeMap;
 use std::hash::Hash;
-use trusted_cluster_operator_lib::TrustedExecutionCluster;
 use trusted_cluster_operator_lib::reference_values::pcrs_to_status;
+use trusted_cluster_operator_lib::{ApprovedImage, ApprovedImageSpec, TrustedExecutionCluster};
 use trusted_cluster_operator_lib::{ApprovedImageStatusPcrs, Machine, MachineSpec};
 
 /// Build a reflector [`Store`] pre-populated with `items`, for tests that
@@ -196,6 +196,23 @@ pub fn dummy_cluster_with_mock_kbs(expected_requests: usize) -> TrustedExecution
     let mut cluster = dummy_cluster();
     cluster.spec.public_trustee_addr = Some(format!("127.0.0.1:{port}"));
     cluster
+}
+
+pub const DUMMY_IMAGE_REF: &str =
+    "quay.io/some-ref@sha256:e71dad00aa0e3d70540e726a0c66407e3004d96e045ab6c253186e327a2419e5";
+
+pub fn dummy_image() -> ApprovedImage {
+    ApprovedImage {
+        metadata: ObjectMeta {
+            name: Some("test".to_string()),
+            uid: Some("test".to_string()),
+            ..Default::default()
+        },
+        spec: ApprovedImageSpec {
+            image: DUMMY_IMAGE_REF.to_string(),
+        },
+        status: None,
+    }
 }
 
 pub fn dummy_machine(id: &str) -> Machine {

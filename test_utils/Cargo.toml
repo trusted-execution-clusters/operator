@@ -9,6 +9,8 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
+# When enabled, do not create ApprovedImages
+openshift = []
 virtualization = []
 
 [dependencies]

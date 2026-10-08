@@ -34,6 +34,8 @@ var (
 // +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=trustedexecutionclusters/finalizers;machines/finalizers;attestationkeys/finalizers;approvedimages/finalizers,verbs=update
 // +kubebuilder:rbac:groups=trusted-execution-clusters.io,resources=trustedexecutionclusters/status;machines/status;approvedimages/status;attestationkeys/status,verbs=get;patch;update
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=machineconfiguration.openshift.io,resources=machineconfigs;machineconfigpools,verbs=get;list;patch;watch
+// +kubebuilder:rbac:groups=machineconfiguration.openshift.io,resources=machineconfigs/finalizers,verbs=update
 
 // TrustedExecutionClusterSpec defines the desired state of TrustedExecutionCluster
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.publicAttestationKeyRegisterAddr) || has(self.publicAttestationKeyRegisterAddr)", message="Value is required once set"

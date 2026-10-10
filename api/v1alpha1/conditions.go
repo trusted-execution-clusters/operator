@@ -15,6 +15,14 @@ const (
 	KnownTrusteeAddressReason    string = "AddressFound"
 	UnknownTrusteeAddressReason  string = "NoAddressFound"
 
+	// Operator Upgrade conditions
+	UpgradeCondition              string = "Upgrade"
+	UpgradeInProgress             string = "InProgress"
+	UpgradeComplete               string = "Complete"
+	UpgradeFailed                 string = "Failed"
+	TrusteeUpgradeCondition       string = "TrusteeUpgrade"
+	RelatedImagesUpgradeCondition string = "RelatedImagesUpgrade"
+
 	CommittedCondition          string = "Committed"
 	CommittedReason             string = "ImageCommitted"
 	NotCommittedReasonComputing string = "Computing"

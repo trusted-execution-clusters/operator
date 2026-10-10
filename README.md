@@ -17,7 +17,7 @@ The operator relies on Rust crates for its functionality.
 -   `/operator`: Contains the source code for the Kubernetes operator itself.
 -   `/register-server`: A server that provides Clevis PINs for key retrieval with random UUIDs.
 -   `/attestation-key-register`: A server that accepts attestation key registrations from VMs and creates AttestationKey resources.
--   `/compute-pcrs`: A program to compute PCR reference values using the [compute-pcrs library](https://github.com/trusted-execution-clusters/compute-pcrs) and insert them into a ConfigMap, run as a Job.
+-   `/compute-pcrs`: A program to compute PCR reference values using the [compute-pcrs library](https://github.com/trusted-execution-clusters/compute-pcrs) and update the related ApprovedImage status with the computed pcr values.
 
 ### Other crates
 

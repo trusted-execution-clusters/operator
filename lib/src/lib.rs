@@ -74,6 +74,18 @@ impl Conditions for MachineStatus {
     }
 }
 
+/// True if the status has a condition with the given type and reason.
+pub fn has_condition<S: Conditions>(
+    existing_status: &Option<S>,
+    type_: &str,
+    reason: &str,
+) -> bool {
+    existing_status
+        .as_ref()
+        .and_then(|s| s.conditions().as_ref())
+        .is_some_and(|cs| cs.iter().any(|c| c.type_ == type_ && c.reason == reason))
+}
+
 pub fn transition_time<S: Conditions>(
     existing_status: &Option<S>,
     type_: &str,

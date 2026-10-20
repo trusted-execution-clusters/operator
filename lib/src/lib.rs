@@ -25,10 +25,17 @@ pub use vendor_kopium::virtualmachines;
 
 use anyhow::{Context, Result, anyhow};
 use conditions::*;
+use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::ObjectReference;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, OwnerReference, Time};
 use kube::runtime::events::{Event as K8sEvent, EventType, Recorder};
+use kube::runtime::wait::await_condition;
 use kube::{Api, Client, Resource};
+use std::time::Duration;
+
+/// Finalizer added to the Secret backing an AttestationKey.
+pub const ATTESTATION_KEY_SECRET_FINALIZER: &str =
+    "trusted-execution-clusters.io/attestationkey-secret-finalizer";
 
 #[macro_export]
 macro_rules! update_status {
@@ -72,6 +79,18 @@ impl Conditions for MachineStatus {
     fn conditions(&self) -> &Option<Vec<Condition>> {
         &self.conditions
     }
+}
+
+/// True if the status has a condition with the given type and reason.
+pub fn has_condition<S: Conditions>(
+    existing_status: &Option<S>,
+    type_: &str,
+    reason: &str,
+) -> bool {
+    existing_status
+        .as_ref()
+        .and_then(|s| s.conditions().as_ref())
+        .is_some_and(|cs| cs.iter().any(|c| c.type_ == type_ && c.reason == reason))
 }
 
 pub fn transition_time<S: Conditions>(
@@ -176,6 +195,59 @@ pub async fn get_trusted_execution_cluster(client: Client) -> Result<TrustedExec
          Ensure that this service is in the same namespace as the TrustedExecutionCluster."
     );
     cluster.and_then(|c| c.ok_or(err))
+}
+
+/// True when the Deployment's desired generation is fully rolled out: the controller has
+/// observed the spec, no old replicas remain, and every updated replica is available.
+pub fn deployment_rollout_complete(depl: &Deployment) -> bool {
+    let Some(status) = depl.status.as_ref() else {
+        return false;
+    };
+    let generation_seen =
+        status.observed_generation.unwrap_or(0) >= depl.metadata.generation.unwrap_or(0);
+    let desired = depl.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1);
+    let replicas = status.replicas.unwrap_or(0);
+    let updated = status.updated_replicas.unwrap_or(0);
+    let available = status.available_replicas.unwrap_or(0);
+    generation_seen && updated >= desired && replicas <= updated && available >= updated
+}
+
+/// Waits until `deployment_rollout_complete` for the named Deployment, or errors after `timeout_duration`.
+pub async fn wait_for_deployment_rollout(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+    timeout_duration: Duration,
+) -> Result<()> {
+    let deployments: Api<Deployment> = Api::namespaced(client.clone(), namespace);
+    let done = await_condition(deployments, name, |d: Option<&Deployment>| {
+        d.is_some_and(deployment_rollout_complete)
+    });
+    let ctx = format!("waiting {timeout_duration:?} for Deployment '{name}' rollout");
+    tokio::time::timeout(timeout_duration, done)
+        .await
+        .context(ctx)??;
+    Ok(())
+}
+
+/// Waits until the named resource no longer exists, or errors after `timeout_duration`.
+pub async fn wait_for_resource_deleted<K>(
+    api: &Api<K>,
+    name: &str,
+    timeout_duration: Duration,
+) -> Result<()>
+where
+    K: Resource<DynamicType = ()> + Clone + std::fmt::Debug + Send + 'static,
+    K: k8s_openapi::serde::de::DeserializeOwned,
+{
+    let deleted = |r: Option<&K>| r.is_none();
+    let done = await_condition(api.clone(), name, deleted);
+    let type_ = std::any::type_name::<K>();
+    let ctx = format!("waiting {timeout_duration:?} for {type_} '{name}' deletion");
+    tokio::time::timeout(timeout_duration, done)
+        .await
+        .context(ctx)??;
+    Ok(())
 }
 
 #[cfg(test)]

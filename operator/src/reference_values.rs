@@ -209,6 +209,25 @@ async fn compute_fresh_pcrs(client: Client, image: &ApprovedImage) -> anyhow::Re
     Ok(())
 }
 
+/// Delete the compute-pcrs Job for `boot_image`, if it exists, so it can be re-created.
+pub async fn delete_compute_pcrs_job(client: &Client, boot_image: &str) -> Result<()> {
+    let job_name = get_job_name(boot_image)?;
+    let jobs: Api<Job> = Api::default_namespaced(client.clone());
+    // Blocking Foreground deletion so that, once the Job object is gone, its Pods is guaranteed gone too.
+    // We need to wait for the deletion to complete before returning, so the caller can safely re-create the new job with the same deterministic Job name.
+    match jobs.delete(&job_name, &DeleteParams::foreground()).await {
+        Ok(_) => info!("Deleting compute-pcrs Job {job_name}"),
+        Err(kube::Error::Api(ae)) if ae.code == 404 => {
+            info!("compute-pcrs Job {job_name} does not exist, nothing to delete");
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    }
+    wait_for_resource_deleted(&jobs, &job_name, Duration::from_secs(120)).await?;
+    info!("Deleted compute-pcrs Job {job_name}");
+    Ok(())
+}
+
 async fn adopt_approved_image(
     client: Client,
     image_name: &str,

@@ -185,7 +185,7 @@ async fn test_vm_reboot_delete_machine() -> anyhow::Result<()> {
     let list = machines.list(&Default::default()).await?;
     let name = list.items[0].metadata.name.as_ref().unwrap();
     machines.delete(name, &Default::default()).await?;
-    wait_for_resource_deleted(&machines, name, scaled_timeout(120)).await?;
+    wait_for_resource_deleted(&machines, name, scaled_duration(120)).await?;
 
     test_ctx.info("Performing reboot, expecting missing resource");
     let boot_id = att_ctx.backend.get_boot_id().await?;
@@ -316,7 +316,7 @@ async fn test_attestation_events() -> anyhow::Result<()> {
 
     test_ctx.info(format!("Deleting Machine {machine_name} to trigger KeyRevoked"));
     machines.delete(machine_name, &Default::default()).await?;
-    wait_for_resource_deleted(&machines, machine_name, scaled_timeout(120)).await?;
+    wait_for_resource_deleted(&machines, machine_name, scaled_duration(120)).await?;
 
     wait_for_event(client, namespace, machine_name, "KeyRevoked", scaled_timeout(60)).await?;
     test_ctx.info("Event KeyRevoked verified");

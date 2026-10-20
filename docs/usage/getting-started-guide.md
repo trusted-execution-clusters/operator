@@ -151,4 +151,4 @@ The attestation failing can be debugged by verifying the deployment of trustee.
 kubectl logs -n trusted-execution-clusters <trustee-deplyoment>
 ```
 
-In the logs, trustee prints the content of the TPM PCR registers. They need to match with the reference values present in the configmap `trustee-data` under `reference-values.json`.
+In the logs, trustee prints the content of the TPM PCR registers. They need to match with the reference values present in the the trustee pod.

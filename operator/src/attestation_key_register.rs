@@ -24,7 +24,9 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use trusted_cluster_operator_lib::conditions::ATTESTATION_KEY_MACHINE_APPROVE;
 use trusted_cluster_operator_lib::endpoints::*;
-use trusted_cluster_operator_lib::{AttestationKey, Machine, record_event};
+use trusted_cluster_operator_lib::{
+    ATTESTATION_KEY_SECRET_FINALIZER, AttestationKey, Machine, record_event,
+};
 
 use crate::conditions::{attestation_key_approved_condition, machine_ak_approved_condition};
 use crate::trustee;
@@ -34,8 +36,6 @@ use operator::{
 };
 
 const INTERNAL_ATTESTATION_KEY_REGISTER_PORT: i32 = 8001;
-const ATTESTATION_KEY_SECRET_FINALIZER: &str =
-    "trusted-execution-clusters.io/attestationkey-secret-finalizer";
 const ATTESTATION_KEY_LABEL_VALUE: &str = "attestationkey";
 
 pub async fn create_attestation_key_register_deployment(

@@ -60,7 +60,7 @@ When the operator detects a new Machine object, it automatically provisions secr
 #### Secret Provisioning Process
 
 - Creates Kubernetes owner reference linking the secret to the Machine object
-  - Ensures proper garbage collection when Machine is deleted
+- Ensures proper garbage collection when Machine is deleted
 - Generates a LUKS encryption key for the node
 - Creates a Kubernetes Secret containing the LUKS key
 - Secret is namespaced and linked to the specific Machine object
@@ -104,7 +104,7 @@ The AK registration is coordinated with Machine registration:
 
 The calculation of the reference values is covered in details in [reference-values](docs/design/reference-values.md). 
 
-The result of the operation is stored in the configmaps *image-pcrs*, and then mounted in the Trustee deployment as reference value repository. This configmap is unique and multiple approved images and reference values are included here.
+The result of the operation is stored in each approved image status field, and reference values are updated in trustee via sync API.
 
 
 ### Trustee deployment

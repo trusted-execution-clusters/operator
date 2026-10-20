@@ -9,11 +9,11 @@ use fs_extra::dir;
 use glob::glob;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{
-    LoadBalancerStatus, Namespace, Secret, Service, ServicePort, ServiceSpec, ServiceStatus,
+    LoadBalancerStatus, Namespace, Pod, Secret, Service, ServicePort, ServiceSpec, ServiceStatus,
 };
 use k8s_openapi::api::events::v1::Event;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
-use kube::api::{DeleteParams, ListParams, ObjectMeta, Patch};
+use kube::api::{DeleteParams, ListParams, ObjectMeta, Patch, PatchParams};
 use kube::runtime::wait::{await_condition, conditions::is_created};
 use kube::{Api, Client};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -25,11 +25,19 @@ use tokio::time::timeout;
 use trusted_cluster_operator_lib::certificates::{
     Certificate, CertificateIssuerRef, CertificateSpec, CertificateStatus,
 };
-use trusted_cluster_operator_lib::conditions::COMMITTED_CONDITION;
+use trusted_cluster_operator_lib::conditions::{
+    COMMITTED_CONDITION, COMMITTED_REASON, INSTALLED_CONDITION, INSTALLED_REASON,
+};
 use trusted_cluster_operator_lib::issuers::{Issuer, IssuerCa, IssuerSpec};
 
-use trusted_cluster_operator_lib::{ApprovedImage, ApprovedImageStatus, AttestationKey, Machine};
+use trusted_cluster_operator_lib::{
+    ATTESTATION_KEY_SECRET_FINALIZER, ApprovedImage, ApprovedImageStatus,
+    ApprovedImageStatusPcrsEvents, AttestationKey, Machine, has_condition,
+};
 use trusted_cluster_operator_lib::{TrustedExecutionCluster, endpoints::*, images::*};
+pub use trusted_cluster_operator_lib::{
+    deployment_rollout_complete, wait_for_deployment_rollout, wait_for_resource_deleted,
+};
 
 pub mod timer;
 pub use timer::Poller;
@@ -62,6 +70,7 @@ const ATT_REG_SECRET: &str = "att-reg-secret";
 const REG_CERT: &str = "reg-srv-cert";
 const TRUSTEE_CERT: &str = "trustee-cert";
 const ATT_REG_CERT: &str = "att-reg-cert";
+pub const OPERATOR_DEPLOYMENT: &str = "trusted-cluster-operator";
 
 pub fn compare_pcrs(actual: &[Pcr], expected: &[Pcr]) -> bool {
     if actual.len() != expected.len() {
@@ -75,6 +84,14 @@ pub fn compare_pcrs(actual: &[Pcr], expected: &[Pcr]) -> bool {
     }
 
     true
+}
+
+// Builds a `{REGISTRY}/{component}:{TAG}` image reference from the `REGISTRY`/`TAG` env vars.
+// defaults registry to localhost:5000 and tag to latest.
+pub fn default_image(component: &str) -> String {
+    let registry = env::var("REGISTRY").unwrap_or_else(|_| "localhost:5000".to_string());
+    let tag = env::var("TAG").unwrap_or_else(|_| "latest".to_string());
+    format!("{registry}/{component}:{tag}")
 }
 
 fn timeout_multiplier() -> f64 {
@@ -487,6 +504,17 @@ impl TestContext {
         delayed_approved_image: bool,
         approved_images: &[(&str, &str)],
     ) -> Result<Self> {
+        Self::new_with_image_overrides(test_name, delayed_approved_image, approved_images, &[])
+            .await
+    }
+
+    // Helper function to create a test context with image overrides. Useful for testing different image tags and versions in the same test, required for operator upgrade tests.
+    pub async fn new_with_image_overrides(
+        test_name: &str,
+        delayed_approved_image: bool,
+        approved_images: &[(&str, &str)],
+        container_image_overrides: &[(&str, &str)],
+    ) -> Result<Self> {
         INIT.call_once(|| {
             let _ = env_logger::builder().is_test(true).try_init();
         });
@@ -507,7 +535,8 @@ impl TestContext {
         ctx.manifests_dir = manifests_dir;
 
         ctx.create_namespace().await?;
-        ctx.apply_operator_manifests(approved_images).await?;
+        ctx.apply_operator_manifests(approved_images, container_image_overrides)
+            .await?;
 
         test_info!(&ctx.test_name, "Execute test in the namespace {namespace}");
 
@@ -533,17 +562,26 @@ impl TestContext {
     pub async fn cleanup(&self) -> Result<()> {
         self.delete_trusted_execution_cluster().await?;
         let timeout = scaled_duration(60);
+        self.info("Checking for resources and finalizer secrets");
         let msg = format!("Resources were left behind after {timeout:?}");
         let poller = Poller::new().with_timeout(timeout).with_error_message(msg);
         let chk = || async move {
             self.check_no_resources::<AttestationKey>().await?;
             self.check_no_resources::<ApprovedImage>().await?;
             self.check_no_resources::<Machine>().await?;
+            // Prevents namespace deletion until these finalizers are also removed.
+            self.check_no_finalizer_secrets().await?;
             Ok::<_, anyhow::Error>(())
         };
         poller.poll_async(chk).await?;
+        self.info("Checks completed: No resources or finalizer secrets found");
         self.cleanup_namespace().await?;
+        self.info(format!("Namespace {} deleted", self.test_namespace));
         self.cleanup_manifests_dir()?;
+        self.info(format!(
+            "Manifests directory {} deleted",
+            self.manifests_dir
+        ));
         Ok(())
     }
 
@@ -578,6 +616,26 @@ impl TestContext {
         Ok(())
     }
 
+    async fn check_no_finalizer_secrets(&self) -> Result<()> {
+        let api: Api<Secret> = Api::namespaced(self.client.clone(), &self.test_namespace);
+        for secret in api.list(&Default::default()).await? {
+            let name = secret.metadata.name.as_deref().unwrap_or("?");
+            let has_ak_finalizer = secret
+                .metadata
+                .finalizers
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .any(|f| f == ATTESTATION_KEY_SECRET_FINALIZER);
+            if has_ak_finalizer {
+                return Err(anyhow!(
+                    "Secret {name} still has {ATTESTATION_KEY_SECRET_FINALIZER}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     async fn delete_trusted_execution_cluster(&self) -> Result<()> {
         let tec_api: Api<TrustedExecutionCluster> =
             Api::namespaced(self.client.clone(), &self.test_namespace);
@@ -591,7 +649,7 @@ impl TestContext {
                 tec_api.delete(name, &dp).await?;
 
                 // Wait for the resource to be deleted
-                wait_for_resource_deleted(&tec_api, name, scaled_timeout(120)).await?;
+                wait_for_resource_deleted(&tec_api, name, scaled_duration(120)).await?;
                 self.info(format!("TrustedExecutionCluster {name} has been deleted"));
             }
         }
@@ -606,8 +664,8 @@ impl TestContext {
         match namespace_api.get(&self.test_namespace).await {
             Ok(_) => {
                 namespace_api.delete(&self.test_namespace, &dp).await?;
-                let timeout = scaled_timeout(300);
-                wait_for_resource_deleted(&namespace_api, &self.test_namespace, timeout).await?;
+                let duration = scaled_duration(300);
+                wait_for_resource_deleted(&namespace_api, &self.test_namespace, duration).await?;
                 self.info(format!("Deleted namespace {}", self.test_namespace));
             }
             Err(kube::Error::Api(ae)) if ae.code == 404 => {
@@ -636,32 +694,65 @@ impl TestContext {
         Ok(())
     }
 
-    pub async fn wait_for_deployment_ready(
+    /// Sets an env var on the operator Deployment, waits for the rollout, and waits for the old pod to fully terminate.
+    pub async fn set_operator_related_image(
         &self,
-        deployments_api: &Api<Deployment>,
-        deployment_name: &str,
-        timeout_secs: u64,
+        deployments: &Api<Deployment>,
+        env_name: &str,
+        image: &str,
     ) -> Result<()> {
-        test_info!(
-            &self.test_name,
-            "Waiting for deployment {} to be ready",
-            deployment_name
-        );
-        let has_available_replica = |d: Option<&Deployment>| {
-            d.and_then(|d| d.status.as_ref())
-                .and_then(|s| s.available_replicas)
-                .is_some_and(|r| r >= 1)
+        let patch = json!({
+            "spec": {
+                "template": {
+                    "spec": {
+                        "containers": [{
+                            "name": OPERATOR_DEPLOYMENT,
+                            "env": [{
+                                "name": env_name,
+                                "value": image
+                            }]
+                        }]
+                    }
+                }
+            }
+        });
+        deployments
+            .patch(
+                OPERATOR_DEPLOYMENT,
+                &PatchParams::apply("test-utils"),
+                &Patch::Strategic(patch),
+            )
+            .await?;
+
+        wait_for_deployment_rollout(
+            &self.client,
+            &self.test_namespace,
+            OPERATOR_DEPLOYMENT,
+            scaled_duration(120),
+        )
+        .await?;
+
+        // check for deletion timestamp on the old pod.
+        let pods: Api<Pod> = Api::namespaced(self.client.clone(), self.namespace());
+        let lp = ListParams::default().labels("app=trusted-cluster-operator");
+        let wait_old = async {
+            loop {
+                let list = pods.list(&lp).await?;
+                let alive = list
+                    .items
+                    .iter()
+                    .filter(|p| p.metadata.deletion_timestamp.is_none())
+                    .count();
+                if alive == 1 && list.items.len() == 1 {
+                    // no deletion timestamp and only 1 single new pod.
+                    break anyhow::Ok(());
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
         };
-        let done = await_condition(
-            deployments_api.clone(),
-            deployment_name,
-            has_available_replica,
-        );
-        timeout(Duration::from_secs(timeout_secs), done)
+        timeout(scaled_duration(60), wait_old)
             .await
-            .context(format!(
-            "{deployment_name} deployment does not have 1 available replica after {timeout_secs} seconds"
-        ))??;
+            .context("old operator pod should terminate after rollout")??;
         Ok(())
     }
 
@@ -767,6 +858,7 @@ impl TestContext {
         &self,
         workspace_root: &PathBuf,
         approved_images: &[(&str, &str)],
+        container_image_overrides: &[(&str, &str)],
     ) -> Result<(PathBuf, PathBuf)> {
         let ns = self.test_namespace.clone();
         let controller_gen_pattern = workspace_root.join("bin/controller-gen-*");
@@ -811,20 +903,37 @@ impl TestContext {
                 trusted_cluster_gen_path.display()
             ));
         }
-        let repo = env::var("REGISTRY").unwrap_or_else(|_| "localhost:5000".to_string());
-        let tag = env::var("TAG").unwrap_or_else(|_| "latest".to_string());
-        let trustee_image = get_env("TRUSTEE_IMAGE")?;
+        // lookup the image for the given key, if no value, then fall back to the component and fail_if_no_default boolean is set, then if the value is not found, this will function will throw an error.
+        let lookup = |key: &str, component: &str, fail_if_no_default: bool| -> Result<String> {
+            let overridden = container_image_overrides
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.to_string());
+            if let Some(v) = overridden {
+                return Ok(v);
+            }
+            if fail_if_no_default {
+                get_env(key)
+            } else {
+                Ok(env::var(key).unwrap_or_else(|_| default_image(component)))
+            }
+        };
+        let trustee_image = lookup("TRUSTEE_IMAGE", "", true)?;
         let approved_image = get_env("APPROVED_IMAGE")?;
 
         let mut args = vec!["-namespace", &ns, "-output-dir", &self.manifests_dir];
-        let operator_img = env::var("OPERATOR_IMAGE")
-            .unwrap_or_else(|_| format!("{repo}/trusted-cluster-operator:{tag}"));
-        let compute_pcrs_img = env::var(RELATED_IMAGE_COMPUTE_PCRS)
-            .unwrap_or_else(|_| format!("{repo}/compute-pcrs:{tag}"));
-        let reg_srv_img = env::var(RELATED_IMAGE_REGISTRATION_SERVER)
-            .unwrap_or_else(|_| format!("{repo}/registration-server:{tag}"));
-        let att_reg_img = env::var(RELATED_IMAGE_ATTESTATION_KEY_REGISTER)
-            .unwrap_or_else(|_| format!("{repo}/attestation-key-register:{tag}"));
+        let operator_img = lookup("OPERATOR_IMAGE", "trusted-cluster-operator", false)?;
+        let compute_pcrs_img = lookup(RELATED_IMAGE_COMPUTE_PCRS, "compute-pcrs", false)?;
+        let reg_srv_img = lookup(
+            RELATED_IMAGE_REGISTRATION_SERVER,
+            "registration-server",
+            false,
+        )?;
+        let att_reg_img = lookup(
+            RELATED_IMAGE_ATTESTATION_KEY_REGISTER,
+            "attestation-key-register",
+            false,
+        )?;
         args.extend(&["-image", &operator_img]);
         args.extend(&["-pcrs-compute-image", &compute_pcrs_img]);
         args.extend(&["-trustee-image", &trustee_image]);
@@ -848,7 +957,11 @@ impl TestContext {
         Ok((crd_temp_dir, rbac_temp_dir))
     }
 
-    async fn apply_operator_manifests(&self, approved_images: &[(&str, &str)]) -> Result<()> {
+    async fn apply_operator_manifests(
+        &self,
+        approved_images: &[(&str, &str)],
+        container_image_overrides: &[(&str, &str)],
+    ) -> Result<()> {
         let manifests_dir = &self.manifests_dir;
         self.info(format!("Generating manifests in {manifests_dir}"));
         let workspace_root = env::var(UPSTREAM_DIR_ENV)
@@ -856,7 +969,7 @@ impl TestContext {
             .map(PathBuf::from)
             .unwrap_or(env::current_dir()?.join(".."));
         let (crd_temp_dir, rbac_temp_dir) = self
-            .generate_manifests(&workspace_root, approved_images)
+            .generate_manifests(&workspace_root, approved_images, container_image_overrides)
             .await?;
         self.info("Manifests generated successfully");
 
@@ -1010,15 +1123,19 @@ impl TestContext {
             );
         }
 
-        let depls: Api<Deployment> = Api::namespaced(self.client.clone(), ns);
         for depl in [
             "trusted-cluster-operator",
             REGISTER_SERVER_DEPLOYMENT,
             TRUSTEE_DEPLOYMENT,
             ATTESTATION_KEY_REGISTER_DEPLOYMENT,
         ] {
-            self.wait_for_deployment_ready(&depls, depl, scaled_timeout(300))
-                .await?;
+            wait_for_deployment_rollout(
+                &self.client,
+                &self.test_namespace,
+                depl,
+                scaled_duration(300),
+            )
+            .await?;
         }
 
         let svc = ATTESTATION_KEY_REGISTER_SERVICE;
@@ -1057,6 +1174,7 @@ impl TestContext {
 
         let info = format!("Waiting for ApprovedImage {APPROVED_IMAGE_NAME} to be Committed");
         self.info(info);
+
         let images: Api<ApprovedImage> = Api::namespaced(self.client.clone(), ns);
         let image_ready = |img: Option<&ApprovedImage>| {
             let chk_cond = |c: &Condition| c.type_ == COMMITTED_CONDITION && c.status == "True";
@@ -1071,6 +1189,9 @@ impl TestContext {
             constants::APPROVED_IMAGE_NAME
         );
         timeout(scaled_duration(300), done).await.context(ctx)??;
+
+        let tec_api: Api<TrustedExecutionCluster> = Api::namespaced(self.client.clone(), ns);
+        wait_for_install(&tec_api, constants::TEC_NAME).await?;
         Ok(())
     }
 
@@ -1170,7 +1291,16 @@ macro_rules! virt_test {
 macro_rules! setup {
     () => {{ $crate::TestContext::new(TEST_NAME, false, &[]) }};
     (delayed_approved_image) => {{ $crate::TestContext::new(TEST_NAME, true, &[]) }};
-    ($images:expr) => {{ $crate::TestContext::new(TEST_NAME, false, &$images) }};
+    ($approved_images:expr) => {{ $crate::TestContext::new(TEST_NAME, false, &$approved_images) }};
+    (container_images: $overrides:expr) => {{ $crate::TestContext::new_with_image_overrides(TEST_NAME, false, &[], &$overrides) }};
+    ($approved_images:expr, container_images: $overrides:expr) => {{
+        $crate::TestContext::new_with_image_overrides(
+            TEST_NAME,
+            false,
+            &$approved_images,
+            &$overrides,
+        )
+    }};
 }
 
 async fn setup_test_client() -> Result<Client> {
@@ -1201,22 +1331,106 @@ where
     Ok(())
 }
 
-pub async fn wait_for_resource_deleted<K>(
-    api: &Api<K>,
-    resource_name: &str,
-    timeout_secs: u64,
-) -> Result<()>
-where
-    K: kube::Resource<DynamicType = ()> + Clone + std::fmt::Debug + Send + 'static,
-    K: k8s_openapi::serde::de::DeserializeOwned,
-{
-    let deleted = |r: Option<&K>| r.is_none();
-    let done = await_condition(api.clone(), resource_name, deleted);
-    let type_ = std::any::type_name::<K>();
-    let ctx = format!("waiting {timeout_secs} for {type_} '{resource_name}' deletion");
-    let duration = Duration::from_secs(timeout_secs);
-    timeout(duration, done).await.context(ctx)??;
+// Shared test helpers used across multiple integration test files.
+
+/// Returns the first container's image from a Deployment.
+pub fn deployment_image(depl: &Deployment) -> Option<String> {
+    depl.spec
+        .as_ref()
+        .and_then(|s| s.template.spec.as_ref())
+        .and_then(|ps| ps.containers.first())
+        .and_then(|c| c.image.clone())
+}
+
+/// Returns a closure that is true when the TEC has the given condition type and reason.
+pub fn tec_has_condition_reason(
+    type_: &'static str,
+    reason: &'static str,
+) -> impl Fn(Option<&TrustedExecutionCluster>) -> bool {
+    move |tec: Option<&TrustedExecutionCluster>| {
+        tec.is_some_and(|t| has_condition(&t.status, type_, reason))
+    }
+}
+
+/// True when the ApprovedImage has a `Committed` condition.
+pub fn approved_image_has_committed_condition(img: Option<&ApprovedImage>) -> bool {
+    img.is_some_and(|i| has_condition(&i.status, COMMITTED_CONDITION, COMMITTED_REASON))
+}
+
+/// True when the ApprovedImage status contains at least one PCR entry.
+pub fn approved_image_has_pcrs(img: Option<&ApprovedImage>) -> bool {
+    img.and_then(|i| i.status.as_ref())
+        .and_then(|s| s.pcrs.as_ref())
+        .is_some_and(|pcrs| !pcrs.is_empty())
+}
+
+/// Waits for the TEC to reach the `Installed=True` condition, with a timeout.
+pub async fn wait_for_install(
+    tec_api: &Api<TrustedExecutionCluster>,
+    name: &str,
+) -> anyhow::Result<()> {
+    let done = await_condition(
+        tec_api.clone(),
+        name,
+        tec_has_condition_reason(INSTALLED_CONDITION, INSTALLED_REASON),
+    );
+    timeout(scaled_duration(120), done)
+        .await
+        .context("waiting for initial install")??;
     Ok(())
+}
+
+/// Triggers an upgrade by clearing the observedOperatorVersion on the TEC status.
+/// The operator will detect a version mismatch and enter the upgrade branch.
+pub async fn trigger_upgrade(
+    tec_api: &Api<TrustedExecutionCluster>,
+    name: &str,
+) -> anyhow::Result<()> {
+    let patch = json!({ "status": { "observedOperatorVersion": null } });
+    tec_api
+        .patch_status(name, &PatchParams::default(), &Patch::Merge(patch))
+        .await?;
+    Ok(())
+}
+
+/// Waits up to `secs` seconds for the named ApprovedImage to be committed and have non-empty PCR data in its status.
+pub async fn wait_for_committed_with_pcrs(
+    images: &Api<ApprovedImage>,
+    name: &str,
+    secs: u64,
+) -> anyhow::Result<()> {
+    let done = await_condition(images.clone(), name, |img: Option<&ApprovedImage>| {
+        approved_image_has_committed_condition(img) && approved_image_has_pcrs(img)
+    });
+    timeout(scaled_duration(secs), done)
+        .await
+        .context(format!("waiting for {name} committed with PCRs"))??;
+    Ok(())
+}
+
+/// Returns each PCR register's id alongside its events from the ApprovedImage status.
+pub fn extract_events(img: &ApprovedImage) -> Vec<(i64, Vec<ApprovedImageStatusPcrsEvents>)> {
+    img.status
+        .as_ref()
+        .and_then(|s| s.pcrs.as_ref())
+        .map(|pcrs| {
+            pcrs.iter()
+                .map(|p| {
+                    let events = p.events.clone().unwrap_or_default();
+                    (p.id, events)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Returns each PCR register's id alongside its hex-encoded value from the ApprovedImage status.
+pub fn extract_pcr_vals(img: &ApprovedImage) -> Vec<(i64, String)> {
+    img.status
+        .as_ref()
+        .and_then(|s| s.pcrs.as_ref())
+        .map(|pcrs| pcrs.iter().map(|p| (p.id, p.value.clone())).collect())
+        .unwrap_or_default()
 }
 
 pub async fn wait_for_event(

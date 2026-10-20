@@ -12,6 +12,16 @@ pub const KNOWN_TRUSTEE_ADDRESS_CONDITION: &str = "KnownTrusteeAddress";
 pub const KNOWN_TRUSTEE_ADDRESS_REASON: &str = "AddressFound";
 pub const UNKNOWN_TRUSTEE_ADDRESS_REASON: &str = "NoAddressFound";
 
+// Upgrade conditions
+pub const UPGRADE_CONDITION: &str = "Upgrade";
+pub const UPGRADE_IN_PROGRESS: &str = "InProgress";
+pub const UPGRADE_COMPLETE: &str = "Complete";
+pub const UPGRADE_FAILED: &str = "Failed";
+
+// Upgrade conditions for dependencies.
+pub const TRUSTEE_UPGRADE_CONDITION: &str = "TrusteeUpgrade";
+pub const RELATED_IMAGES_UPGRADE_CONDITION: &str = "RelatedImagesUpgrade";
+
 pub const COMMITTED_CONDITION: &str = "Committed";
 pub const COMMITTED_REASON: &str = "ImageCommitted";
 pub const NOT_COMMITTED_REASON_COMPUTING: &str = "Computing";

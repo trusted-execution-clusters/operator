@@ -4,11 +4,11 @@
 
 module io/trustedexecutioncluster
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/cert-manager/cert-manager v1.20.4
-	github.com/mikefarah/yq/v4 v4.53.6
+	github.com/mikefarah/yq/v4 v4.54.1
 	github.com/projectcalico/api v0.0.0-20251022175904-f2ab03771208
 	k8s.io/api v0.35.9
 	k8s.io/apimachinery v0.35.9
@@ -39,15 +39,15 @@ require (
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/pprof v0.0.0-20260115054156-294ebfa9ad83 // indirect
-	github.com/hashicorp/hcl/v2 v2.24.0 // indirect
+	github.com/hashicorp/hcl/v2 v2.25.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jinzhu/copier v0.4.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/magiconair/properties v1.18.11 // indirect
+	github.com/magiconair/properties v1.18.12 // indirect
 	github.com/mailru/easyjson v0.9.1 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mitchellh/go-wordwrap v1.0.1 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
@@ -60,11 +60,11 @@ require (
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.6 // indirect
-	golang.org/x/mod v0.40.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/mod v0.41.0 // indirect
+	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/tools v0.49.0 // indirect
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect

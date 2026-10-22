@@ -10,6 +10,9 @@ description = "Definitions shared across operator, compute-pcrs and register-ser
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+openshift = []
+
 [dependencies]
 anyhow.workspace = true
 compute-pcrs-lib.workspace = true
@@ -17,6 +20,7 @@ hex.workspace = true
 k8s-openapi.workspace = true
 kube.workspace = true
 log.workspace = true
+openssl.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

@@ -79,9 +79,14 @@ CRD_YAML_PATH = config/crd
 CRD_WORK_PATH = config/crd/tmp
 RBAC_YAML_PATH = config/rbac
 API_PATH = api/v1alpha1
+# for use in shell expansion inside $(call ...)
+COMMA = ,
 generate: $(CONTROLLER_GEN)
 	$(call controller-gen,./api/...,*)
 	$(call controller-gen,github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1,*)
+
+generate-openshift: $(CONTROLLER_GEN)
+	$(call controller-gen,github.com/openshift/api/machineconfiguration/v1,machineconfiguration.openshift.io_machineconfig{s$(COMMA)pools}.yaml)
 
 RS_LIB_PATH = lib/src
 CRD_RS_PATH = $(RS_LIB_PATH)/kopium
@@ -89,8 +94,8 @@ $(CRD_RS_PATH):
 	mkdir $(CRD_RS_PATH)
 
 $(CRD_RS_PATH)/%.rs: $(CRD_YAML_PATH)/*_%.yaml $(KOPIUM) $(CRD_RS_PATH)
-	$(KOPIUM) -f $< $$(grep -Eq '(certificates|issuers)' <<< $< && echo --derive Default) > $@
-	sed -i 'N; s/, Default)\]\n\(pub struct CertificateAdditionalOutputFormats\)/)]\n\1/; P; D' $@
+	$(KOPIUM) -f $< $$(grep -Eq '(certificates|issuers|machineconfig(pool)?s)' <<< $< && echo --derive Default) > $@
+	sed -Ei 'N; s/, Default\)\]\n(pub struct (CertificateAdditionalOutputFormats|MachineConfigPoolStatusPoolSynchronizersStatus))/)]\n\1/; P; D' $@
 	rustfmt $@
 
 crds-rs: generate $(KOPIUM) $(CRD_RS_PATH)
@@ -249,6 +254,10 @@ test: crds-rs
 
 test-release: crds-rs
 	cargo test --workspace --bins --lib --release
+
+test-all-features: generate-openshift
+	$(MAKE) crds-rs
+	cargo test --workspace --bins --lib --all-features
 
 INTEGRATION_TEST_ENV = RUST_LOG=info REGISTRY=$(REGISTRY) TAG=$(TAG) \
 	TRUSTEE_IMAGE=$(TRUSTEE_IMAGE) APPROVED_IMAGE=$(APPROVED_IMAGE) TEST_IMAGE=$(TEST_IMAGE)

@@ -19,10 +19,9 @@ use k8s_openapi::apimachinery::pkg::{
     apis::meta::v1::{LabelSelector, OwnerReference},
     util::intstr::IntOrString,
 };
-use kube::api::ObjectMeta;
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::{reflector::ObjectRef, watcher};
-use kube::{Api, Client, Resource};
+use kube::{Api, Client, api::ObjectMeta};
 use log::{info, warn};
 
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
@@ -454,8 +453,7 @@ pub async fn generate_secret(
         data: Some(data),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, Secret, secret);
-    Ok(())
+    create_or_info_if_exists(client, &secret).await
 }
 
 pub async fn generate_trustee_auth_keys_secret(
@@ -483,8 +481,7 @@ pub async fn generate_trustee_auth_keys_secret(
         data: Some(data),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, Secret, secret);
-    Ok(())
+    create_or_info_if_exists(client, &secret).await
 }
 
 fn generate_kbs_config(has_certificate: bool) -> Result<String> {
@@ -530,8 +527,7 @@ pub async fn generate_trustee_data(
         data: Some(data),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, ConfigMap, config_map);
-    Ok(())
+    create_or_info_if_exists(client, &config_map).await
 }
 
 pub async fn generate_kbs_service(
@@ -560,8 +556,7 @@ pub async fn generate_kbs_service(
         }),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, Service, service);
-    Ok(())
+    create_or_info_if_exists(client, &service).await
 }
 
 fn generate_kbs_volume_templates() -> [(&'static str, &'static str, Volume); 3] {
@@ -692,8 +687,7 @@ pub async fn generate_kbs_deployment(
         }),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, Deployment, deployment);
-    Ok(())
+    create_or_info_if_exists(client, &deployment).await
 }
 
 #[cfg(test)]

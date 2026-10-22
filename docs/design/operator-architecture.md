@@ -31,7 +31,7 @@ The operator deploys a registration server in the cluster that serves as the ent
 2. **UUID Generation**: Generates unique identifiers for each registering machine
 3. **Machine Object Creation**: Creates Machine custom resources in Kubernetes for each registered node
 
-The registration flow is initiated when a node boots with an initial Ignition configuration containing a merge directive pointing to the registration service endpoint (e.g., `http://register-server:8000/ignitioni-clevis-pin-trustee`).
+The registration flow is initiated when a node boots with an initial Ignition configuration containing a merge directive pointing to the registration service endpoint (e.g., `http://register-server:8000/ignition-clevis-pin-trustee`).
 
 A machine can be also manually registered by the admin, but then the Ignition produced by the operator, needs to be configured manually in the upcoming machine.
 
@@ -79,7 +79,7 @@ The operator implements a comprehensive attestation key (AK) registration system
 
 The AK registration is coordinated with Machine registration:
 
-**During First Boot (handled by Ignition)**
+**During First Boot (handled by clevis-pin-trustee)**
 1. Ignition checks if `/var/tpm/ak.pub` exists
 2. If not present, generates a new AK in the TPM
 3. Contacts the operator's AK registration endpoint (e.g., `https://attestation-key-register:8001/register-ak`)

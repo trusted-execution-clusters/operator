@@ -95,8 +95,7 @@ $(CRD_RS_PATH):
 	mkdir $(CRD_RS_PATH)
 
 $(CRD_RS_PATH)/%.rs: $(CRD_YAML_PATH)/*_%.yaml $(KOPIUM) $(CRD_RS_PATH)
-	$(KOPIUM) -f $< $$(grep -Eq '(certificates|issuers)' <<< $< && echo --derive Default) > $@
-	sed -i 'N; s/, Default)\]\n\(pub struct CertificateAdditionalOutputFormats\)/)]\n\1/; P; D' $@
+	$(KOPIUM) -D Default --smart-derive-elision -f $< > $@
 	rustfmt $@
 
 crds-rs: generate $(KOPIUM) $(CRD_RS_PATH)

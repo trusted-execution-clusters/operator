@@ -4822,6 +4822,7 @@ dependencies = [
  "kopium",
  "kube 4.2.0",
  "log",
+ "openssl",
  "serde",
  "serde_json",
  "strum 0.28.0",

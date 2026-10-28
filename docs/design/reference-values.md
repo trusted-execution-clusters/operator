@@ -8,18 +8,9 @@ In the design of Trusted Execution Clusters, the OS is represented by a bootable
 
 This document describes how a bootable image tag becomes approved and revoked, and how the set of approved image tags is turned into reference values to be used by Trustee's [reference value provider service](https://github.com/confidential-containers/trustee/tree/main/rvps).
 
-## Dual source for approved images: MachineConfigs & kubectl interaction
+## The ApprovedImage CRD
 
-In OpenShift, updates to nodes are defined using Kubernetes resources.
-The `MachineConfig` CR can be applied to e.g. define the bootable image reference which nodes classified by some selector should use.
-Target machine configs are then referenced to in `MachineConfigPools`.
-Because such explicit updates are assumed to be intended by the cluster administrator, the Trusted Execution Clusters operator can watch the MachineConfigPools and set the images that they reference as approved.
-
-However, kubectl interaction is also supported, both for avoiding reliance on OpenShift and for manual intervention.
-
-## Split data store: CRD for approved images, ConfigMap for PCR parts
-
-For better interaction with kubectl, approved images are specified as a very simple custom resource:
+Approved images are specified as a very simple custom resource:
 
 ```yaml
 apiVersion: trusted-execution-clusters.io/v1alpha1
@@ -64,7 +55,6 @@ status:
   
 ```
 
-When images are read from the MachineConfigs, their CRs are given an RFC1035-compliant unique name derived from the image URL, such as `3c2052768d-quay-io-okd-scos-content-3813e6608a999756931d3d6219` for `quay.io/okd/scos-content:3813e6608a999756931d3d621932af9662860e71a552b2670f9fe320bf0d3585`
 The `creationDate` on this CR can also be used to define a CronJob to create a TTL mechanism for images.
 
 However, for efficient operation, the operator must cache the PCR parts and values that each image has. Internally, this is stored in the ApprovedImage status field, as outlined above.
@@ -97,6 +87,11 @@ A reference value listing for Trustee could then look like this:
   ...
 ]
 ```
+
+## OpenShift MachineConfig detection
+
+When the operator is compiled with the `openshift` feature, it automatically creates ApprovedImages for all the `osImageURL`s of MachineConfigs that are in scope of a MachineConfigPool with the label `trusted-execution-clusters.io/autocreate-approved-images`.
+These images are not removed automatically.
 
 ## Data flow
 

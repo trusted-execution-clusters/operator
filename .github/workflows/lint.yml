@@ -43,6 +43,8 @@ jobs:
           go-version-file: go.mod
       - name: "Cache build artifacts"
         uses: Swatinem/rust-cache@v2
+      - name: "Generate optional CRDs"
+        run: make generate-openshift
       - name: "Build CRDs"
         run: make crds-rs
       - name: "cargo fmt (check)"

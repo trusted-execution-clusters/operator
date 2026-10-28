@@ -23,6 +23,11 @@ pub use kopium::issuers;
 pub use vendor_kopium::virtualmachineinstances;
 pub use vendor_kopium::virtualmachines;
 
+#[cfg(feature = "openshift")]
+pub use kopium::machineconfigpools;
+#[cfg(feature = "openshift")]
+pub use kopium::machineconfigs;
+
 use anyhow::{Context, Result, anyhow};
 use conditions::*;
 use k8s_openapi::api::apps::v1::Deployment;

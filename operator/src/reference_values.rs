@@ -30,8 +30,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use crate::COMPONENT_VERSION;
 use crate::trustee;
-use operator::{ControllerError, KIND_LABEL_KEY, LONG_REQUEUE, OperatorContext, upsert_condition};
-use operator::{controller_error_policy, controller_info, create_or_info_if_exists};
+use operator::*;
 use trusted_cluster_operator_lib::{conditions::*, record_event, reference_values::*, *};
 
 const APPROVED_IMAGE_ANNOTATION: &str = "approved-image";
@@ -257,8 +256,7 @@ async fn image_reconcile(
     let kube_client = ctx.client.clone();
     let err = "ApprovedImage had no name";
     let name = image.metadata.name.clone().context(err)?;
-    let map_ctl = |e: anyhow::Error| -> ControllerError { e.into() };
-    let cluster = ctx.get_opt_tec().map_err(map_ctl)?;
+    let cluster = ctx.get_opt_tec().map_err(controller_into)?;
 
     let uid_owns = |uid: &String| {
         let refs = image.metadata.owner_references.as_ref();
@@ -274,7 +272,7 @@ async fn image_reconcile(
     {
         adopt_approved_image(kube_client.clone(), &name, cluster)
             .await
-            .map_err(map_ctl)?;
+            .map_err(controller_into)?;
     }
 
     let images: Api<ApprovedImage> = Api::default_namespaced(kube_client.clone());

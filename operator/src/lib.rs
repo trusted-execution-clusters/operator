@@ -94,6 +94,10 @@ pub async fn controller_info<T: Debug, E: Debug>(res: Result<T, E>) {
     }
 }
 
+pub fn controller_into(e: anyhow::Error) -> ControllerError {
+    e.into()
+}
+
 pub fn new_recorder(client: Client, controller_name: &str) -> Recorder {
     let reporter = Reporter {
         controller: controller_name.into(),

@@ -529,16 +529,13 @@ mod tests {
     use kube::api::ObjectList;
     use kube::client::Body;
     use trusted_cluster_operator_test_utils::mock_client::*;
-    use trusted_cluster_operator_test_utils::test_error_method;
+    use trusted_cluster_operator_test_utils::{constants::DUMMY_IMAGE_REF, test_error_method};
 
     fn op_ctx_with_images(client: Client, images: Vec<ApprovedImage>) -> OperatorContext {
         let mut ctx = OperatorContext::new(client);
         ctx.image_store = store_with(images);
         ctx
     }
-
-    const DUMMY_IMAGE_REF: &str =
-        "quay.io/some-ref@sha256:e71dad00aa0e3d70540e726a0c66407e3004d96e045ab6c253186e327a2419e5";
 
     fn dummy_image() -> ApprovedImage {
         ApprovedImage {

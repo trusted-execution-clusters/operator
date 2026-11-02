@@ -6,6 +6,8 @@ pub const TEC_NAME: &str = "trusted-execution-cluster";
 pub const TRUSTEE_CONFIG_MAP: &str = "trustee-data";
 pub const RV_JSON_KEY: &str = "reference-values.json";
 
+pub const DUMMY_IMAGE_REF: &str =
+    "quay.io/some-ref@sha256:e71dad00aa0e3d70540e726a0c66407e3004d96e045ab6c253186e327a2419e5";
 pub const APPROVED_IMAGE_NAME: &str = "coreos-approved-primary";
 pub const COMBINE_PCRS_UPDATE_TEST_IMAGE_NAME: &str = "coreos-test-update-combination";
 // TODO: This image does not contain a custom ignition, neither a clevis pin.

@@ -46,3 +46,7 @@ path = "upgrade.rs"
 [[test]]
 name = "no_disallowed_crypto"
 path = "no_disallowed_crypto.rs"
+
+[[test]]
+name = "install_operator"
+path = "install_operator.rs"

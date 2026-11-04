@@ -73,11 +73,6 @@ export REGISTRY=localhost:5000/trusted-execution-clusters
 make push
 ```
 
-Before installing the operator, the manifests of the operator needs to be generated
-```console
-make manifests
-```
-
 The operator needs to be configured with the networking setup where the attestation server and key register will be externally reachable by the machines for the attestation. This can be configured during the installation of the operator by setting the env variable `TRUSTEE_ADDR` and `AK_REGISTRATION_ADDR` respectively.
 
 Example:
@@ -88,29 +83,50 @@ export AK_REGISTRATION_ADDR=attestation-key-register.trusted-execution-clusters.
 ```
 
 Finally, the operator can be installed with:
+### Install the operator
+
+The cluster must have cert-manager and its CRDs installed. `make cluster-up` installs these for the local kind cluster.
+The installation also uses the Rust toolchain and native build dependencies (`openssl-devel` and `gcc-c++` on Fedora).
+
+From the repository root, install into a namespace of your choice:
+
 ```console
-make install
+make install-operator NAMESPACE=trusted-execution-clusters
 ```
 
-Wait for cluster to be ready and in installed state:
+`make install-operator` uses the integration-test setup to generate manifests, create certificates and Secrets,
+apply CRDs and RBAC, and deploy the operator, a `TrustedExecutionCluster`, and an `ApprovedImage`.
+It waits for the operator and its services to become ready, the `ApprovedImage` to become committed,
+and the `TrustedExecutionCluster` installation to complete. The namespace is kept so you can inspect and use the installation.
+
+`NAMESPACE` sets the exact namespace name and takes precedence over `TEST_NAMESPACE_PREFIX`.
+The namespace must not already exist. If `NAMESPACE` is unset or empty, setup creates a unique namespace
+named `test-<random-suffix>`. You can add a prefix to that generated name instead:
+
 ```console
-kubectl wait -n trusted-execution-clusters --for=condition=Installed TrustedExecutionCluster trusted-execution-cluster
+make install-operator TEST_NAMESPACE_PREFIX=my-dev-
 ```
 
-Print cluster status
+Use an exact namespace for a single installation; leave `NAMESPACE` unset when running multiple integration tests
+so each test gets its own namespace.
+
+The installation output includes a cleanup command. For the explicit namespace above, run:
+
 ```console
-kubectl -n trusted-execution-clusters get po,svc
+kubectl delete namespace trusted-execution-clusters
 ```
 
 Further customization of the project can be controlled with the following env variables:
-+ NAMESPACE: sets the namespace where the operator will be deployed
-+ PLATFORM: use during the installation to configure the platform where the operator will be deployed (`kind` or `openshift`)
++ NAMESPACE: sets the exact namespace for `make install-operator`
++ TEST_NAMESPACE_PREFIX: adds a prefix to generated namespace names when `NAMESPACE` is unset or empty
++ PLATFORM: configures the platform used during installation (defaults to `kind`; `kind_public` exposes services through the kind host ports)
 + INTEGRATION_TEST_THREADS: how many integration tests are run in parallel
 + REGISTRY: the registry used to publish the images
 + TAG: the tag used for the images when built and published
-+ CLI_RUNTIME: runtime used for build the container images (`podman` or `docker`)
++ APPROVED_IMAGE: the image whose reference values are computed during installation (defaults to the image in the `Makefile`)
++ CONTAINER_CLI: runtime used to build container images (`podman` or `docker`)
 + RUNTIME: runtime used for creating the kind cluster (`podman` or `docker`)
-+ PUSH_FLAGS: additional flag to be used with the CLI_RUNTIME
++ PUSH_FLAGS: additional flags to be used with `CONTAINER_CLI` when pushing images
 
 
 ## Testing and exploring using KubeVirt VMs

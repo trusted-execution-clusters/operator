@@ -536,7 +536,10 @@ impl TestContext {
         });
 
         let client = setup_test_client().await?;
-        let namespace = test_namespace_name();
+        let namespace = test_namespace_name(
+            env::var("TEST_NAMESPACE").ok().as_deref(),
+            &env::var("TEST_NAMESPACE_PREFIX").unwrap_or_default(),
+        );
 
         let ctx = Self {
             client,
@@ -1272,8 +1275,9 @@ impl TestContext {
 
 #[macro_export]
 macro_rules! named_test {
-    (async fn $name:ident() -> anyhow::Result<()> { $($body:tt)* }) => {
+    ($(#[$attr:meta])* async fn $name:ident() -> anyhow::Result<()> { $($body:tt)* }) => {
         #[tokio::test]
+        $(#[$attr])*
         async fn $name() -> anyhow::Result<()> {
             const TEST_NAME: &str = stringify!($name);
             $($body)*
@@ -1315,8 +1319,10 @@ async fn setup_test_client() -> Result<Client> {
     Ok(client)
 }
 
-fn test_namespace_name() -> String {
-    let namespace_prefix = env::var("TEST_NAMESPACE_PREFIX").unwrap_or_default();
+fn test_namespace_name(namespace: Option<&str>, namespace_prefix: &str) -> String {
+    if let Some(namespace) = namespace.filter(|name| !name.is_empty()) {
+        return namespace.to_string();
+    }
     let uuid = &uuid::Uuid::new_v4().to_string()[..8];
     format!("{namespace_prefix}test-{uuid}")
 }

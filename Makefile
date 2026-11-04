@@ -273,6 +273,9 @@ upgrade-tests: generate trusted-cluster-gen crds-rs
 	UPGRADE_OLD_TRUSTEE_TAG=$(UPGRADE_OLD_TRUSTEE_TAG) \
 	cargo test --test upgrade $(INTEGRATION_TEST_FLAGS)
 
+install-operator: generate trusted-cluster-gen crds-rs
+	$(INTEGRATION_TEST_ENV) cargo test --test install_operator $(INTEGRATION_TEST_FLAGS)
+
 integration-tests: attestation-tests trusted-execution-cluster-tests upgrade-tests
 
 $(LOCALBIN):

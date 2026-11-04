@@ -33,6 +33,44 @@ make attestation-tests
 make trusted-execution-cluster-tests
 ```
 
+### Install the operator with the integration-test setup
+
+Run the installation-only integration test with:
+
+```bash
+make install-operator
+```
+
+This target uses the same setup as the other integration tests, but stops after
+verifying that the trusted execution cluster is installed. It performs the
+following actions:
+
+1. Creates a uniquely named test namespace.
+2. Generates the operator, CRD, RBAC, `TrustedExecutionCluster`, and
+   `ApprovedImage` manifests in a temporary directory.
+3. Uses cert-manager to create the certificates and Secrets required by the
+   operator services. (The cluster must have cert-manager and its CRDs installed)
+4. Applies the operator CRDs and namespace-specific RBAC, then deploys the
+   operator.
+5. Applies a `TrustedExecutionCluster` and an `ApprovedImage`. The image
+   reference comes from `APPROVED_IMAGE`, whose default is defined in the
+   `Makefile`.
+6. Waits for the operator and its services to become ready, for the
+   `ApprovedImage` to become committed, and for the `TrustedExecutionCluster`
+   installation to complete.
+
+A `404 page not found` error immediately after the log message
+`Manifests generated successfully` usually means that the
+`cert-manager.io/v1` API is not available.
+
+Unlike the other integration tests, `install-operator` deliberately leaves the
+test namespace in place so the installation can be inspected and used. The
+test output prints its name and the command to remove it:
+
+```bash
+kubectl delete namespace <test-namespace>
+```
+
 Each test can also be run independently using cargo test. \
 Before running independent tests, run `make trusted-cluster-gen` to create the default boiler-plate yaml manifests for the TEC and make sure `TRUSTEE_IMAGE`, `APPROVED_IMAGE`, `TEST_IMAGE`, `RUST_LOG`, `REGISTRY`, `TAG` env variables are set.
 

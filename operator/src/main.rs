@@ -30,6 +30,8 @@ use trusted_cluster_operator_lib::{conditions::*, images::*, update_status};
 
 mod attestation_key_register;
 mod conditions;
+#[cfg(feature = "openshift")]
+mod openshift_images;
 mod reference_values;
 mod register_server;
 #[cfg(test)]
@@ -673,6 +675,23 @@ async fn main() -> Result<()> {
     ctx.secret_store = secret_store;
     ctx.image_store = image_store;
     ctx.deployment_store = deployment_store;
+
+    #[cfg(feature = "openshift")]
+    {
+        use trusted_cluster_operator_lib::machineconfigpools::MachineConfigPool;
+        use trusted_cluster_operator_lib::machineconfigs::MachineConfig;
+        let (mc_store, mc_writer) = reflector::store::<MachineConfig>();
+        let (mcp_store, mcp_writer) = reflector::store::<MachineConfigPool>();
+        spawn_cluster_reflector::<MachineConfig>(mc_writer, kube_client.clone(), "MachineConfig");
+        spawn_cluster_reflector::<MachineConfigPool>(
+            mcp_writer,
+            kube_client.clone(),
+            "MachineConfigPool",
+        );
+        ctx.mc_store = mc_store;
+        ctx.mcp_store = mcp_store;
+    }
+
     let ctx = Arc::new(ctx);
 
     // Best-effort wait for caches; controllers will work with
@@ -693,6 +712,13 @@ async fn main() -> Result<()> {
         "ApprovedImage" => ctx.image_store,
         "Deployment" => ctx.deployment_store,
     }
+    #[cfg(feature = "openshift")]
+    {
+        sync! {
+            "MachineConfig" => ctx.mc_store,
+            "MachineConfigPool" => ctx.mcp_store,
+        }
+    }
 
     info!("Starting controllers");
 
@@ -706,6 +732,8 @@ async fn main() -> Result<()> {
     reference_values::launch_rv_image_controller(ctx.clone()).await;
     reference_values::launch_rv_job_controller(ctx.clone()).await;
     trustee::launch_trustee_sync_controller(ctx.clone()).await;
+    #[cfg(feature = "openshift")]
+    openshift_images::launch_rv_mc_controller(ctx.clone()).await;
 
     Controller::new(cl, watcher::Config::default())
         .run(reconcile, controller_error_policy, ctx)

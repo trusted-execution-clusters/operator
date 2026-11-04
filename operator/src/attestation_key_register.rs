@@ -98,7 +98,7 @@ pub async fn create_attestation_key_register_deployment(
         ..Default::default()
     };
 
-    create_or_info_if_exists!(client, Deployment, deployment);
+    create_or_info_if_exists(client, &deployment).await?;
     info!("Attestation key register deployment created successfully");
     Ok(())
 }
@@ -134,7 +134,7 @@ pub async fn create_attestation_key_register_service(
         ..Default::default()
     };
 
-    create_or_info_if_exists!(client, Service, service);
+    create_or_info_if_exists(client, &service).await?;
     info!("Attestation key register service created successfully");
     Ok(())
 }
@@ -295,7 +295,7 @@ async fn approve_ak(ak: &AttestationKey, machine: &Machine, ctx: &OperatorContex
             ..Default::default()
         };
 
-        create_or_info_if_exists!(client.clone(), Secret, secret);
+        create_or_info_if_exists(client.clone(), &secret).await?;
         info!("Created secret {secret_name} for attestation key {name} with finalizer");
     } else {
         // Ensures the AttestationKey secret has the label the secret controller watches on.

@@ -24,7 +24,7 @@ use k8s_openapi::apimachinery::pkg::{
 use kube::api::{ObjectMeta, Patch, PatchParams};
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::{reflector::ObjectRef, watcher};
-use kube::{Api, Client, Resource};
+use kube::{Api, Client};
 use log::{info, warn};
 
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
@@ -457,8 +457,7 @@ pub async fn generate_secret(
         data: Some(data),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, Secret, secret);
-    Ok(())
+    create_or_info_if_exists(client, &secret).await
 }
 
 pub async fn generate_trustee_auth_keys_secret(
@@ -486,8 +485,7 @@ pub async fn generate_trustee_auth_keys_secret(
         data: Some(data),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, Secret, secret);
-    Ok(())
+    create_or_info_if_exists(client, &secret).await
 }
 
 fn generate_kbs_config(has_certificate: bool) -> Result<String> {
@@ -577,8 +575,7 @@ pub async fn generate_kbs_service(
         }),
         ..Default::default()
     };
-    create_or_info_if_exists!(client, Service, service);
-    Ok(())
+    create_or_info_if_exists(client, &service).await
 }
 
 fn generate_kbs_volume_templates() -> [(&'static str, &'static str, Volume); 3] {
@@ -726,8 +723,7 @@ pub async fn generate_kbs_deployment(
     secret: &Option<String>,
 ) -> Result<()> {
     let deployment = build_kbs_deployment(client.clone(), owner_reference, image, secret).await?;
-    create_or_info_if_exists!(client, Deployment, deployment);
-    Ok(())
+    create_or_info_if_exists(client, &deployment).await
 }
 
 // Called during upgrade.

@@ -6,8 +6,31 @@
 use crate::{ApprovedImageStatusPcrs, ApprovedImageStatusPcrsEvents};
 use compute_pcrs_lib::Pcr;
 use compute_pcrs_lib::tpmevents::TPMEvent;
+use openssl::hash::{MessageDigest, hash};
+
+#[cfg(feature = "openshift")]
+pub const OSIMAGE_RESOURCE_PREFIX: &str = "osimage";
+#[cfg(feature = "openshift")]
+pub const MCP_APPROVED_IMAGE_LABEL: &str =
+    "trusted-execution-clusters.io/autocreate-approved-images";
+
+/// Name resource by uniquified RFC1035 name with a prefix
+pub fn rfc1035(name: &str, prefix: &str) -> anyhow::Result<String> {
+    if prefix.len() > 52 {
+        return Err(anyhow::anyhow!("prefix too long"));
+    }
+    let lower = name.to_ascii_lowercase();
+    let replaced = lower.replace(['.', ':', '/', '@', '_'], "-");
+    let hash = hash(MessageDigest::sha1(), name.as_bytes())?;
+    let hashed = hex::encode(hash)[..10].to_string();
+    let formatted = format!("{prefix}-{hashed}-{replaced}");
+    let trimmed: String = formatted.chars().take(63).collect();
+    Ok(trimmed.trim_end_matches('-').to_string())
+}
 
 pub const IMAGE_VOLUME_MOUNTPOINT: &str = "/image";
+pub const PCR_COMMAND_NAME: &str = "compute-pcrs";
+
 // Convert Pcrs to ApprovedImageStatusPcrs
 pub fn pcrs_to_status(pcrs: &[Pcr]) -> Vec<ApprovedImageStatusPcrs> {
     pcrs.iter()
@@ -62,6 +85,22 @@ fn parse_tpm_event_id(s: &str) -> Option<compute_pcrs_lib::tpmevents::TPMEventID
 #[cfg(test)]
 mod tests {
     use super::*;
+    use trusted_cluster_operator_test_utils::constants::DUMMY_IMAGE_REF;
+
+    #[test]
+    fn test_rfc1035_trailing_dash() {
+        let name = rfc1035("quay.io/some_ref:Some-tag-", PCR_COMMAND_NAME).unwrap();
+        assert_eq!(name, "compute-pcrs-5a33fc23b3-quay-io-some-ref-some-tag");
+    }
+
+    #[test]
+    fn test_rfc1035_sha() {
+        let name = rfc1035(DUMMY_IMAGE_REF, PCR_COMMAND_NAME).unwrap();
+        assert_eq!(
+            name,
+            "compute-pcrs-6c57e93939-quay-io-some-ref-sha256-e71dad00aa0e3d7"
+        );
+    }
 
     /// Detects drift between TPMEventID variants and parse_tpm_event_id.
     /// If a new event variant is added to compute-pcrs-lib without updating the match in this file, this test will fail with the name of the missing variant.

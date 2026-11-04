@@ -12,7 +12,6 @@ use k8s_openapi::api::core::v1::{
     LoadBalancerStatus, Namespace, Pod, Secret, Service, ServicePort, ServiceSpec, ServiceStatus,
 };
 use k8s_openapi::api::events::v1::Event;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use kube::api::{DeleteParams, ListParams, ObjectMeta, Patch, PatchParams};
 use kube::runtime::wait::{await_condition, conditions::is_created};
 use kube::{Api, Client};
@@ -22,19 +21,9 @@ use std::path::{Path, PathBuf};
 use std::{collections::BTreeMap, env, sync::Once, time::Duration};
 use tokio::process::Command;
 use tokio::time::timeout;
-use trusted_cluster_operator_lib::certificates::{
-    Certificate, CertificateIssuerRef, CertificateSpec, CertificateStatus,
-};
-use trusted_cluster_operator_lib::conditions::{
-    COMMITTED_CONDITION, COMMITTED_REASON, INSTALLED_CONDITION, INSTALLED_REASON,
-};
-use trusted_cluster_operator_lib::issuers::{Issuer, IssuerCa, IssuerSpec};
 
-use trusted_cluster_operator_lib::{
-    ATTESTATION_KEY_SECRET_FINALIZER, ApprovedImage, ApprovedImageStatus,
-    ApprovedImageStatusPcrsEvents, AttestationKey, Machine, has_condition,
-};
-use trusted_cluster_operator_lib::{TrustedExecutionCluster, endpoints::*, images::*};
+use trusted_cluster_operator_lib::{certificates::*, issuers::*};
+use trusted_cluster_operator_lib::{conditions::*, endpoints::*, images::*, *};
 pub use trusted_cluster_operator_lib::{
     deployment_rollout_complete, wait_for_deployment_rollout, wait_for_resource_deleted,
 };
@@ -495,13 +484,14 @@ pub struct TestContext {
     test_namespace: String,
     manifests_dir: String,
     test_name: String,
+    #[cfg(not(feature = "openshift"))]
     delayed_approved_image: bool,
 }
 
 impl TestContext {
     pub async fn new(
         test_name: &str,
-        delayed_approved_image: bool,
+        #[allow(unused_variables)] delayed_approved_image: bool,
         approved_images: &[(&str, &str)],
     ) -> Result<Self> {
         Self::new_with_image_overrides(test_name, delayed_approved_image, approved_images, &[])
@@ -511,7 +501,7 @@ impl TestContext {
     // Helper function to create a test context with image overrides. Useful for testing different image tags and versions in the same test, required for operator upgrade tests.
     pub async fn new_with_image_overrides(
         test_name: &str,
-        delayed_approved_image: bool,
+        #[allow(unused_variables)] delayed_approved_image: bool,
         approved_images: &[(&str, &str)],
         container_image_overrides: &[(&str, &str)],
     ) -> Result<Self> {
@@ -527,6 +517,7 @@ impl TestContext {
             test_namespace: namespace.clone(),
             manifests_dir: String::new(),
             test_name: test_name.to_string(),
+            #[cfg(not(feature = "openshift"))]
             delayed_approved_image,
         };
 
@@ -864,7 +855,7 @@ impl TestContext {
         let controller_gen_pattern = workspace_root.join("bin/controller-gen-*");
         let pattern = controller_gen_pattern.to_str().unwrap();
         let err = anyhow!("No controller-gen found in bin/, run `make build-tools` first");
-        let controller_gen_path = glob::glob(pattern)?.next().ok_or(err)??;
+        let controller_gen_path = glob(pattern)?.next().ok_or(err)??;
 
         self.info(format!(
             "Generating CRDs and RBAC with controller-gen at: {}",
@@ -939,7 +930,7 @@ impl TestContext {
         args.extend(&["-trustee-image", &trustee_image]);
         args.extend(&["-register-server-image", &reg_srv_img]);
         args.extend(&["-attestation-key-register-image", &att_reg_img]);
-        let primary_approved_arg = format!("{},{approved_image}", constants::APPROVED_IMAGE_NAME);
+        let primary_approved_arg = format!("{},{approved_image}", APPROVED_IMAGE_NAME);
         args.extend(&["-approved-image", &primary_approved_arg]);
         let approved_args: Vec<String> = approved_images
             .iter()
@@ -1105,22 +1096,25 @@ impl TestContext {
         let cr_manifest_str = cr_manifest_path.to_str().unwrap();
         kube_apply!(cr_manifest_str, &self.test_name, "Applying CR manifest");
 
-        if self.delayed_approved_image {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-        }
-        let approved_image_paths = glob(
-            manifests_path
-                .join("approved_image_cr_*.yaml")
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("Invalid ApprovedImage manifest path"))?,
-        )?;
-        for approved_image_path in approved_image_paths.filter_map(Result::ok) {
-            let approved_image_str = approved_image_path.to_str().unwrap();
-            kube_apply!(
-                approved_image_str,
-                &self.test_name,
-                "Applying ApprovedImage manifest"
-            );
+        #[cfg(not(feature = "openshift"))]
+        {
+            if self.delayed_approved_image {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+            let approved_image_paths = glob(
+                manifests_path
+                    .join("approved_image_cr_*.yaml")
+                    .to_str()
+                    .context("Invalid ApprovedImage manifest path")?,
+            )?;
+            for approved_image_path in approved_image_paths.filter_map(Result::ok) {
+                let approved_image_str = approved_image_path.to_str().unwrap();
+                kube_apply!(
+                    approved_image_str,
+                    &self.test_name,
+                    "Applying ApprovedImage manifest"
+                );
+            }
         }
 
         for depl in [
@@ -1172,23 +1166,18 @@ impl TestContext {
         let info = format!("Updated TEC resource with publicTrusteeAddr: {trustee_addr}");
         self.info(info);
 
-        let info = format!("Waiting for ApprovedImage {APPROVED_IMAGE_NAME} to be Committed");
-        self.info(info);
+        #[cfg(not(feature = "openshift"))]
+        {
+            let info = format!("Waiting for ApprovedImage {APPROVED_IMAGE_NAME} to be Committed");
+            self.info(info);
 
-        let images: Api<ApprovedImage> = Api::namespaced(self.client.clone(), ns);
-        let image_ready = |img: Option<&ApprovedImage>| {
-            let chk_cond = |c: &Condition| c.type_ == COMMITTED_CONDITION && c.status == "True";
-            let chk_status =
-                |st: &ApprovedImageStatus| st.conditions.as_ref().map(|cs| cs.iter().any(chk_cond));
-            let chk = |img: &ApprovedImage| img.status.as_ref().and_then(chk_status);
-            img.and_then(chk).unwrap_or(false)
-        };
-        let done = await_condition(images.clone(), constants::APPROVED_IMAGE_NAME, image_ready);
-        let ctx = format!(
-            "waiting for ApprovedImage {} to be Committed",
-            constants::APPROVED_IMAGE_NAME
-        );
-        timeout(scaled_duration(300), done).await.context(ctx)??;
+            let images: Api<ApprovedImage> = Api::namespaced(self.client.clone(), ns);
+            let info = format!("Waiting for ApprovedImage {APPROVED_IMAGE_NAME} to be Committed");
+            self.info(&info);
+            let chk = approved_image_has_committed_condition;
+            let done = await_condition(images.clone(), APPROVED_IMAGE_NAME, chk);
+            timeout(scaled_duration(300), done).await.context(info)??;
+        }
 
         let tec_api: Api<TrustedExecutionCluster> = Api::namespaced(self.client.clone(), ns);
         wait_for_install(&tec_api, constants::TEC_NAME).await?;

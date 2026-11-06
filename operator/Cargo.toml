@@ -40,4 +40,5 @@ openshift = ["trusted-cluster-operator-lib/openshift"]
 
 [dev-dependencies]
 http.workspace = true
+temp-env = { version = "0.3.6", features = ["async_closure"] }
 trusted-cluster-operator-test-utils = { path = "../test_utils" }

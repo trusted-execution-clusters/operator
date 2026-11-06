@@ -11,10 +11,19 @@ use kube::runtime::reflector::{self, Lookup, Store};
 use kube::runtime::watcher;
 use std::collections::BTreeMap;
 use std::hash::Hash;
-use trusted_cluster_operator_lib::reference_values::pcrs_to_status;
-use trusted_cluster_operator_lib::{ApprovedImage, ApprovedImageSpec, TrustedExecutionCluster};
-use trusted_cluster_operator_lib::{ApprovedImageStatusPcrs, Machine, MachineSpec};
+use trusted_cluster_operator_lib::{images::*, reference_values::pcrs_to_status, *};
 use trusted_cluster_operator_test_utils::constants::DUMMY_IMAGE_REF;
+
+/// Set the RELATED_IMAGE_* env vars consumed by get_env for the duration of `fut`
+pub async fn with_related_images<F: std::future::Future>(fut: F) -> F::Output {
+    let vars = [
+        (RELATED_IMAGE_TRUSTEE, Some("test-trustee")),
+        (RELATED_IMAGE_COMPUTE_PCRS, Some("test-compute-pcrs")),
+        (RELATED_IMAGE_REGISTRATION_SERVER, Some("test-reg")),
+        (RELATED_IMAGE_ATTESTATION_KEY_REGISTER, Some("test-ak-reg")),
+    ];
+    temp_env::async_with_vars(vars, fut).await
+}
 
 /// Build a reflector [`Store`] pre-populated with `items`, for tests that
 /// exercise code reading from an `OperatorContext` store instead of the API.

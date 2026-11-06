@@ -28,9 +28,9 @@ use serde::Deserialize;
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
-use crate::COMPONENT_VERSION;
 use crate::trustee;
 use operator::*;
+use trusted_cluster_operator_lib::images::RELATED_IMAGE_COMPUTE_PCRS;
 use trusted_cluster_operator_lib::{conditions::*, record_event, reference_values::*, *};
 
 const APPROVED_IMAGE_ANNOTATION: &str = "approved-image";
@@ -157,10 +157,7 @@ pub async fn launch_rv_job_controller(ctx: Arc<OperatorContext>) {
 
 async fn compute_fresh_pcrs(client: Client, image: &ApprovedImage) -> anyhow::Result<()> {
     let job_name = rfc1035(&image.spec.image, PCR_COMMAND_NAME)?;
-    let env = "RELATED_IMAGE_COMPUTE_PCRS";
-    let default_image =
-        format!("quay.io/trusted-execution-clusters/compute-pcrs:{COMPONENT_VERSION}");
-    let pcrs_compute_image = std::env::var(env).ok().unwrap_or(default_image);
+    let pcrs_compute_image = get_env(RELATED_IMAGE_COMPUTE_PCRS)?;
     let resource_name = image.metadata.name.as_ref().unwrap();
     let pod_spec =
         build_compute_pcrs_pod_spec(resource_name, &image.spec.image, &pcrs_compute_image);
@@ -508,10 +505,9 @@ mod tests {
     use k8s_openapi::api::batch::v1::JobStatus;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
     use k8s_openapi::jiff::Timestamp;
-    use kube::api::ObjectList;
-    use kube::client::Body;
+    use kube::{api::ObjectList, client::Body, core::response::StatusSummary};
     use trusted_cluster_operator_test_utils::mock_client::*;
-    use trusted_cluster_operator_test_utils::test_error_method;
+    use trusted_cluster_operator_test_utils::{assert_kube_api_error, test_error_method};
 
     fn op_ctx_with_images(client: Client, images: Vec<ApprovedImage>) -> OperatorContext {
         let mut ctx = OperatorContext::new(client);
@@ -576,16 +572,30 @@ mod tests {
 
     #[tokio::test]
     async fn test_compute_fresh_pcrs_success() {
-        let image = dummy_image();
-        let clos = |client| compute_fresh_pcrs(client, &image);
-        test_create_success::<_, _, Job>(clos).await;
+        let clos = async |_, _| Ok(serde_json::to_string(&Job::default()).unwrap());
+        count_check!(1, clos, |client| {
+            with_related_images(async {
+                assert!(compute_fresh_pcrs(client, &dummy_image()).await.is_ok());
+            })
+            .await;
+        });
     }
 
     #[tokio::test]
     async fn test_compute_fresh_pcrs_error() {
         let image = dummy_image();
-        let clos = |client| compute_fresh_pcrs(client, &image);
-        test_error_method!(clos, Method::POST);
+        let clos = async |req: Request<_>, _| match req.method() {
+            &Method::POST => Err(StatusCode::INTERNAL_SERVER_ERROR),
+            _ => panic!("unexpected API interaction: {req:?}"),
+        };
+        count_check!(1, clos, |client| {
+            let err = with_related_images(async {
+                compute_fresh_pcrs(client, &image).await.unwrap_err()
+            })
+            .await;
+            let msg = "internal server error";
+            assert_kube_api_error!(err, 500, "ServerTimeout", msg, Some(StatusSummary::Failure));
+        });
     }
 
     #[tokio::test]

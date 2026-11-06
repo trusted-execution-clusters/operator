@@ -488,7 +488,7 @@ async fn test_luks_key_sync() -> anyhow::Result<()> {
     test_ctx.info("Machine1 secret deleted from KBS");
 
     // Verify the K8s Secret for machine1 is also deleted
-    wait_for_resource_deleted(&secrets_api, &machine1_uuid, Duration::from_secs(60)).await?;
+    wait_for_resource_deleted(&secrets_api, &machine1_uuid, scaled_duration(60)).await?;
     test_ctx.info("Machine1 K8s secret deleted");
 
     test_ctx.cleanup().await?;

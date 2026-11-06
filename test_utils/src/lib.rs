@@ -41,6 +41,10 @@ use compute_pcrs_lib::Pcr;
 const TEST_TIMEOUT_MULTIPLIER_ENV: &str = "TEST_TIMEOUT_MULTIPLIER";
 const EXPOSE_MAX_ATTEMPTS: u32 = 3;
 
+pub const OPERATOR_IMAGE_ENV: &str = "OPERATOR_IMAGE";
+pub const TRUSTEE_IMAGE_ENV: &str = "TRUSTEE_IMAGE";
+pub const TAG_ENV: &str = "TAG";
+
 const UPSTREAM_DIR_ENV: &str = "UPSTREAM_DIR";
 const PLATFORM_ENV: &str = "PLATFORM";
 const CLUSTER_URL_ENV: &str = "CLUSTER_URL";
@@ -61,6 +65,11 @@ const TRUSTEE_CERT: &str = "trustee-cert";
 const ATT_REG_CERT: &str = "att-reg-cert";
 pub const OPERATOR_DEPLOYMENT: &str = "trusted-cluster-operator";
 
+// Registry path component names, distinct from the Kubernetes resource names in `endpoints`
+pub const COMPUTE_PCRS_COMPONENT: &str = "compute-pcrs";
+pub const REGISTRATION_SERVER_COMPONENT: &str = "registration-server";
+pub const TRUSTEE_COMPONENT: &str = "key-broker-service";
+
 pub fn compare_pcrs(actual: &[Pcr], expected: &[Pcr]) -> bool {
     if actual.len() != expected.len() {
         return false;
@@ -75,12 +84,31 @@ pub fn compare_pcrs(actual: &[Pcr], expected: &[Pcr]) -> bool {
     true
 }
 
-// Builds a `{REGISTRY}/{component}:{TAG}` image reference from the `REGISTRY`/`TAG` env vars.
-// defaults registry to localhost:5000 and tag to latest.
-pub fn default_image(component: &str) -> String {
-    let registry = env::var("REGISTRY").unwrap_or_else(|_| "localhost:5000".to_string());
-    let tag = env::var("TAG").unwrap_or_else(|_| "latest".to_string());
-    format!("{registry}/{component}:{tag}")
+/// Resolves `key` from the environment, falling back to `{REGISTRY}/{component}:{TAG}` if unset
+pub fn image_or_default(key: &str, component: &str) -> Result<String> {
+    match env::var(key) {
+        Ok(v) => Ok(v),
+        Err(env::VarError::NotPresent) => {
+            let ctx = format!("no {key} given, falling back to REGISTRY/{TAG_ENV}");
+            let registry = get_env("REGISTRY").context(ctx.clone())?;
+            let tag = get_env(TAG_ENV).context(ctx)?;
+            Ok(format!("{registry}/{component}:{tag}"))
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Get TRUSTEE_IMAGE, falling back to RELATED_IMAGE_TRUSTEE
+pub fn trustee_image_or_related() -> Result<String> {
+    match env::var(TRUSTEE_IMAGE_ENV) {
+        Ok(v) => Ok(v),
+        Err(env::VarError::NotPresent) => {
+            let ctx =
+                format!("no {TRUSTEE_IMAGE_ENV} given, falling back to {RELATED_IMAGE_TRUSTEE}");
+            get_env(RELATED_IMAGE_TRUSTEE).context(ctx)
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 fn timeout_multiplier() -> f64 {
@@ -890,37 +918,28 @@ impl TestContext {
                 trusted_cluster_gen_path.display()
             ));
         }
-        // lookup the image for the given key, if no value, then fall back to the component and fail_if_no_default boolean is set, then if the value is not found, this will function will throw an error.
-        let lookup = |key: &str, component: &str, fail_if_no_default: bool| -> Result<String> {
-            let overridden = container_image_overrides
+
+        let get_overridden = |key: &str| {
+            container_image_overrides
                 .iter()
                 .find(|(k, _)| *k == key)
-                .map(|(_, v)| v.to_string());
-            if let Some(v) = overridden {
-                return Ok(v);
-            }
-            if fail_if_no_default {
-                get_env(key)
-            } else {
-                Ok(env::var(key).unwrap_or_else(|_| default_image(component)))
-            }
+                .map(|(_, v)| Ok(v.to_string()))
         };
-        let trustee_image = lookup("TRUSTEE_IMAGE", "", true)?;
-        let approved_image = get_env("APPROVED_IMAGE")?;
+        let lookup = |key: &str, component: &str| {
+            get_overridden(key).unwrap_or_else(|| image_or_default(key, component))
+        };
 
+        let trustee_image =
+            get_overridden(TRUSTEE_IMAGE_ENV).unwrap_or_else(trustee_image_or_related)?;
+        let operator_img = lookup(OPERATOR_IMAGE_ENV, OPERATOR_DEPLOYMENT)?;
+        let compute_pcrs_img = lookup(RELATED_IMAGE_COMPUTE_PCRS, COMPUTE_PCRS_COMPONENT)?;
+        let rel_img = RELATED_IMAGE_REGISTRATION_SERVER;
+        let reg_srv_img = lookup(rel_img, REGISTRATION_SERVER_COMPONENT)?;
+        let rel_img = RELATED_IMAGE_ATTESTATION_KEY_REGISTER;
+        let att_reg_img = lookup(rel_img, ATTESTATION_KEY_REGISTER_DEPLOYMENT)?;
+
+        let approved_image = get_env("APPROVED_IMAGE")?;
         let mut args = vec!["-namespace", &ns, "-output-dir", &self.manifests_dir];
-        let operator_img = lookup("OPERATOR_IMAGE", "trusted-cluster-operator", false)?;
-        let compute_pcrs_img = lookup(RELATED_IMAGE_COMPUTE_PCRS, "compute-pcrs", false)?;
-        let reg_srv_img = lookup(
-            RELATED_IMAGE_REGISTRATION_SERVER,
-            "registration-server",
-            false,
-        )?;
-        let att_reg_img = lookup(
-            RELATED_IMAGE_ATTESTATION_KEY_REGISTER,
-            "attestation-key-register",
-            false,
-        )?;
         args.extend(&["-image", &operator_img]);
         args.extend(&["-pcrs-compute-image", &compute_pcrs_img]);
         args.extend(&["-trustee-image", &trustee_image]);

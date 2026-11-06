@@ -368,7 +368,7 @@ async fn run_upgrade(
     upsert_condition(conditions, trustee_done);
 
     // Now upgrading the related images.
-    converge_related_images(&ctx.client, cluster)
+    converge_related_images(&ctx.client)
         .await
         .context("Related images upgrade stage failed")?;
     let related_images_done = upgrade_condition(
@@ -459,22 +459,18 @@ async fn converge_trustee(
     Ok(())
 }
 
-async fn converge_related_images(client: &Client, cluster: &TrustedExecutionCluster) -> Result<()> {
+async fn converge_related_images(client: &Client) -> Result<()> {
     // As ak-register and register-server are stateless, a simple patch is enough to upgrade them.
     converge_related_image(
         client,
-        cluster,
         REGISTER_SERVER_DEPLOYMENT,
         RELATED_IMAGE_REGISTRATION_SERVER,
-        REGISTER_SERVER_DEPLOYMENT,
     )
     .await?;
     converge_related_image(
         client,
-        cluster,
         ATTESTATION_KEY_REGISTER_DEPLOYMENT,
         RELATED_IMAGE_ATTESTATION_KEY_REGISTER,
-        "attestation-key-register",
     )
     .await?;
     Ok(())
@@ -482,10 +478,8 @@ async fn converge_related_images(client: &Client, cluster: &TrustedExecutionClus
 
 async fn converge_related_image(
     client: &Client,
-    _cluster: &TrustedExecutionCluster,
     deployment_name: &str,
     env_var: &str,
-    container_name: &str,
 ) -> Result<()> {
     let deployments: Api<Deployment> = Api::default_namespaced(client.clone());
 
@@ -501,7 +495,7 @@ async fn converge_related_image(
             "template": {
                 "spec": {
                     "containers": [{
-                        "name": container_name,
+                        "name": deployment_name,
                         "image": desired_image
                     }]
                 }

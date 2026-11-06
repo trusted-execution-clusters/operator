@@ -172,10 +172,6 @@ fn get_virt_provider() -> Result<VirtProvider> {
     }
 }
 
-pub fn get_env(name: &str) -> Result<String> {
-    env::var(name).map_err(|e| anyhow!("Environment variable {name} is required: {e}"))
-}
-
 pub fn ensure_command(name: &str) -> Result<()> {
     let result = which::which(name).map(|_| ());
     result.map_err(|_| anyhow!("Command {name} not found. Please install {name} first."))

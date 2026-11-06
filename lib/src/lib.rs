@@ -58,6 +58,10 @@ pub fn condition_status(status: bool) -> String {
     }
 }
 
+pub fn get_env(name: &str) -> Result<String> {
+    std::env::var(name).map_err(|e| anyhow!("Environment variable {name} is required: {e}"))
+}
+
 pub trait Conditions {
     fn conditions(&self) -> &Option<Vec<Condition>>;
 }

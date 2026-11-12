@@ -17,44 +17,24 @@ use serde_json::json;
 use tokio::time::timeout;
 use trusted_cluster_operator_lib::conditions::*;
 use trusted_cluster_operator_lib::endpoints::*;
+use trusted_cluster_operator_lib::get_env;
 use trusted_cluster_operator_lib::images::*;
 use trusted_cluster_operator_lib::{ApprovedImage, TrustedExecutionCluster};
 use trusted_cluster_operator_test_utils::constants::*;
 use trusted_cluster_operator_test_utils::virt::{self, VmBackend};
 
 const TEC_NAME: &str = "trusted-execution-cluster";
+const UPGRADE_OLD_TAG_ENV: &str = "UPGRADE_OLD_TAG";
 
-// Image component names as they appear in registry paths; no existing constant covers these.
-const REGISTRATION_SERVER_COMPONENT: &str = "registration-server";
-const COMPUTE_PCRS_COMPONENT: &str = "compute-pcrs";
-
-// Helper functions to get the source and target operator and Trustee versions.
-fn source_operator_version() -> anyhow::Result<String> {
-    Ok(std::env::var("UPGRADE_OLD_TAG")?)
-}
-
-fn source_trustee_version() -> anyhow::Result<String> {
-    Ok(std::env::var("UPGRADE_OLD_TRUSTEE_TAG")?)
-}
-
-fn target_operator_version() -> String {
-    std::env::var("TAG").unwrap_or_else(|_| "latest".into())
+/// The whole image ref, under the source registry/tag, for the given component at the given version.
+fn source_versioned_image(component: &str, version: &str) -> anyhow::Result<String> {
+    let registry = get_env("UPGRADE_OLD_REGISTRY")?;
+    Ok(format!("{registry}/{component}:{version}"))
 }
 
 /// The whole image ref, under the source registry/tag, for the operator or a related image.
 fn source_image(component: &str) -> anyhow::Result<String> {
-    let registry = std::env::var("UPGRADE_OLD_REGISTRY")?;
-    Ok(format!("{registry}/{component}:{}", source_operator_version()?))
-}
-
-fn source_trustee_image() -> anyhow::Result<String> {
-    let registry = std::env::var("UPGRADE_OLD_REGISTRY")?;
-    Ok(format!("{registry}/key-broker-service:{}", source_trustee_version()?))
-}
-
-fn target_trustee_image() -> String {
-    std::env::var("TRUSTEE_IMAGE")
-        .unwrap_or_else(|_| "quay.io/trusted-execution-clusters/key-broker-service:v0.20.0".into())
+    source_versioned_image(component, &get_env(UPGRADE_OLD_TAG_ENV)?)
 }
 
 /// Patches the operator Deployment image and RELATED_IMAGE_* env vars in
@@ -106,14 +86,15 @@ async fn patch_operator_with_images(
 virt_test! {
 async fn test_real_version_upgrade() -> anyhow::Result<()> {
     // Phase 1: Deploy with source operator binary and source component images, wait for the install and approved image to be committed.
+    let source_trustee_tag = get_env("UPGRADE_OLD_TRUSTEE_TAG")?;
+    let source_trustee = source_versioned_image(TRUSTEE_COMPONENT, &source_trustee_tag)?;
     let source_operator = source_image(OPERATOR_DEPLOYMENT)?;
-    let source_trustee = source_trustee_image()?;
     let source_reg_srv = source_image(REGISTRATION_SERVER_COMPONENT)?;
     let source_ak_reg = source_image(ATTESTATION_KEY_REGISTER_DEPLOYMENT)?;
     let source_compute = source_image(COMPUTE_PCRS_COMPONENT)?;
     let image_overrides = [
-        ("OPERATOR_IMAGE", source_operator.as_str()),
-        ("TRUSTEE_IMAGE", source_trustee.as_str()),
+        (OPERATOR_IMAGE_ENV, source_operator.as_str()),
+        (TRUSTEE_IMAGE_ENV, source_trustee.as_str()),
         (RELATED_IMAGE_REGISTRATION_SERVER, source_reg_srv.as_str()),
         (RELATED_IMAGE_ATTESTATION_KEY_REGISTER, source_ak_reg.as_str()),
         (RELATED_IMAGE_COMPUTE_PCRS, source_compute.as_str()),
@@ -139,10 +120,9 @@ async fn test_real_version_upgrade() -> anyhow::Result<()> {
         .context("waiting for ApprovedImage to be committed under source version")??;
 
     // Verify source version images are running.
-    let source_trustee_version = source_trustee_version()?;
-    let source_operator_version = source_operator_version()?;
+    let source_operator_version = get_env(UPGRADE_OLD_TAG_ENV)?;
     let pre_trustee = deployment_image(&deployments.get(TRUSTEE_DEPLOYMENT).await?).unwrap();
-    assert!(pre_trustee.contains(&source_trustee_version), "Trustee should be {source_trustee_version}, got: {pre_trustee}");
+    assert!(pre_trustee.contains(&source_trustee_tag), "Trustee should be {source_trustee_tag}, got: {pre_trustee}");
     let pre_reg = deployment_image(&deployments.get(REGISTER_SERVER_DEPLOYMENT).await?).unwrap();
     assert!(pre_reg.contains(&source_operator_version), "register-server should be {source_operator_version}, got: {pre_reg}");
     test_ctx.info(format!("Pre-upgrade images: trustee={pre_trustee}, reg={pre_reg}"));
@@ -161,17 +141,20 @@ async fn test_real_version_upgrade() -> anyhow::Result<()> {
 
     // Phase 2: Upgrade source -> target (source Trustee -> target Trustee).
     // Patch the operator with the target images, making sure approved images are invalidated, and status contains pcr values and events.
-    let target_tag = target_operator_version();
+    let target_operator_image = image_or_default(OPERATOR_IMAGE_ENV, OPERATOR_DEPLOYMENT)?;
+    let target_trustee_image = trustee_image_or_related()?;
+    let target_reg_image = image_or_default(RELATED_IMAGE_REGISTRATION_SERVER, REGISTRATION_SERVER_COMPONENT)?;
+    let target_ak_image = image_or_default(RELATED_IMAGE_ATTESTATION_KEY_REGISTER, ATTESTATION_KEY_REGISTER_DEPLOYMENT)?;
     patch_operator_with_images(
         client,
         namespace,
-        &default_image(OPERATOR_DEPLOYMENT),
-        &target_trustee_image(),
-        &default_image(REGISTRATION_SERVER_COMPONENT),
-        &default_image(ATTESTATION_KEY_REGISTER_DEPLOYMENT),
-        &default_image(COMPUTE_PCRS_COMPONENT),
+        &target_operator_image,
+        &target_trustee_image,
+        &target_reg_image,
+        &target_ak_image,
+        &image_or_default(RELATED_IMAGE_COMPUTE_PCRS, COMPUTE_PCRS_COMPONENT)?,
     ).await?;
-    test_ctx.info(format!("Operator upgraded from {source_operator_version} to {target_tag}"));
+    test_ctx.info(format!("Operator upgraded from {source_operator_version} to {target_operator_image}"));
 
     let done = await_condition(
         tec_api.clone(),
@@ -184,22 +167,17 @@ async fn test_real_version_upgrade() -> anyhow::Result<()> {
     test_ctx.info("Upgrade completed");
 
     // Verify Trustee upgraded from source to target.
-    let target_trustee_version = target_trustee_image()
-        .rsplit(':')
-        .next()
-        .context("TRUSTEE_IMAGE should contain a ':<tag>' suffix")?
-        .to_string();
+    let ctx = "TRUSTEE_IMAGE should contain a ':<tag>' suffix";
+    let target_trustee_version = target_trustee_image.rsplit(':').next().context(ctx)?.to_string();
     let post_trustee = deployment_image(&deployments.get(TRUSTEE_DEPLOYMENT).await?).unwrap();
     assert!(post_trustee.contains(&target_trustee_version), "Trustee should be {target_trustee_version}, got: {post_trustee}");
     test_ctx.info(format!("Trustee upgraded: {pre_trustee} -> {post_trustee}"));
 
     // Verify component images upgraded.
     let post_reg = deployment_image(&deployments.get(REGISTER_SERVER_DEPLOYMENT).await?).unwrap();
-    assert!(post_reg.contains(&target_tag),
-        "register-server should be {target_tag}, got: {post_reg}");
+    assert_eq!(post_reg, target_reg_image, "register-server should be {target_reg_image}, got: {post_reg}");
     let post_ak = deployment_image(&deployments.get(ATTESTATION_KEY_REGISTER_DEPLOYMENT).await?).unwrap();
-    assert!(post_ak.contains(&target_tag),
-        "ak-register should be {target_tag}, got: {post_ak}");
+    assert_eq!(post_ak, target_ak_image, "ak-register should be {target_ak_image}, got: {post_ak}");
     test_ctx.info(format!("Post-upgrade images: reg={post_reg}, ak={post_ak}"));
 
     // ------------------- Trustee rebuilt from scratch: verify all infrastructure -------------------

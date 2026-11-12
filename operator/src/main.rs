@@ -21,12 +21,8 @@ use log::{info, warn};
 
 use operator::OperatorContext;
 use operator::{generate_owner_reference, spawn_reflector, sync_cache, upsert_condition};
-use trusted_cluster_operator_lib::endpoints::*;
-use trusted_cluster_operator_lib::{
-    ApprovedImage, ApprovedImageStatus, AttestationKey, Machine, TrustedExecutionCluster,
-    TrustedExecutionClusterStatus, committed_condition, has_condition, wait_for_deployment_rollout,
-};
-use trusted_cluster_operator_lib::{conditions::*, images::*, update_status};
+use trusted_cluster_operator_lib::*;
+use trusted_cluster_operator_lib::{conditions::*, endpoints::*, images::*};
 
 mod attestation_key_register;
 mod conditions;
@@ -48,17 +44,12 @@ fn deployment_ready_timeout() -> Duration {
     Duration::from_secs(secs)
 }
 
-/// Default fallback version tag for Trustee image if RELATED_IMAGE_TRUSTEE is not set.
-const TRUSTEE_VERSION: &str = "v0.20.0";
-
 /// Default fallback version tag for operator-managed component images from compile time environment variable (comes from operator crate Cargo.toml)
 const COMPONENT_VERSION: &str = match option_env!("COMPONENT_VERSION") {
     Some(v) => v,
     None => concat!("v", env!("CARGO_PKG_VERSION")),
 };
 
-/// Default registry
-const TEC_REGISTRY: &str = "quay.io/trusted-execution-clusters";
 /// Keep a read timeout to allow hanging operations to retry (same as write timeout). This breaks
 /// exec/attach operations without traffic for more than 5 minutes, but we do not use those.
 const KUBE_READ_TIMEOUT: Duration = Duration::from_secs(295);
@@ -377,7 +368,7 @@ async fn run_upgrade(
     upsert_condition(conditions, trustee_done);
 
     // Now upgrading the related images.
-    converge_related_images(&ctx.client, cluster)
+    converge_related_images(&ctx.client)
         .await
         .context("Related images upgrade stage failed")?;
     let related_images_done = upgrade_condition(
@@ -404,9 +395,7 @@ async fn converge_trustee(
         Some(d) => d,
         None => return Ok(()),
     };
-
-    let default = format!("{TEC_REGISTRY}/key-broker-service:{TRUSTEE_VERSION}");
-    let desired_image = env::var(RELATED_IMAGE_TRUSTEE).ok().unwrap_or(default);
+    let desired_image = get_env(RELATED_IMAGE_TRUSTEE)?;
 
     // Current image of the trustee deployment.
     let live_image = trustee_depl
@@ -470,24 +459,18 @@ async fn converge_trustee(
     Ok(())
 }
 
-async fn converge_related_images(client: &Client, cluster: &TrustedExecutionCluster) -> Result<()> {
+async fn converge_related_images(client: &Client) -> Result<()> {
     // As ak-register and register-server are stateless, a simple patch is enough to upgrade them.
     converge_related_image(
         client,
-        cluster,
         REGISTER_SERVER_DEPLOYMENT,
         RELATED_IMAGE_REGISTRATION_SERVER,
-        &format!("{TEC_REGISTRY}/registration-server:{COMPONENT_VERSION}"),
-        REGISTER_SERVER_DEPLOYMENT,
     )
     .await?;
     converge_related_image(
         client,
-        cluster,
         ATTESTATION_KEY_REGISTER_DEPLOYMENT,
         RELATED_IMAGE_ATTESTATION_KEY_REGISTER,
-        &format!("{TEC_REGISTRY}/attestation-key-register:{COMPONENT_VERSION}"),
-        "attestation-key-register",
     )
     .await?;
     Ok(())
@@ -495,11 +478,8 @@ async fn converge_related_images(client: &Client, cluster: &TrustedExecutionClus
 
 async fn converge_related_image(
     client: &Client,
-    _cluster: &TrustedExecutionCluster,
     deployment_name: &str,
     env_var: &str,
-    default_image: &str,
-    container_name: &str,
 ) -> Result<()> {
     let deployments: Api<Deployment> = Api::default_namespaced(client.clone());
 
@@ -507,8 +487,7 @@ async fn converge_related_image(
     if deployments.get_opt(deployment_name).await?.is_none() {
         return Ok(());
     }
-
-    let desired_image = env::var(env_var).ok().unwrap_or(default_image.to_string());
+    let desired_image = get_env(env_var)?;
 
     // Simple patch to update the container name and image directly. no-op if already at desired version.
     let patch = serde_json::json!({
@@ -516,7 +495,7 @@ async fn converge_related_image(
             "template": {
                 "spec": {
                     "containers": [{
-                        "name": container_name,
+                        "name": deployment_name,
                         "image": desired_image
                     }]
                 }
@@ -572,8 +551,7 @@ async fn install_trustee_configuration(
         .context("Failed to create the KBS service")?;
     info!("Generated the KBS service");
 
-    let default = format!("{TEC_REGISTRY}/key-broker-service:{TRUSTEE_VERSION}");
-    let trustee_image = env::var(RELATED_IMAGE_TRUSTEE).ok().unwrap_or(default);
+    let trustee_image = get_env(RELATED_IMAGE_TRUSTEE)?;
     trustee::generate_kbs_deployment(client, owner_reference, &trustee_image, trustee_secret)
         .await
         .context("Failed to create the KBS deployment")?;
@@ -585,9 +563,7 @@ async fn install_trustee_configuration(
 async fn install_register_server(client: Client, cluster: &TrustedExecutionCluster) -> Result<()> {
     let owner_reference = generate_owner_reference(cluster)?;
 
-    let env = RELATED_IMAGE_REGISTRATION_SERVER;
-    let default_image = format!("{TEC_REGISTRY}/registration-server:{COMPONENT_VERSION}");
-    let register_server_image = env::var(env).ok().unwrap_or(default_image);
+    let register_server_image = get_env(RELATED_IMAGE_REGISTRATION_SERVER)?;
     register_server::create_register_server_deployment(
         client.clone(),
         owner_reference.clone(),
@@ -613,9 +589,7 @@ async fn install_attestation_key_register(
 ) -> Result<()> {
     let owner_reference = generate_owner_reference(cluster)?;
 
-    let env = RELATED_IMAGE_ATTESTATION_KEY_REGISTER;
-    let default_image = format!("{TEC_REGISTRY}/attestation-key-register:{COMPONENT_VERSION}");
-    let attestation_key_register_image = env::var(env).ok().unwrap_or(default_image);
+    let attestation_key_register_image = get_env(RELATED_IMAGE_ATTESTATION_KEY_REGISTER)?;
     attestation_key_register::create_attestation_key_register_deployment(
         client.clone(),
         owner_reference.clone(),
@@ -753,7 +727,7 @@ mod tests {
     use kube::client::Body;
 
     use super::*;
-    use crate::test_utils::store_with;
+    use crate::test_utils::{store_with, with_related_images};
     use trusted_cluster_operator_test_utils::mock_client::*;
 
     fn make_deployment(name: &str, image_tag: &str) -> Deployment {
@@ -953,8 +927,12 @@ mod tests {
             observed_operator_version: None,
         });
         count_check!(10, clos, |client| {
-            let result = reconcile(Arc::new(cluster), Arc::new(OperatorContext::new(client))).await;
-            assert_eq!(result.unwrap(), LONG_REQUEUE);
+            with_related_images(async {
+                let result =
+                    reconcile(Arc::new(cluster), Arc::new(OperatorContext::new(client))).await;
+                assert_eq!(result.unwrap(), LONG_REQUEUE);
+            })
+            .await;
         });
     }
 
@@ -1131,8 +1109,12 @@ mod tests {
                 conditions: Some(vec![installed]),
                 observed_operator_version: Some("0.1.0".to_string()),
             });
-            let result = reconcile(Arc::new(cluster), Arc::new(OperatorContext::new(client))).await;
-            assert_eq!(result.unwrap(), LONG_REQUEUE);
+            with_related_images(async {
+                let result =
+                    reconcile(Arc::new(cluster), Arc::new(OperatorContext::new(client))).await;
+                assert_eq!(result.unwrap(), LONG_REQUEUE);
+            })
+            .await;
         });
     }
 

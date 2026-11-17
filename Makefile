@@ -3,7 +3,8 @@
 #
 # SPDX-License-Identifier: CC0-1.0
 
-.PHONY: all build build-tools crds-rs crds-rs-all-features generate manifests cluster-up cluster-down \
+
+.PHONY: all build build-tools crds-rs crds-rs-all-features generate apply-crds manifests cluster-up cluster-down \
 	install-trustee install clean fmt-check clippy lint test test-release release-tarball prepare-release \
 	operator-image compute-pcrs-image reg-server-image attestation-key-register-image image \
 	push-operator push-compute-pcrs push-reg-server push-attestation-key-register push \
@@ -93,6 +94,9 @@ generate: $(CONTROLLER_GEN)
 
 generate-openshift: $(CONTROLLER_GEN)
 	$(call controller-gen,github.com/openshift/api/machineconfiguration/v1,machineconfiguration.openshift.io_machineconfig{s$(COMMA)pools}.yaml)
+
+apply-crds: generate
+	$(KUBECTL) apply --server-side --force-conflicts -f $(CRD_YAML_PATH)
 
 RS_LIB_PATH = lib/src
 CRD_RS_PATH = $(RS_LIB_PATH)/kopium

@@ -81,6 +81,28 @@ make TRUSTEE_ADDR=$ip AK_REGISTRATION_ADDR=$ip install
 
 The KBS port will be forwarded to `8080` on your machine; the node register server to `8000`, where new Ignition configs are served at `/register`. The attestation-key-register service runs on port `8001` within the cluster for VM attestation key registration.
 
+### Apply CRDs
+
+To install or update CRDs after changing the API definitions, run:
+
+```bash
+make apply-crds
+```
+
+This target runs `make generate`, then applies all CRDs in `config/crd`, including the generated cert-manager CRDs,
+to the current `kubectl` context. It uses `--server-side --force-conflicts` to overwrite conflicting fields in existing CRDs.
+
+### Install using the integration test setup
+
+```bash
+make install-operator
+```
+
+This target deploys the operator, a `TrustedExecutionCluster`, and an `ApprovedImage` in a new test namespace,
+then waits for installation to complete. It requires cert-manager and its CRDs to be installed.
+The namespace is kept for inspection; the output includes a cleanup command.
+See the [test setup documentation](tests/README.md#install-the-operator-with-the-integration-test-setup) for details.
+
 ### Test
 
 Run a VM as described in the

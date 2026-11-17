@@ -397,9 +397,9 @@ dependencies = [
 
 [[package]]
 name = "axum-server"
-version = "0.9.1"
+version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79cc223bc5d5137aee018f55fe19bc694e3126a8a9f67b0f0861e5b8b561fb41"
+checksum = "3766086d344b8f8d2a9cf6fb211b581de5b160e052d7bc75a92e58cc41909054"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -1311,7 +1311,7 @@ dependencies = [
  "digest 0.10.7",
  "elliptic-curve",
  "rfc6979",
- "signature",
+ "signature 2.2.0",
  "spki",
 ]
 
@@ -2426,35 +2426,35 @@ dependencies = [
  "pem 3.0.6",
  "serde",
  "serde_json",
- "signature",
+ "signature 2.2.0",
  "simple_asn1",
  "zeroize",
 ]
 
 [[package]]
 name = "jsonwebtoken"
-version = "11.1.0"
+version = "12.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e75fe14a82d81e5f5af639997db37d8b96045938a7ac6ab18cdbe1c7467e05e1"
+checksum = "f347a975eb5fa8f5c4eadce6c1152c11c326cf32cf839fb64ff12d5cb8f4ce8b"
 dependencies = [
- "base64 0.22.1",
- "getrandom 0.2.16",
+ "base64 0.23.1",
+ "getrandom 0.4.1",
  "js-sys",
- "pem 3.0.6",
+ "pem 4.0.0",
  "serde",
  "serde_json",
- "signature",
+ "signature 3.0.0",
  "simple_asn1",
  "zeroize",
 ]
 
 [[package]]
 name = "jsonwebtoken-openssl"
-version = "2.0.0"
+version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0543235ae0586d539779681b158ea3bbbf2d926ac9833aff48353c44fe2ad52"
+checksum = "6cc946f4e92d01588bbda15d0d64a53ee8f30b98745e83dae58d5f7a6aab0ecb"
 dependencies = [
- "jsonwebtoken 11.1.0",
+ "jsonwebtoken 12.0.0",
  "openssl",
 ]
 
@@ -2495,7 +2495,7 @@ dependencies = [
  "elliptic-curve",
  "once_cell",
  "sha2 0.10.9",
- "signature",
+ "signature 2.2.0",
 ]
 
 [[package]]
@@ -3195,7 +3195,7 @@ dependencies = [
  "http",
  "json-patch 5.0.0",
  "jsonptr 0.8.2",
- "jsonwebtoken 11.1.0",
+ "jsonwebtoken 12.0.0",
  "jsonwebtoken-openssl",
  "k8s-openapi 0.29.0",
  "kbs-client",
@@ -3820,7 +3820,7 @@ dependencies = [
  "pkcs8",
  "rand_core 0.6.4",
  "sha2 0.10.9",
- "signature",
+ "signature 2.2.0",
  "spki",
  "subtle",
  "zeroize",
@@ -4278,6 +4278,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "signature"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28d567dcbaf0049cb8ac2608a76cd95ff9e4412e1899d389ee400918ca7537f5"
+dependencies = [
+ "rand_core 0.10.1",
+]
+
+[[package]]
 name = "simd-adler32"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4383,7 +4392,7 @@ dependencies = [
  "rsa",
  "sec1",
  "sha2 0.10.9",
- "signature",
+ "signature 2.2.0",
  "ssh-cipher",
  "ssh-encoding",
  "subtle",

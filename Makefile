@@ -95,6 +95,9 @@ generate: $(CONTROLLER_GEN)
 generate-openshift: $(CONTROLLER_GEN)
 	$(call controller-gen,github.com/openshift/api/machineconfiguration/v1,machineconfiguration.openshift.io_machineconfig{s$(COMMA)pools}.yaml)
 
+apply-crds: generate
+	$(KUBECTL) apply -f $(CRD_YAML_PATH)
+
 RS_LIB_PATH = lib/src
 CRD_RS_PATH = $(RS_LIB_PATH)/kopium
 $(CRD_RS_PATH):

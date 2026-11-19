@@ -18,6 +18,7 @@ Run the tests locally with kind:
 export RUNTIME=docker
 make cluster-up
 export REGISTRY=localhost:5000/trusted-execution-clusters
+export TAG=latest
 make push
 make install-kubevirt
 # Set $INTEGRATION_TEST_THREADS to multi-thread (>4G memory per test)
@@ -62,6 +63,7 @@ oc create ns $NAMESPACE
 HOST=$(oc get route default-route -n openshift-image-registry --template='{{ .spec.host }}')
 podman login $HOST -u $(oc whoami) -p $(oc whoami -t)
 export REGISTRY=$HOST/$NAMESPACE
+export TAG=latest
 make push
 # Export REGISTRY to the internal URL
 export REGISTRY=image-registry.openshift-image-registry.svc:5000/$NAMESPACE

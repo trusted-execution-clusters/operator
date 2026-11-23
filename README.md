@@ -91,8 +91,8 @@ make install-operator
 
 This target deploys the operator, a `TrustedExecutionCluster`, and an `ApprovedImage` in a new test namespace,
 then waits for installation to complete. It requires cert-manager and its CRDs to be installed.
-The namespace is kept for inspection; the output includes a cleanup command.
-See the [test setup documentation](tests/README.md#install-the-operator-with-the-integration-test-setup) for details.
+The namespace is kept for inspection. Follow [Quick Start Cleanup](#quick-start-cleanup) when you are done.
+See the [getting-started guide](docs/usage/getting-started-guide.md#install-the-operator) for setup details.
 
 ### Test
 
@@ -181,12 +181,16 @@ To remove all resources deployed by the bundle, use the `cleanup` command with t
 
 ### Quick Start Cleanup
 
-To clean up your environment after running the non-OLM `Quick Start` method, execute the following commands:
+Use the namespace printed by `make install-operator`.
+
 ```bash
-kubectl delete namespace trusted-execution-clusters
-# Note: You must use the same RUNTIME environment variable for `cluster-down`
-# that you used for `cluster-up`. For example:
-# RUNTIME=docker make cluster-down
+make cluster-cleanup NAMESPACE=trusted-execution-clusters
+```
+
+If you created a local kind cluster for this Quick Start, remove it with the same `RUNTIME` you used for
+`make cluster-up`.
+
+```bash
 make cluster-down
 make clean
 ```

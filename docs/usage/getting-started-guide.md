@@ -110,11 +110,7 @@ make install-operator TEST_NAMESPACE_PREFIX=my-dev-
 Use an exact namespace for a single installation; leave `NAMESPACE` unset when running multiple integration tests
 so each test gets its own namespace.
 
-The installation output includes a cleanup command. For the explicit namespace above, run:
-
-```console
-kubectl delete namespace trusted-execution-clusters
-```
+Follow [Quick Start Cleanup](../../README.md#quick-start-cleanup) to remove the installation.
 
 Further customization of the project can be controlled with the following env variables:
 + NAMESPACE: sets the exact namespace for `make install-operator`

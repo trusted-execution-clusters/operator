@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: CC0-1.0
 
 
-.PHONY: all build build-tools crds-rs crds-rs-all-features generate apply-crds manifests cluster-up cluster-down \
+.PHONY: all build build-tools crds-rs crds-rs-all-features generate apply-crds manifests cluster-up cluster-cleanup cluster-down \
 	install-trustee install-operator clean fmt-check clippy lint test test-release release-tarball prepare-release \
 	operator-image compute-pcrs-image reg-server-image attestation-key-register-image image \
 	push-operator push-compute-pcrs push-reg-server push-attestation-key-register push \
@@ -131,12 +131,6 @@ manifests: trusted-cluster-gen generate
 cluster-up:
 	RUNTIME=$(RUNTIME) scripts/create-cluster-kind.sh
 
-cluster-cleanup:
-	$(KUBECTL) delete -f $(DEPLOY_PATH)/trusted_execution_cluster_cr.yaml
-	$(KUBECTL) delete -f $(CRD_YAML_PATH)/trusted-execution-clusters.io_trustedexecutionclusters.yaml
-	$(KUBECTL) delete -f $(DEPLOY_PATH)/operator.yaml
-
-
 cluster-down:
 	RUNTIME=$(RUNTIME) scripts/delete-cluster-kind.sh
 
@@ -262,6 +256,10 @@ install-operator: generate trusted-cluster-gen crds-rs
 	$(INTEGRATION_TEST_ENV) \
 	TEST_NAMESPACE="${NAMESPACE}" \
 	cargo test --test install_operator $(INTEGRATION_TEST_FLAGS) --ignored --exact install_operator
+
+cluster-cleanup: crds-rs
+	TEST_NAMESPACE="$(NAMESPACE)" \
+	cargo test --test install_operator $(INTEGRATION_TEST_FLAGS) --ignored --exact cleanup_operator
 
 integration-tests: attestation-tests trusted-execution-cluster-tests upgrade-tests
 

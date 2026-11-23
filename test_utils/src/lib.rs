@@ -563,6 +563,25 @@ impl TestContext {
         Ok(ctx)
     }
 
+    pub async fn new_with_existing_namespace(
+        test_name: &str,
+        namespace: &str,
+        manifests_dir: &Path,
+        #[allow(unused_variables)] delayed_approved_image: bool,
+    ) -> Result<Self> {
+        let client = setup_test_client().await?;
+        let namespace = namespace.to_string();
+        let ctx = Self {
+            client,
+            test_namespace: namespace.clone(),
+            manifests_dir: manifests_dir.to_str().unwrap().to_string(),
+            test_name: test_name.to_string(),
+            #[cfg(not(feature = "openshift"))]
+            delayed_approved_image,
+        };
+        Ok(ctx)
+    }
+
     pub fn client(&self) -> &Client {
         &self.client
     }

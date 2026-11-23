@@ -27,7 +27,7 @@ tokio.workspace = true
 
 [dev-dependencies]
 # Only a generate dependency, not a Rust dependency. Included here for auto-updates.
-kopium = "0.23.0"
+kopium = "0.24.1"
 http.workspace = true
 strum = { version = "0.28", features = ["derive"] }
 trusted-cluster-operator-test-utils = { path = "../test_utils" }

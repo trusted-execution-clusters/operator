@@ -27,19 +27,17 @@ updates:
         patterns:
           - "*"
     ignore:
-      # Block newer versions of k8s until bump of OpenShift CI
+      # Stay on the Kubernetes 1.36 dependency lines
       - dependency-name: "k8s.io/api"
-        versions: [">=0.36"]
+        versions: [">=0.37"]
       - dependency-name: "k8s.io/apimachinery"
-        versions: [">=0.36"]
+        versions: [">=0.37"]
       - dependency-name: "sigs.k8s.io/controller-runtime"
-        versions: [">=0.24"]
+        versions: [">=0.25"]
       - dependency-name: "sigs.k8s.io/controller-tools"
-        versions: [">=0.21"]
+        versions: [">=0.22"]
       - dependency-name: "github.com/cert-manager/cert-manager"
-        versions: [">=1.21"]
-      - dependency-name: "github.com/mikefarah/yq/v4"
-        versions: [">=4.54"]
+        versions: [">=1.22"]
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
@@ -56,6 +54,3 @@ updates:
         # Newer versions do not parse lsblk -J output correctly, see
         # https://github.com/wiggels/blockdev/pull/4#issuecomment-5572211474
         versions: [">=0.5"]
-      - dependency-name: "kopium"
-        # Block newer versions of kopium until we bump to k8s 1.36
-        versions: [">=0.23.0"]

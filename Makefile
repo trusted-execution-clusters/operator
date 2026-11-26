@@ -3,8 +3,9 @@
 #
 # SPDX-License-Identifier: CC0-1.0
 
-.PHONY: all build build-tools crds-rs crds-rs-all-features generate manifests cluster-up cluster-down \
-	install-trustee install clean fmt-check clippy lint test test-release release-tarball prepare-release \
+
+.PHONY: all build build-tools crds-rs crds-rs-all-features generate apply-crds manifests cluster-up cluster-cleanup cluster-down \
+	install-trustee install-operator clean fmt-check clippy lint test test-release release-tarball prepare-release \
 	operator-image compute-pcrs-image reg-server-image attestation-key-register-image image \
 	push-operator push-compute-pcrs push-reg-server push-attestation-key-register push \
 
@@ -94,6 +95,9 @@ generate: $(CONTROLLER_GEN)
 generate-openshift: $(CONTROLLER_GEN)
 	$(call controller-gen,github.com/openshift/api/machineconfiguration/v1,machineconfiguration.openshift.io_machineconfig{s$(COMMA)pools}.yaml)
 
+apply-crds: generate
+	$(KUBECTL) apply -f $(CRD_YAML_PATH)
+
 RS_LIB_PATH = lib/src
 CRD_RS_PATH = $(RS_LIB_PATH)/kopium
 $(CRD_RS_PATH):
@@ -126,12 +130,6 @@ manifests: trusted-cluster-gen generate
 
 cluster-up:
 	RUNTIME=$(RUNTIME) scripts/create-cluster-kind.sh
-
-cluster-cleanup:
-	$(KUBECTL) delete -f $(DEPLOY_PATH)/trusted_execution_cluster_cr.yaml
-	$(KUBECTL) delete -f $(CRD_YAML_PATH)/trusted-execution-clusters.io_trustedexecutionclusters.yaml
-	$(KUBECTL) delete -f $(DEPLOY_PATH)/operator.yaml
-
 
 cluster-down:
 	RUNTIME=$(RUNTIME) scripts/delete-cluster-kind.sh
@@ -195,32 +193,6 @@ push-bundle: bundle-image
 
 push-all: push push-bundle ## Pushes all operator and bundle images
 
-install: $(YQ)
-ifndef TRUSTEE_ADDR
-	$(error TRUSTEE_ADDR is undefined)
-endif
-ifndef AK_REGISTRATION_ADDR
-	$(error AK_REGISTRATION_ADDR is undefined)
-endif
-	scripts/clean-cluster-kind.sh $(OPERATOR_IMAGE) $(COMPUTE_PCRS_IMAGE) $(REG_SERVER_IMAGE) $(ATTESTATION_KEY_REGISTER_IMAGE)
-	$(YQ) '.spec.publicTrusteeAddr = "$(TRUSTEE_ADDR):8080"' \
-		-i $(DEPLOY_PATH)/trusted_execution_cluster_cr.yaml
-	$(YQ) '.spec.publicAttestationKeyRegisterAddr = "$(AK_REGISTRATION_ADDR):8001"' \
-		-i $(DEPLOY_PATH)/trusted_execution_cluster_cr.yaml
-	sed "s/NAMESPACE/$(NAMESPACE)/g" config/rbac/kustomization.yaml.in > config/rbac/kustomization.yaml
-	$(KUBECTL) apply -f $(DEPLOY_PATH)/operator.yaml
-	$(KUBECTL) apply -f config/crd
-	$(KUBECTL) apply -k config/rbac
-	@if [ "$(PLATFORM)" = "openshift" ]; then \
-		sed 's/<NAMESPACE>/$(NAMESPACE)/g' config/openshift/scc.yaml | $(KUBECTL) apply -f -; \
-	else \
-		sed 's/<NAMESPACE>/$(NAMESPACE)/g' kind/ak-register-forward.yaml | $(KUBECTL) apply -f -; \
-		sed 's/<NAMESPACE>/$(NAMESPACE)/g' kind/register-forward.yaml | $(KUBECTL) apply -f -; \
-		sed 's/<NAMESPACE>/$(NAMESPACE)/g' kind/kbs-forward.yaml | $(KUBECTL) apply -f -; \
-	fi
-	$(KUBECTL) apply -f $(DEPLOY_PATH)/trusted_execution_cluster_cr.yaml
-	$(KUBECTL) apply -f '$(DEPLOY_PATH)/approved_image_cr_*.yaml'
-
 install-kubevirt:
 	scripts/install-kubevirt.sh
 
@@ -279,6 +251,15 @@ upgrade-tests: generate trusted-cluster-gen crds-rs
 	UPGRADE_OLD_TAG=$(UPGRADE_OLD_TAG) \
 	UPGRADE_OLD_TRUSTEE_TAG=$(UPGRADE_OLD_TRUSTEE_TAG) \
 	cargo test --test upgrade $(INTEGRATION_TEST_FLAGS)
+
+install-operator: generate trusted-cluster-gen crds-rs
+	$(INTEGRATION_TEST_ENV) \
+	TEST_NAMESPACE="${NAMESPACE}" \
+	cargo test --test install_operator $(INTEGRATION_TEST_FLAGS) --ignored --exact install_operator
+
+cluster-cleanup: crds-rs
+	TEST_NAMESPACE="$(NAMESPACE)" \
+	cargo test --test install_operator $(INTEGRATION_TEST_FLAGS) --ignored --exact cleanup_operator
 
 integration-tests: attestation-tests trusted-execution-cluster-tests upgrade-tests
 

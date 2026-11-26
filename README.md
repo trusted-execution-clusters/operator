@@ -48,17 +48,6 @@ The operator relies on Rust crates for its functionality.
 
 Create the cluster and deploy the operator.
 
-Provide an address where the VM you will attest from can access the cluster.
-When using a local kind & libvirt VM, this may be your gateway address (`default via …` in `ip route`) for user libvirt or bridge (`virbr0` in `ip route`) for system libvirt.
-
-```bash
-$ ip route
-...
-192.168.122.0/24 dev virbr0 proto kernel scope link src 192.168.122.1
-...
-$ ip=192.168.122.1
-```
-
 To use Docker:
 ```bash
 export CONTAINER_CLI=docker
@@ -75,11 +64,35 @@ Then run the following commands:
 ```bash
 make cluster-up
 make REGISTRY=localhost:5000 PUSH_FLAGS="--tls-verify=false" push # optional: use BUILD_TYPE=debug
-make REGISTRY=localhost:5000 manifests
-make TRUSTEE_ADDR=$ip AK_REGISTRATION_ADDR=$ip install
+make REGISTRY=localhost:5000 install-operator NAMESPACE=trusted-execution-clusters
 ```
 
-The KBS port will be forwarded to `8080` on your machine; the node register server to `8000`, where new Ignition configs are served at `/register`. The attestation-key-register service runs on port `8001` within the cluster for VM attestation key registration.
+See the [getting-started guide](docs/usage/getting-started-guide.md#install-the-operator) for installation prerequisites,
+namespace selection, and cleanup.
+
+
+### Apply CRDs
+
+To install or update CRDs after changing the API definitions, run:
+
+```bash
+make apply-crds
+```
+
+This target runs `make generate`, then applies all CRDs in `config/crd`, including the generated cert-manager CRDs,
+to the current `kubectl` context.
+
+
+### Install using the integration test setup
+
+```bash
+make install-operator
+```
+
+This target deploys the operator, a `TrustedExecutionCluster`, and an `ApprovedImage` in a new test namespace,
+then waits for installation to complete. It requires cert-manager and its CRDs to be installed.
+The namespace is kept for inspection. Follow [Quick Start Cleanup](#quick-start-cleanup) when you are done.
+See the [getting-started guide](docs/usage/getting-started-guide.md#install-the-operator) for setup details.
 
 ### Test
 
@@ -168,12 +181,16 @@ To remove all resources deployed by the bundle, use the `cleanup` command with t
 
 ### Quick Start Cleanup
 
-To clean up your environment after running the non-OLM `Quick Start` method, execute the following commands:
+Use the namespace printed by `make install-operator`.
+
 ```bash
-make cluster-cleanup
-# Note: You must use the same RUNTIME environment variable for `cluster-down`
-# that you used for `cluster-up`. For example:
-# RUNTIME=docker make cluster-down
+make cluster-cleanup NAMESPACE=trusted-execution-clusters
+```
+
+If you created a local kind cluster for this Quick Start, remove it with the same `RUNTIME` you used for
+`make cluster-up`.
+
+```bash
 make cluster-down
 make clean
 ```
